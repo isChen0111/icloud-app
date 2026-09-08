@@ -39,7 +39,7 @@
 - ✅ P1：日期定位 + 邻居预取 + blur + 深链 + 键盘 + 实况（剩内存 LRU 后置）
 - ✅ P2：FTS5 搜索（HEVC 转码/收藏/最近删除/下载/批量选择用户决定不做）
 - ✅ 稳定化：12 项修复 + GitHub 版本管理
-- 🔜 **P2+-1 同步与热更新（已纳入计划）**：一键拉取同步（前端按钮 → 后端 spawn icloudpd 官方 exe `icloudpd-1.32.3-windows-amd64.exe` 14.4MB **免 Python**，已核验 GitHub Release）+ 目录热监听（chokidar 增删）+ **删除同步**（scanner 当前只增不删，需加「目录文件集合 vs DB 集合」对比）+ 冷启动增量（启动时对比文件数不一致自动增量扫描，手动拷文件开机即发现）
+- 🔜 **P2+-1 同步与热更新（已纳入计划）**：一键拉取同步（前端按钮 → 后端 spawn icloudpd 官方 exe `icloudpd-1.32.3-windows-amd64.exe` 14.4MB **免 Python**，已核验 GitHub Release；**已定 exe 方案**——首次启动脚本自动下载到 `iCloudTool\bin\`，gitignore 排除不入仓库）+ 目录热监听（chokidar 增删）+ **删除同步**（scanner 当前只增不删，需加「目录文件集合 vs DB 集合」对比）+ 冷启动增量（启动时对比文件数不一致自动增量扫描，手动拷文件开机即发现）
 - 🔜 **P2+-2 冷启动体验（已纳入计划）**：顶部轮询 /api/stats 显示扫描进度「已扫描 x/20026 · 已找到 y」+ 缩略图预热进度 + 分批写库边扫边现
 - ⏸ P2+-3 语义搜索（暂缓）：人物/地点/场景组合（如「邓州 2023 年 陈咏新」）——不连大模型，face-api.js + tfjs-node 本地人脸聚类 + people/faces/asset_tags 表 + 组合查询解析器；视频抽帧入人脸库；标签不写文件元数据。
 
