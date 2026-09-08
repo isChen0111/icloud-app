@@ -25,6 +25,8 @@ const stillSrc = computed(() => thumbUrl(props.id, 'detail'))
 /** 实况视频 URL（首次按下才注入，避免提前拉流量） */
 const videoSrc = ref('')
 const playing = ref(false)
+/** 视频加载中（按下后等待首帧数据就绪）：徽标显示旋转加载动画 */
+const videoLoading = ref(false)
 /** video 元素引用（按下播放/松开暂停复位都要用它） */
 const videoEl = ref<HTMLVideoElement | null>(null)
 
@@ -56,6 +58,7 @@ async function onPointerDown(e: PointerEvent): Promise<void> {
 
   if (!videoSrc.value) videoSrc.value = videoStreamUrl(props.id)
   playing.value = true // 触发 video 淡入（opacity 过渡）+ :muted="!playing" 取消静音
+  videoLoading.value = true // 视频数据就绪前徽标显示加载动画
 
   // 关键：必须显式调用 play()！video 元素由 v-if="videoSrc" 刚创建，
   // 等它在 DOM 挂载后再播放（play() 会自行等待首帧数据就绪）
@@ -66,7 +69,9 @@ async function onPointerDown(e: PointerEvent): Promise<void> {
   v.muted = false
   try {
     await v.play()
+    videoLoading.value = false // 已开始播放，撤掉加载动画
   } catch {
+    videoLoading.value = false
     // 兜底：个别环境仍拒绝带声播放 → 回退静音，保证"至少出画面"不丢
     v.muted = true
     await v.play().catch(() => {
@@ -77,6 +82,7 @@ async function onPointerDown(e: PointerEvent): Promise<void> {
 
 function onPointerUp(): void {
   playing.value = false
+  videoLoading.value = false
   // 松开：暂停并归零，对标 iCloud「松开 pause + currentTime 归零」
   const v = videoEl.value
   if (v) {
@@ -114,10 +120,14 @@ function onVideoEnded(video: HTMLVideoElement): void {
       playsinline
       loop
       @ended="(e) => onVideoEnded(e.target as HTMLVideoElement)"
+      @loadstart="videoLoading = true"
+      @waiting="videoLoading = true"
+      @canplay="videoLoading = false"
+      @playing="videoLoading = false"
     ></video>
 
     <!-- 顶部徽标（按住才高亮，对标 iCloud 的实况徽标反馈） -->
-    <span class="live-badge" :class="{ active: playing }">LIVE</span>
+    <span class="live-badge" :class="{ active: playing, loading: videoLoading }">LIVE<span v-if="videoLoading" class="spinner" /></span>
     <span class="hint">按住播放</span>
   </div>
 </template>
@@ -152,15 +162,29 @@ function onVideoEnded(video: HTMLVideoElement): void {
   top: 16px;
   right: 16px;
   z-index: 3;
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 1px;
-  padding: 4px 8px;
-  border-radius: 5px;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 1.5px;
+  padding: 3px 9px;
+  border-radius: 999px;
   background: rgba(0, 0, 0, 0.5);
-  color: #ffd60a;
+  color: #fff;
   pointer-events: none;
+  backdrop-filter: blur(4px);
 }
+/* 视频加载中：徽标内旋转环（按住后等待首帧数据就绪的反馈） */
+.live-badge .spinner {
+  width: 9px;
+  height: 9px;
+  border: 1.5px solid currentColor;
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: live-spin 0.7s linear infinite;
+}
+@keyframes live-spin { to { transform: rotate(360deg); } }
 .live-badge.active { background: #ffd60a; color: #1d1d1f; }
 .hint {
   position: absolute;

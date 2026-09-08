@@ -97,12 +97,15 @@ export function formatBitRate(bps: number | null): string {
   return `${(bps / 1e6).toFixed(1)} Mbps`
 }
 
-/** 时长："0:42" */
+/** 时长："0:42" / "12:34" / "1:02:03"（≥1h 显示小时） */
 export function formatDuration(seconds: number | null): string {
   if (seconds == null) return ''
-  const m = Math.floor(seconds / 60)
+  const h = Math.floor(seconds / 3600)
+  const m = Math.floor((seconds % 3600) / 60)
   const s = Math.floor(seconds % 60)
-  return `${m}:${String(s).padStart(2, '0')}`
+  const ss = String(s).padStart(2, '0')
+  if (h > 0) return `${h}:${String(m).padStart(2, '0')}:${ss}`
+  return `${m}:${ss}`
 }
 
 /** 像素行："3024 × 4032" */

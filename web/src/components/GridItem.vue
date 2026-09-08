@@ -14,15 +14,13 @@
 import { computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { blurUrl, useLazyImage } from '../composables/useLazyImage'
+import { formatDuration } from '../utils/format'
 import type { AssetDto } from '../types'
 
 const props = defineProps<{ asset: AssetDto; width: number }>()
 const router = useRouter()
 
 const { isVisible, src, rootRef } = useLazyImage(props.asset.id, 'grid')
-
-/** 是否视频类（视频与实况都有可播放内容，实况单独标 LIVE） */
-const isVideoLike = computed(() => props.asset.type === 'video' || props.asset.type === 'live')
 
 /** 占位底色：按 id 生成一个稳定的浅灰渐变（视觉上比纯灰更柔和） */
 const placeholderBg = computed(() => {
@@ -51,9 +49,12 @@ function openDetail(): void {
       <img v-if="isVisible" :src="src" class="thumb real" alt="" decoding="async" loading="lazy" />
     </div>
 
-    <!-- 类型徽标 -->
+    <!-- 类型徽标：实况 LIVE（右上）/ 视频时长胶囊（右下，对齐 iCloud 缩略图视频时长条） -->
     <span v-if="asset.type === 'live'" class="badge live">LIVE</span>
-    <span v-else-if="isVideoLike" class="badge play">▶</span>
+    <span v-else-if="asset.type === 'video'" class="badge duration">
+      <svg width="7" height="8" viewBox="0 0 7 8" fill="currentColor" aria-hidden="true"><path d="M0 0l7 4-7 4z" /></svg>
+      {{ formatDuration(asset.duration) }}
+    </span>
   </div>
 </template>
 
@@ -84,25 +85,27 @@ function openDetail(): void {
 .thumb.real[src] { opacity: 1; }
 .badge {
   position: absolute;
-  font-size: 9px;
-  font-weight: 700;
-  letter-spacing: 0.5px;
-  padding: 2px 5px;
-  border-radius: 4px;
-  background: rgba(0, 0, 0, 0.55);
-  backdrop-filter: blur(4px);
-  color: #fff;
-}
-.badge.live { top: 6px; right: 6px; color: #ffd60a; }
-.badge.play {
-  bottom: 6px;
-  right: 6px;
-  font-size: 11px;
-  width: 20px;
-  height: 20px;
   display: flex;
   align-items: center;
-  justify-content: center;
-  padding: 0;
+  gap: 4px;
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.8px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.5);
+  backdrop-filter: blur(4px);
+  color: #fff;
+  line-height: 1.4;
 }
+.badge.live { top: 6px; right: 6px; }
+.badge.duration {
+  bottom: 6px;
+  right: 6px;
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.3px;
+  padding: 2px 6px;
+}
+.badge.duration svg { flex-shrink: 0; }
 </style>
