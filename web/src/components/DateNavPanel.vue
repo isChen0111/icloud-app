@@ -11,13 +11,13 @@
  *   │  2026      │  ...                     │
  *   └────────────┴──────────────────────────┘
  *   左栏：年份列表（有照片的年份，缺失年份自然空置）
- *   右栏：选中年份的月份缩略图（大图 + 月份名 + 数量）
+ *   右栏：选中年份的月份缩略图（3 行 × 4 列固定网格，无滚动条）
  *
  * 交互：
- *   - 打开时默认选中当前可视年份
- *   - 点左栏年份 → 右栏切换为该年月份
+ *   - 下拉式面板：锚定在工具栏「日期」按钮正下方（非居中弹窗）
+ *   - 打开时默认选中当前可视年份；点左栏年份 → 右栏切换
  *   - 点月份 → emit select(offset)（父组件跳转并关闭面板）
- *   - 关闭：右上 × / 点遮罩 / Esc
+ *   - 关闭：右上 × / Esc / 点击面板外部
  */
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { thumbUrl } from '../api/client'
@@ -36,8 +36,10 @@ const emit = defineEmits<{
   close: []
 }>()
 
-/** 年份聚合：months 为倒序，每年第一项（最新月）的代表图即年份代表图。
- *  仅用于展示年份是否可点；**按 iCloud 惯例升序排列**（2015 在上 → 2026 在下）。 */
+/** 面板 DOM 引用（外部点击判断用） */
+const panelEl = ref<HTMLElement | null>(null)
+
+/** 年份列表：months 为倒序，去重后**升序**排列（2015 在上 → 2026 在下，对标 iCloud） */
 const years = computed(() => {
   const out: string[] = []
   for (const m of props.months) {
@@ -48,11 +50,7 @@ const years = computed(() => {
 })
 
 /** 当前展开的年份（默认 = 当前可视年份；无可视年份则取最新年份） */
-const viewYear = ref(
-  props.currentYm.slice(0, 4) ||
-    years.value[0] ||
-    '',
-)
+const viewYear = ref(props.currentYm.slice(0, 4) || years.value[0] || '')
 
 /** 当前可视年份变化时跟随（浏览到哪年，面板打开就显示哪年） */
 watch(
@@ -76,65 +74,82 @@ const currentYm = computed(() => props.currentYm)
 function onKeydown(e: KeyboardEvent): void {
   if (e.key === 'Escape') emit('close')
 }
-onMounted(() => window.addEventListener('keydown', onKeydown))
-onUnmounted(() => window.removeEventListener('keydown', onKeydown))
+
+/**
+ * 点击面板外部关闭（下拉式无遮罩）：
+ * 点击目标既不在面板内、也不在触发按钮上 → 关闭。
+ * （按钮点击打开面板时，本次点击的 target 是按钮，会被这里跳过，面板不会秒关）
+ */
+function onDocClick(e: MouseEvent): void {
+  const t = e.target as Element | null
+  if (!t) return
+  if (panelEl.value?.contains(t)) return
+  if (t.closest('.date-nav-btn')) return
+  emit('close')
+}
+
+onMounted(() => {
+  window.addEventListener('keydown', onKeydown)
+  document.addEventListener('click', onDocClick)
+})
+onUnmounted(() => {
+  window.removeEventListener('keydown', onKeydown)
+  document.removeEventListener('click', onDocClick)
+})
 </script>
 
 <template>
-  <!-- 全屏遮罩：点空白处关闭（@click.self 只命中遮罩本身，不命中面板） -->
-  <div class="dn-overlay" @click.self="emit('close')">
-    <div class="dn-panel" role="dialog" aria-label="日期导航">
-      <!-- 面板头 -->
-      <header class="dn-header">
-        <span class="dn-title">日期导航</span>
-        <button class="dn-close" title="关闭" @click="emit('close')">×</button>
-      </header>
+  <!-- 下拉式面板：absolute 锚定在触发按钮下方（定位由父级 .grid-shell 提供） -->
+  <div ref="panelEl" class="dn-panel" role="dialog" aria-label="日期导航">
+    <!-- 面板头 -->
+    <header class="dn-header">
+      <span class="dn-title">日期导航</span>
+      <button class="dn-close" title="关闭" @click="emit('close')">×</button>
+    </header>
 
-      <div class="dn-body">
-        <!-- 左栏：年份列表 -->
-        <nav class="dn-years">
+    <div class="dn-body">
+      <!-- 左栏：年份列表 -->
+      <nav class="dn-years">
+        <button
+          v-for="y in years"
+          :key="y"
+          class="dn-year"
+          :class="{ active: y === viewYear }"
+          @click="viewYear = y"
+        >
+          {{ y }}
+        </button>
+      </nav>
+
+      <!-- 右栏：选中年份的月份缩略图（3 行 × 4 列，无滚动条） -->
+      <div class="dn-months">
+        <h3 class="dn-year-title">{{ viewYear }}</h3>
+
+        <div class="dn-month-grid">
           <button
-            v-for="y in years"
-            :key="y"
-            class="dn-year"
-            :class="{ active: y === viewYear }"
-            @click="viewYear = y"
+            v-for="m in yearMonths"
+            :key="m.ym"
+            class="dn-month"
+            :class="{ active: m.ym === currentYm }"
+            :title="`${m.label} · ${m.count} 项`"
+            @click="emit('select', m.offset)"
           >
-            {{ y }}
+            <img
+              v-if="m.thumbId"
+              :src="thumbUrl(m.thumbId, 'grid')"
+              alt=""
+              loading="lazy"
+              decoding="async"
+              class="dn-month-img"
+            />
+            <span class="dn-month-meta">
+              <span class="dn-month-name">{{ Number(m.ym.slice(5)) }}月</span>
+              <span class="dn-month-count">{{ m.count }}</span>
+            </span>
           </button>
-        </nav>
 
-        <!-- 右栏：选中年份的月份缩略图 -->
-        <div class="dn-months">
-          <!-- 年份标题（对标截图右侧大标题） -->
-          <h3 class="dn-year-title">{{ viewYear }}</h3>
-
-          <div class="dn-month-grid">
-            <button
-              v-for="m in yearMonths"
-              :key="m.ym"
-              class="dn-month"
-              :class="{ active: m.ym === currentYm }"
-              :title="`${m.label} · ${m.count} 项`"
-              @click="emit('select', m.offset)"
-            >
-              <img
-                v-if="m.thumbId"
-                :src="thumbUrl(m.thumbId, 'grid')"
-                alt=""
-                loading="lazy"
-                decoding="async"
-                class="dn-month-img"
-              />
-              <span class="dn-month-meta">
-                <span class="dn-month-name">{{ Number(m.ym.slice(5)) }}月</span>
-                <span class="dn-month-count">{{ m.count }} 项</span>
-              </span>
-            </button>
-
-            <!-- 该年无照片（理论不发生，防御性空态） -->
-            <div v-if="yearMonths.length === 0" class="dn-empty">该年暂无照片</div>
-          </div>
+          <!-- 该年无照片（理论不发生，防御性空态） -->
+          <div v-if="yearMonths.length === 0" class="dn-empty">该年暂无照片</div>
         </div>
       </div>
     </div>
@@ -142,29 +157,20 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown))
 </template>
 
 <style scoped>
-/* 遮罩：全屏半透明 + 模糊，覆盖在照片墙之上 */
-.dn-overlay {
-  position: fixed;
-  inset: 0;
+/* 面板本体：下拉式，紧凑尺寸，锚定按钮下方（top/left 见注释） */
+.dn-panel {
+  position: absolute;
+  top: 54px; /* 工具栏高度（padding 10+10 + 按钮 30）下方，留 4px 间隙 */
+  left: 16px; /* 与「日期」按钮左缘对齐（工具栏左 padding 16px） */
   z-index: 50;
   display: flex;
-  align-items: center;
-  justify-content: center;
-  background: rgba(0, 0, 0, 0.6);
-  backdrop-filter: blur(6px);
-}
-
-/* 面板本体：深色卡片，尺寸自适应 */
-.dn-panel {
-  display: flex;
   flex-direction: column;
-  width: min(880px, 92vw);
-  height: min(640px, 82vh);
+  width: 600px;
   background: #1c1c1f;
   border: 1px solid rgba(255, 255, 255, 0.1);
-  border-radius: 16px;
+  border-radius: 12px;
   overflow: hidden;
-  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.5);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
 }
 
 /* 面板头 */
@@ -172,12 +178,12 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown))
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 14px 18px;
+  padding: 10px 14px;
   flex-shrink: 0;
   border-bottom: 1px solid rgba(255, 255, 255, 0.08);
 }
 .dn-title {
-  font-size: 15px;
+  font-size: 13px;
   font-weight: 600;
   color: #f5f5f7;
 }
@@ -185,11 +191,11 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown))
   border: none;
   background: rgba(255, 255, 255, 0.08);
   color: #f5f5f7;
-  font-size: 18px;
+  font-size: 15px;
   line-height: 1;
-  width: 30px;
-  height: 30px;
-  border-radius: 8px;
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
   cursor: pointer;
   font-family: inherit;
   transition: background 0.15s;
@@ -199,20 +205,19 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown))
 /* 主体：左右两栏 */
 .dn-body {
   display: flex;
-  flex: 1;
   min-height: 0;
 }
 
-/* 左栏：年份列表 */
+/* 左栏：年份列表（窄、紧凑） */
 .dn-years {
-  width: 108px;
+  width: 84px;
   flex-shrink: 0;
-  overflow-y: auto;
+  overflow-y: auto; /* 年份最多 11 个，正常不滚动；超长时防御 */
   border-right: 1px solid rgba(255, 255, 255, 0.08);
-  padding: 10px 8px;
+  padding: 8px 6px;
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 1px;
   scrollbar-width: thin;
   scrollbar-color: rgba(255, 255, 255, 0.2) transparent;
 }
@@ -220,11 +225,11 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown))
   border: none;
   background: transparent;
   color: rgba(245, 245, 247, 0.6);
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 600;
   text-align: left;
-  padding: 8px 10px;
-  border-radius: 8px;
+  padding: 6px 9px;
+  border-radius: 6px;
   cursor: pointer;
   font-family: inherit;
   transition: background 0.15s, color 0.15s;
@@ -238,33 +243,30 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown))
   color: #fff;
 }
 
-/* 右栏：月份缩略图 */
+/* 右栏：月份缩略图（固定 3 行 × 4 列，内容撑高、无滚动条） */
 .dn-months {
   flex: 1;
   min-width: 0;
-  overflow-y: auto;
-  padding: 14px 18px 20px;
-  scrollbar-width: thin;
-  scrollbar-color: rgba(255, 255, 255, 0.2) transparent;
+  padding: 10px 12px 14px;
 }
 .dn-year-title {
-  margin: 0 0 12px;
-  font-size: 22px;
+  margin: 0 0 9px;
+  font-size: 17px;
   font-weight: 700;
   color: #f5f5f7;
 }
 
-/* 月份网格：自适应换行，不写死列数 */
+/* 固定 4 列网格；最多 12 个月 = 3 行，自然撑高不溢出 */
 .dn-month-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
-  gap: 14px;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 10px;
 }
 .dn-month {
   border: none;
   background: transparent;
   padding: 0;
-  border-radius: 12px;
+  border-radius: 9px;
   overflow: hidden;
   cursor: pointer;
   text-align: left;
@@ -288,22 +290,22 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown))
   display: flex;
   align-items: baseline;
   justify-content: space-between;
-  padding: 7px 9px;
+  padding: 5px 7px;
   background: rgba(255, 255, 255, 0.04);
 }
 .dn-month-name {
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 600;
   color: #f5f5f7;
 }
 .dn-month-count {
-  font-size: 11px;
+  font-size: 10px;
   color: rgba(245, 245, 247, 0.5);
 }
 .dn-empty {
-  padding: 24px;
+  padding: 20px;
   color: rgba(245, 245, 247, 0.4);
-  font-size: 13px;
+  font-size: 12px;
   grid-column: 1 / -1;
   text-align: center;
 }
