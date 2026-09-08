@@ -23,6 +23,8 @@ const query = ref('')
 const results = ref<AssetDto[] | null>(null)
 /** 防抖计时器句柄 */
 let debounceTimer: number | undefined
+/** 搜索请求序号守卫：输入/退出时递增，让在途响应作废（修复审查 P1-F5 竞态） */
+let searchSeq = 0
 /** 结果区容器引用（计算格子宽度） */
 const resultsEl = ref<HTMLElement | null>(null)
 /** 结果区宽度（ResizeObserver 维护） */
@@ -44,14 +46,17 @@ const itemWidth = computed(() => {
   return Math.max(80, Math.floor((w - 4 * 8) / 5))
 })
 
-/** 防抖执行搜索：清空旧结果 → 请求 → 写回 */
+/** 防抖执行搜索：清空旧结果 → 请求 → 写回（过期响应被 seq 守卫丢弃） */
 async function runSearch(q: string): Promise<void> {
+  const seq = ++searchSeq
   results.value = null // 先清空：避免旧结果残留误导
   if (q.length < 3) return // 后端也会拦截，这里提前短路
   try {
     const res = await searchAssets(q, 100)
+    if (seq !== searchSeq) return // 已被新搜索/退出取代 → 丢弃过期结果
     results.value = res.items
   } catch {
+    if (seq !== searchSeq) return
     results.value = []
   }
 }
@@ -59,6 +64,7 @@ async function runSearch(q: string): Promise<void> {
 /** 输入监听：防抖 300ms 后执行（对标搜索框"边输边出"体验） */
 watch(query, (q) => {
   window.clearTimeout(debounceTimer)
+  searchSeq++ // 使一切在途响应作废（含 Esc 退出场景：旧请求晚返回也不能覆写搜索态）
   const t = q.trim()
   if (t.length === 0) {
     results.value = null // 清空输入 → 立即退出搜索态

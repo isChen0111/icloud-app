@@ -7,29 +7,32 @@
  * - 主体 = 路由出口（网格 / 详情）
  * - 启动时拉一次统计并自动开始首页加载
  */
-import { onMounted, ref } from 'vue'
+import { onBeforeUnmount, onMounted, ref } from 'vue'
 import { fetchStats } from './api/client'
 import type { Stats } from './types'
 
 const stats = ref<Stats | null>(null)
 const backendReady = ref(false)
 
-onMounted(async () => {
+/** 重连轮询定时器句柄 */
+let retryTimer: number | undefined
+
+/**
+ * 拉取统计；失败则每 5 秒重试直到连上（修复审查 P1-F4）。
+ * 旧实现只重试一次：先开前端、后开后端的常见顺序下会永久停在
+ * "等待后端启动"，必须手动刷新。现在持续轮询，后端就绪自动恢复。
+ */
+async function pollStats(): Promise<void> {
   try {
     stats.value = await fetchStats()
     backendReady.value = true
   } catch {
-    // 后端未启动时提示，3 秒后自动重试
-    setTimeout(async () => {
-      try {
-        stats.value = await fetchStats()
-        backendReady.value = true
-      } catch {
-        /* 保持提示 */
-      }
-    }, 3000)
+    retryTimer = window.setTimeout(() => void pollStats(), 5000)
   }
-})
+}
+
+onMounted(() => void pollStats())
+onBeforeUnmount(() => window.clearTimeout(retryTimer))
 </script>
 
 <template>

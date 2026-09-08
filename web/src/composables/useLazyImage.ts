@@ -14,7 +14,6 @@ import { thumbUrl } from '../api/client'
 export function useLazyImage(assetId: number, size: 'grid' | 'detail' = 'grid') {
   const isVisible = ref(false)
   const src = ref('')
-  const loaded = ref(false)
 
   /** 锚点元素：模板用 ref="rootRef" 绑定；watch 兜底时序，挂载后自动 observe */
   const rootRef = ref<HTMLElement | null>(null)
@@ -35,6 +34,9 @@ export function useLazyImage(assetId: number, size: 'grid' | 'detail' = 'grid') 
                 isVisible.value = true
                 src.value = thumbUrl(assetId, size)
                 observer?.unobserve(entry.target)
+                // 修复（审查 P2-F7）：置空引用——该实例已不会再 observe 任何元素，
+                // 防止组件复用时误判"已有 observer 而跳过重建"
+                observer = null
               }
             }
           },
@@ -48,7 +50,7 @@ export function useLazyImage(assetId: number, size: 'grid' | 'detail' = 'grid') 
 
   onBeforeUnmount(() => observer?.disconnect())
 
-  return { isVisible, src, loaded, rootRef }
+  return { isVisible, src, rootRef }
 }
 
 /** 模糊占位图 URL（滚动时即时可见） */
