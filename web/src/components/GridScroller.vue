@@ -23,7 +23,7 @@
  *   totalRows   = ceil(总资产数 / 列数)
  *   scrollHeight ≈ totalRows * rowHeight  （这就是浏览器滚动条的长度）
  */
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onActivated, onMounted, ref, watch } from 'vue'
 import { useVirtualizer } from '@tanstack/vue-virtual'
 import { useAssetStore } from '../stores/assets'
 import { fetchDates } from '../api/client'
@@ -196,10 +196,27 @@ function observeWidth(): void {
 function onScroll(): void {
   const el = scrollEl.value
   if (!el) return
+  savedScrollTop = el.scrollTop // 持续记录：KeepAlive 恢复时写回
   if (el.scrollTop + el.clientHeight >= el.scrollHeight - 800) {
     void store.loadMore()
   }
 }
+
+/**
+ * KeepAlive 缓存（App.vue 对 GridView 启用 include）：
+ * 恢复 = 缓存激活（返回照片墙）时写回 savedScrollTop，并派发 scroll 事件让
+ * @tanstack/vue-virtual 与 onScroll 重新计算可视窗口与续载。
+ * 保存 = 不做"离开瞬间"捕获（实测路由切换时 DOM 已移出文档，读不到真值），
+ * 改为 onScroll 持续记录最后滚动位置（见 onScroll），任何时刻离开都有准确值。
+ */
+let savedScrollTop = 0
+onActivated(() => {
+  const el = scrollEl.value
+  if (!el) return
+  el.scrollTop = savedScrollTop
+  el.dispatchEvent(new Event('scroll'))
+  rowVirtualizer.value?.measure()
+})
 
 onMounted(async () => {
   observeWidth()

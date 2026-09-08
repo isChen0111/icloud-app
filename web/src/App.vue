@@ -79,9 +79,14 @@ onBeforeUnmount(() => window.clearTimeout(retryTimer))
       </button>
     </header>
 
-    <!-- 路由出口 -->
+    <!-- 路由出口：KeepAlive 仅缓存照片墙（返回详情页时保留滚动位置/已加载数据/搜索态），
+         详情页不缓存（大图 DOM 无需常驻） -->
     <main class="view-host">
-      <RouterView />
+      <RouterView v-slot="{ Component }">
+        <KeepAlive :include="['GridView']">
+          <component :is="Component" />
+        </KeepAlive>
+      </RouterView>
     </main>
   </div>
 </template>

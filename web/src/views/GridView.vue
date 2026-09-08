@@ -12,6 +12,9 @@
  *  - 结果用 flex-wrap 网格（最多 100 条，DOM 量小无需虚拟化），点击条目走同一详情路由。
  */
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
+
+/** 组件名：供 KeepAlive include 匹配（见 App.vue），缓存后返回详情页不重建照片墙 */
+defineOptions({ name: 'GridView' })
 import { searchAssets } from '../api/client'
 import GridScroller from '../components/GridScroller.vue'
 import GridItem from '../components/GridItem.vue'
