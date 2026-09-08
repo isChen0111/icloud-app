@@ -42,19 +42,21 @@ const viewportWidth = ref(0)
 
 /** 列数档位（3~9，对标 iCloud 实测的 columnCountMin=3 / Max=9 / 默认8） */
 const colCount = ref(8)
-const MIN_COLS = 3
-const MAX_COLS = 9
+const MIN_COLS = 4
+const MAX_COLS = 12
 
 /** 网格间距（px） */
 const GAP = 8
 /** 月份头行高度（px） */
 const MONTH_HEADER_H = 34
+/** .grid-row 水平 padding（两侧共 24px）；itemWidth 必须扣除，否则 12 列时行宽溢出容器 */
+const ROW_PAD = 24
 
-/** 计算格子宽度：容器宽减去所有间距后均分 */
+/** 计算格子宽度：容器宽减去行内 padding 与所有间距后均分 */
 const itemWidth = computed(() => {
   const w = viewportWidth.value
   if (w <= 0) return 200
-  return Math.max(80, Math.floor((w - (colCount.value - 1) * GAP) / colCount.value))
+  return Math.max(56, Math.floor((w - ROW_PAD - (colCount.value - 1) * GAP) / colCount.value))
 })
 
 /** 行高 = 格子宽 + 间距（方形缩略图） */
@@ -212,8 +214,12 @@ watch(
 const viewDateRange = computed(() => {
   const vs = rowVirtualizer.value?.getVirtualItems() ?? []
   if (vs.length === 0) return ''
-  const first = vs.find((v) => rows.value[v.index]?.type === 'asset')
-  const last = [...vs].reverse().find((v) => rows.value[v.index]?.type === 'asset')
+  // 过滤 overscan 预热行：只取与视口有交集的行（修复跨度比可视范围更旧）
+  const ch = scrollEl.value?.clientHeight ?? 0
+  const inView = ch > 0 ? vs.filter((v) => v.end > 0 && v.start < ch) : vs
+  if (inView.length === 0) return ''
+  const first = inView.find((v) => rows.value[v.index]?.type === 'asset')
+  const last = [...inView].reverse().find((v) => rows.value[v.index]?.type === 'asset')
   if (!first || !last) return currentMonthLabel.value
   const fRow = rows.value[first.index]
   const lRow = rows.value[last.index]
