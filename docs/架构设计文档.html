@@ -57,10 +57,10 @@
 <div class="wrap">
 
 <h1>本地 iCloud 照片浏览器 · 架构设计文档</h1>
-<p class="sub">实测数据规模：20,026 个文件 / 162.8GB（iPhone 源文件）｜ 入库资产：11,009（照片 3,781 + 实况 5,635 + 视频 1,593）｜ 目标：在本地还原 iCloud 网页端的浏览体验</p>
+<p class="sub">实测数据规模：20,025 个文件 / 162.8GB（iPhone 源文件）｜ 入库资产：12,591（照片 1,982 + 实况 7,434 + 视频 3,175）｜ 目标：在本地还原 iCloud 网页端的浏览体验</p>
 
 <div class="grid">
-  <div class="g stat"><div class="n">11,009</div><div class="l">媒体资产总数（已全量入库，实况照片合并计数）</div></div>
+  <div class="g stat"><div class="n">12,591</div><div class="l">媒体资产总数（已全量入库，实况照片合并计数）</div></div>
   <div class="g stat"><div class="n">3~9</div><div class="l">网格列数（滑块连续缩放范围，实测默认 8）</div></div>
   <div class="g stat"><div class="n">~168</div><div class="l">DOM 常驻网格节点（视口 + 缓冲区，实测 iCloud）</div></div>
   <div class="g stat"><div class="n">0.68s/25ms</div><div class="l">缩略图冷生成 / 热缓存耗时（本地实测）</div></div>
@@ -75,7 +75,7 @@
 <h3>1.1 照片墙网格：自研虚拟滚动 + 衍生图分级</h3>
 <table>
 <tr><th style="width:150px">机制</th><th>实测证据</th><th style="width:240px">对应设计启示</th></tr>
-<tr><td><b>虚拟滚动</b></td><td>滚动容器 <code>grid-scroll</code> 的 scrollHeight 达 240,255px（放大后 1,578,463px），但 DOM 中 <code>grid-item</code> 始终只有 ~168 个（视口内仅可见 24~36 个）。滚动跳转后立即读 DOM：items 不变、img 清空，随后按新位置重建。无 IntersectionObserver，滚动容器用自研窗口算法计算可见范围。</td><td>只渲染「视口 + overscan」，不渲染全部 1.2 万项</td></tr>
+<tr><td><b>虚拟滚动</b></td><td>滚动容器 <code>grid-scroll</code> 的 scrollHeight 达 240,255px（放大后 1,578,463px），但 DOM 中 <code>grid-item</code> 始终只有 ~168 个（视口内仅可见 24~36 个）。滚动跳转后立即读 DOM：items 不变、img 清空，随后按新位置重建。无 IntersectionObserver，滚动容器用自研窗口算法计算可见范围。</td><td>只渲染「视口 + overscan」，不渲染全部 1.3 万项</td></tr>
 <tr><td><b>定位方式</b></td><td><code>grid-item</code> 为 <code>position:absolute</code> + <code>transform: translate(x,y)</code>（实测 matrix 值），宽高像素级设置，父容器 <code>grid-items</code> 为 relative。</td><td>绝对定位 + transform 平移，避免回流</td></tr>
 <tr><td><b>列数 / 缩放</b></td><td>滑块拖动实测：8列120px → 5列201px → 3列346px；源码常量 <code>columnCountMin:3, columnCountMax:9, columnCountDefault:5</code>。网格总高随列数变化（240K→585K→1,578K px）。<b>关键：缩放全程未触发新的图片请求</b>——同一张衍生图复用。</td><td>缩放只改 CSS 布局与列数，不重载图片</td></tr>
 <tr><td><b>缩略图加载</b></td><td>缩略图类名 <code>DerivativeImage</code>，实际显示 120~346px，但 <code>naturalWidth ≈ 415px</code>。加载方式为 <b>XHR → blob → URL.createObjectURL → img.src</b>，请求打到 <code>cvws.icloud-content.com.cn/B/&lt;assetID&gt;/public.jpeg?o=&lt;签名&gt;&amp;v=1&amp;x=3&amp;a=&lt;鉴权&gt;</code>（签名带过期时间）。滚动到新区域触发 ~59 个并发 XHR。</td><td>单档 ~400px 缩略图覆盖全部网格缩放范围；本地可简化用 img 直连 + 磁盘缓存</td></tr>
@@ -127,7 +127,7 @@
 <tr><th>职责</th><th>选型</th><th>理由</th></tr>
 <tr><td>运行时</td><td><b>Node.js 20+ LTS + TypeScript</b></td><td>用户指定 Node；TS 保证 12k 资产模型的类型安全</td></tr>
 <tr><td>Web 框架</td><td><b>Fastify 5</b></td><td>性能好、内置 JSON Schema 校验、插件生态完善；如更熟 Express 也可（Express 的 res.sendFile 同样原生支持 Range）</td></tr>
-<tr><td>元数据数据库</td><td><b>better-sqlite3</b></td><td>同步 API 快、单文件零运维；1.2 万行完全够用；SQLite FTS5 可做搜索</td></tr>
+<tr><td>元数据数据库</td><td><b>better-sqlite3</b></td><td>同步 API 快、单文件零运维；1.3 万行完全够用；SQLite FTS5 可做搜索</td></tr>
 <tr><td>EXIF 提取</td><td><b>exifr</b></td><td>解析 HEIC/JPEG 的拍摄时间、GPS、方向、尺寸，支持分段读取大文件</td></tr>
 <tr><td>图像处理</td><td><b>sharp</b>（libvips）</td><td>生成 WebP 缩略图 4~5 倍于 ImageMagick。<b>注意（实测坑）</b>：sharp 官方预编译<b>不含 HEVC 解码插件</b>（HEIC 的 metadata 可读、转码报 <code>heif: No decoding plugin installed (11.6003)</code>），需配合 ffmpeg full 版解码，见 §9</td></tr>
 <tr><td>视频抽帧 / 转码</td><td><b>BtbN ffmpeg full 版 + fluent-ffmpeg</b></td><td>抽取视频封面帧；<b>同时承担 HEIC 解码</b>（full 构建含 libheif，实测 0.13s/张）。npm 的 ffmpeg-static 是精简版（无 heif demuxer），需用 scripts\install-ffmpeg-full.ps1 替换</td></tr>
@@ -142,30 +142,36 @@
 <tr><td>HEIC</td><td><code>IMG_1234.HEIC</code></td><td><code>IMG_1234_HEVC.MOV</code></td></tr>
 <tr><td>JPEG</td><td><code>IMG_1234.JPG</code></td><td><code>IMG_1234.MOV</code></td></tr>
 </table>
-<div class="note"><b>配对规则</b>：扫描时对每个文件计算「去后缀 + 去 _HEVC 后缀」后的基名，基名相同且一个为图片（HEIC/JPG/PNG…）一个为视频（MOV/MP4…）即配对为实况照片（iCloudPD 的 suffix 命名天然保证一一对应，<b>无时间差校验</b>）。视频不带静态帧配对的即为普通视频。</div>
+<div class="note"><b>配对规则</b>：扫描时对每个文件计算「去后缀 + 去 _HEVC 后缀」后的基名，<b>基名相同且位于同一目录内</b>且一个为图片（HEIC/JPG/PNG…）一个为视频（MOV/MP4…）即配对为实况照片（iCloudPD 的 suffix 命名天然保证一一对应，<b>无时间差校验</b>）。视频不带静态帧配对的即为普通视频。</div>
+
+<div class="callout"><b>⚠️ 跨目录同名文件坑（重要，2026-09-08 修复）</b><br>
+<b>现象</b>：iCloudPD 会把<b>不同设备 / 编辑版本</b>的同名文件（如 <code>IMG_0040</code>）按各自拍摄日期归档进<b>不同目录</b>——实测库中存在 <code>2018/02/04/IMG_0040.HEIC + IMG_0040_HEVC.MOV</code> 与 <code>2021/07/27/IMG_0040.MOV</code> 这类跨目录同名组（全库共 2,363 个基名分布在多个目录）。早期扫描按「文件名基名」配对，跨目录同名被合并成一组，代码只取 <code>videos[0]</code> 配对实况，<b>同组其余视频被静默丢弃</b>，且实况视频可能配到另一张同名照片上。<br>
+<b>实测影响</b>：磁盘 10,609 个视频文件只入库 7,228，<b>丢失 3,382 个视频</b>（含 1,799 个实况配对视频 + 1,582 个独立视频）；同时 1,799 张实况照片因跨目录被误记为普通照片。<br>
+<b>修复</b>：① 配对 key 从「文件名基名」改为「<b>目录 + 基名</b>」，配对只在同一目录内进行；② 增量扫描从「已入库直接跳过」改为「<b>复用现有元数据、仍执行 UPSERT 修正 type/live_video</b>」，保证重扫时旧数据能按新配对规则归位。<br>
+<b>重扫验证</b>：photo 1,982 + live 7,434 + video 3,175 = 12,591，与磁盘文件数精确一致（10,609 视频全部入库）；与 iCloud 网页端统计基本对齐（iCloud 照片 9,419 ≈ 本地 9,416，视频 3,033 ≈ 本地独立视频 3,175）。</div>
 
 <h3>3.3 入库流水线</h3>
 <div class="flow">
   <div class="step"><b>① 扫描</b>遍历目录树，按扩展名分类图片/视频</div>
   <div class="arrow">→</div>
-  <div class="step"><b>② 配对</b>基名匹配 + 时间校验，标记 live</div>
+  <div class="step"><b>② 配对</b>目录内基名匹配（无时间校验），标记 live</div>
   <div class="arrow">→</div>
   <div class="step"><b>③ 读元数据</b>exifr 提取时间/GPS/方向/尺寸；视频用 ffprobe 读时长</div>
   <div class="arrow">→</div>
-  <div class="step"><b>④ 入库</b>UPSERT 进 SQLite，记录文件路径与 checksum</div>
+  <div class="step"><b>④ 入库</b>UPSERT 进 SQLite，记录文件路径与实况配对关系</div>
   <div class="arrow">→</div>
   <div class="step"><b>⑤ 入队</b>生成缩略图 / 抽视频帧 / 按需转码</div>
 </div>
-<p class="muted">增量设计：以 <code>file_path</code> 为唯一键 UPSERT；checksum 变化视为新文件。首次全量扫描 1.2 万文件约几分钟（纯文件系统 IO），可后台运行并实时汇报进度。</p>
+<p class="muted">增量设计：以 <code>file_path</code> 为唯一键 UPSERT（无 checksum 比对）；<b>已入库文件复用现有元数据、仅修正 type/live_video</b>（配对规则变更后重扫即可生效，无需清库）。首次全量扫描约 2 万文件、几分钟（纯文件系统 IO），可后台运行并实时汇报进度。</p>
 
 <h3>3.4 缩略图流水线</h3>
 <p>参照 iCloud 的「档位 + 按需」模型，定义两档 + 一占位：</p>
 <table>
 <tr><th>档位</th><th>规格</th><th>用途</th><th>全量估算</th></tr>
-<tr><td><b>grid</b></td><td>最长边 320px，WebP q80</td><td>网格任意缩放级别复用（实测 iCloud 415px 档覆盖 120~346px）</td><td>~25KB/张 × 12,457 ≈ <b>0.3GB</b></td></tr>
+<tr><td><b>grid</b></td><td>最长边 320px，WebP q80</td><td>网格任意缩放级别复用（实测 iCloud 415px 档覆盖 120~346px）</td><td>~25KB/张 × 12,591 ≈ <b>0.31GB</b></td></tr>
 <tr><td><b>detail</b></td><td>最长边 1600px，WebP q82</td><td>详情页大图（对标 iCloud 2048 档，本地 1600 已足够）</td><td>~250KB/张 ≈ <b>3GB</b>（可仅按需生成最近浏览的）</td></tr>
 <tr><td><b>blur</b></td><td>20px 高斯模糊（或 thumbhash）</td><td>滚动时的即时占位</td><td>~1KB/张，可忽略</td></tr>
-<tr><td><b>video poster</b></td><td>ffmpeg 抽第 1 秒帧 → 320px WebP</td><td>视频缩略图</td><td>~60KB × 3,034 ≈ <b>0.18GB</b></td></tr>
+<tr><td><b>video poster</b></td><td>ffmpeg 抽第 1 秒帧 → 320px WebP</td><td>视频缩略图</td><td>~60KB × 3,175 ≈ <b>0.19GB</b></td></tr>
 </table>
 <p>生成策略：<b>懒生成 + 优先队列</b>。前端请求某张缩略图 → 后端查缓存未命中 → 生成并入磁盘缓存（ETag 缓存到浏览器）；首屏可视区请求的优先级最高。后台队列（p-queue 并发 8）持续预热，浏览到的区域现场生成（<b>实测冷生成 grid 0.68s / blur 0.41s，热缓存 25ms</b>）。同一资产并发请求用 <code>in-flight Map</code> 去重（只生成一次，防止并发写坏文件）。</p>
 
@@ -175,7 +181,7 @@
 <tr><th>策略</th><th>做法</th><th>评价</th></tr>
 <tr><td>A. 原片直出（推荐起步）</td><td><code>/api/video/:id/stream</code> 直接流式原 MOV + Range。前端 <code>&lt;video&gt;</code> 播放，若 <code>error</code> 事件（编码不支持）则提示装 HEVC 扩展或切转码版</td><td>零转码成本，先跑通</td></tr>
 <tr><td>B. 按需转码缓存（推荐最终态）</td><td>播放时检测编码：非 H.264 则后台任务用 ffmpeg 转 H.264（<code>-c:v libx264 -preset veryfast -crf 23</code>），产物存 <code>cache/transcoded/</code>，前端回退到 <code>/api/video/:id/stream?variant=h264</code></td><td>首次播放需等转码（可转 360p 预览先行）；有硬件编码（qsv/nvenc）可加速</td></tr>
-<tr><td>C. 全量预转码</td><td>入库后后台批量转全部 3,034 个视频</td><td>150GB 原片转码耗时数小时~天级，资源消耗大；不推荐首版</td></tr>
+<tr><td>C. 全量预转码</td><td>入库后后台批量转全部 3,175 个视频</td><td>150GB 原片转码耗时数小时~天级，资源消耗大；不推荐首版</td></tr>
 </table>
 <p><b>实况照片视频</b>同样走此通道（HEVC 兼容问题一致）；由于实况视频通常仅 2~5 秒，按需转码极快，体验无损。</p>
 
@@ -344,8 +350,9 @@ F:\iPhone\icloud-app\
 <tr><td><span class="tag green">P1 还原体验</span></td><td>缩放滑块（3~9 列）+ 详情邻居预加载 + 实况照片（按住播放）+ blur 占位 + hash 深链 + 键盘切换 + 日期分组定位（月份头行 + 吸顶月份指示器 + 右侧月份快速定位条）</td><td>对标 iCloud 交互：缩放不闪、详情秒开、实况按住即动、点月份直达该月首行</td><td><span class="tag green">✅ 已验收</span><br><span class="tag orange">剩 1 项待做</span>：内存 LRU（本地场景收益低，可后置）</td></tr>
 <tr><td><span class="tag orange">P2 增强</span></td><td>搜索（FTS5 trigram：文件名/日期子串）<span class="tag green" style="margin-left:6px">✅ 已验收</span><br><span class="muted">用户已决定不做：HEVC 按需转码缓存（本机 Chrome 已直出）/ 收藏 / 最近删除 / 下载原片 / 批量选择（本地原文件齐全，云管理类功能无必要）</span></td><td>全平台视频可播；功能完整自用</td><td><span class="tag green">✅ 已完成（范围收缩）</span></td></tr>
 <tr><td><span class="tag blue">稳定化（2026-09-08）</span></td><td>代码审查 P1×5 + P2×7 共 12 项问题全部修复：stats 异步体积统计+落盘缓存（首屏 229ms）、原图宽高 11,009 条全量修正（fix-size）、EXIF 方向缩略图重建（fix-thumbs 103 张）、浏览器缩略图缓存失效链路（thumbUrl rev 版本号 + 响应头去 immutable）、实况按住播放带原声 + id 变化重置 + 静音兜底、详情/搜索竞态守卫、扫描断点续跑容错</td><td>全量回归通过（网格/详情/实况/视频/搜索/日期定位）；git 私有仓库 + GitHub 远程（isChen0111/icloud-app），每次修复提交推送</td><td><span class="tag green">✅ 已验收</span></td></tr>
+<tr><td><span class="tag blue">扫描配对修复（2026-09-08 二次）</span></td><td><b>跨目录同名文件坑</b>（详见 §3.2 callout）：iCloudPD 把同名文件（不同设备/编辑版本）归档进不同日期目录，早期按「文件名基名」配对导致实况配对错乱、3,382 个视频被静默丢弃。修复：配对 key 改为「目录 + 基名」+ 增量扫描复用元数据仅修正 type/live_video。重扫后 11,009 → 12,591 资产（photo 1,982 / live 7,434 / video 3,175），与磁盘文件精确一致；与 iCloud 统计基本对齐（照片 9,416≈9,419，视频 3,175≈3,033）</td><td>全量重扫完成；实况配对跨目录 0、live 配对视频磁盘缺失 0、video 文件磁盘缺失 0；缩略图缓存孤儿 0</td><td><span class="tag green">✅ 已修复</span></td></tr>
 <tr><td><span class="tag blue">P2+-1 同步与热更新（已纳入计划）</span></td><td>一键拉取同步：前端按钮 → 后端 spawn <b>icloudpd 官方 exe</b>（<code>icloudpd-1.32.3-windows-amd64.exe</code>，14.4MB，<b>免 Python</b>，已核验官方 Release 提供；<b>已定 exe 方案</b>——exe 由首次启动脚本自动下载到 <code>iCloudTool\bin\</code>，gitignore 排除不入仓库，完全离线可用）。<br>目录热监听：chokidar 监听 <code>iCloudPhoto/</code> 增删 → 增量入库/出库 + 新缩略图入队。<br>删除同步：scanner 增加「目录文件集合 vs DB 集合」对比（当前<b>只增不删</b>，本地删文件后 DB 记录残留会 404）。<br>冷启动增量：启动时对比「目录文件数 vs 库记录数」，不一致自动增量扫描 → 手动拷入的文件开机即被发现</td><td>点按钮自动拉取→增量入库→缩略图生成；手动拷文件重启即同步；删文件后列表消失</td><td><span class="tag orange">待开发</span><br><span class="muted">前置：实现「同步完成 → 前端失效 KeepAlive 照片墙缓存」（见 §4.7）</span></td></tr>
-<tr><td><span class="tag blue">P2+-2 冷启动体验（已纳入计划）</span></td><td>顶部状态栏轮询 <code>/api/stats</code>：扫描中显示「正在准备照片库：已扫描 x/20026 · 已找到 y 个资产」进度；缩略图预热显示「生成中 N（可先浏览，未生成的现场补）」；扫描是分批写库，前端轮询到新数据即刷新 → 照片墙<b>边扫边出现</b>，不用干等</td><td>首次启动不再白屏等待：进度可见、部分可浏览</td><td><span class="tag orange">待开发</span></td></tr>
+<tr><td><span class="tag blue">P2+-2 冷启动体验（已纳入计划）</span></td><td>顶部状态栏轮询 <code>/api/stats</code>：扫描中显示「正在准备照片库：已扫描 x/20025 · 已找到 y 个资产」进度；缩略图预热显示「生成中 N（可先浏览，未生成的现场补）」；扫描是分批写库，前端轮询到新数据即刷新 → 照片墙<b>边扫边出现</b>，不用干等</td><td>首次启动不再白屏等待：进度可见、部分可浏览</td><td><span class="tag orange">待开发</span></td></tr>
 <tr><td><span class="tag gray">P2+-3 语义搜索（已评估，暂缓）</span></td><td>语义搜索（人物/地点/场景任意组合，如「邓州 2023 年 陈咏新」）：<b>不连大模型</b>——face-api.js + tfjs-node 本地人脸检测/embedding → 特征聚类成 person → 一次性命名；地点/场景由 EXIF GPS（逆地理作为语义搜索的组成部分）+ 标签表补充；查询解析器把「时间/地点/人物」分词组合检索。视频抽帧入人脸库。语义标签写入独立 asset_tags 表（<b>不写文件元数据</b>，避免污染原片）</td><td>搜索"陈咏新" / "1岁的陈咏新" / "邓州2023年陈咏新" 命中正确子集</td><td><span class="tag gray">⏸ 用户已确认暂缓</span></td></tr>
 <tr><td><span class="tag gray">P2+-4 详情缓存治理（可选项，已列入）</span></td><td>detail 档大图（~250KB/张，全浏览约 2.7GB）是永久缓存无自动清理。两个可选治理：<b>① 保留最近 N 个月浏览过的 detail 图</b>——按 detail 档的最近访问时间（新增字段或 mtime）定期清理更旧的缓存；<b>② 一键清空 detail 缓存</b>——前端按钮/脚本删 <code>server/cache/thumbs/detail/</code>，下次浏览按需重新生成。grid/blur 档体积小（~0.3GB）不在治理范围</td><td>detail 缓存体积可控；清空后浏览正常（懒生成自动重建）</td><td><span class="tag orange">已列入，待排期</span></td></tr>
 </table>
@@ -360,10 +367,10 @@ F:\iPhone\icloud-app\
 <h2>7. 性能预算（估算口径）</h2>
 <table>
 <tr><th>项</th><th>估算</th><th>说明</th></tr>
-<tr><td>grid 缩略图全量缓存</td><td><b>~0.3GB</b></td><td>320px WebP ≈ 25KB × 12,457；若用 45KB 上限则 ~0.55GB</td></tr>
+<tr><td>grid 缩略图全量缓存</td><td><b>~0.31GB</b></td><td>320px WebP ≈ 25KB × 12,591；若用 45KB 上限则 ~0.55GB</td></tr>
 <tr><td>detail 缩略图全量</td><td><b>~3GB</b></td><td>1600px WebP ≈ 250KB；建议只按需生成近期浏览，磁盘充足可全量</td></tr>
-<tr><td>视频封面帧</td><td><b>~0.18GB</b></td><td>≈ 60KB × 3,034</td></tr>
-<tr><td>首次全量入库</td><td><b>5~15 分钟</b></td><td>1.2 万文件扫描 + EXIF（并发 8）</td></tr>
+<tr><td>视频封面帧</td><td><b>~0.19GB</b></td><td>≈ 60KB × 3,175</td></tr>
+<tr><td>首次全量入库</td><td><b>5~15 分钟</b></td><td>约 2 万文件扫描 + EXIF（并发 8）</td></tr>
 <tr><td>缩略图全量预热</td><td><b>10~30 分钟</b></td><td>sharp 每张 50~150ms，并发 4~6；可后台跑，首屏按需不影响</td></tr>
 <tr><td>前端内存占用</td><td><b>&lt; 500MB 可控</b></td><td>blob LRU 上限 300MB；虚拟滚动 DOM 节点 ~200 个</td></tr>
 <tr><td>视频拖动响应</td><td><b>即时</b></td><td>Range 请求 + 本地磁盘，seek 延迟毫秒级</td></tr>
@@ -374,7 +381,7 @@ F:\iPhone\icloud-app\
 <tr><th>风险</th><th>影响</th><th>对策</th></tr>
 <tr><td>HEVC 视频在 Windows Chrome 无法播放</td><td>部分视频黑屏</td><td>本机实测可播（策略 A 原片直出）；他机缺失 HEVC 扩展时按需转码 H.264（3.5 节策略 B）</td></tr>
 <tr><td>sharp 官方预编译缺 HEVC-HEIC 解码插件</td><td>HEIC 缩略图生成失败（<b>已触发并解决</b>）</td><td>BtbN ffmpeg full 版（libheif）解码 → sharp 缩放；脚本固化进 postinstall（见 §9）</td></tr>
-<tr><td>1.2 万项首次全量生成时间长</td><td>浏览初期缩略图缺失</td><td>懒生成 + 后台队列（并发 8）+ in-flight 去重；冷生成 0.68s 现场兜底，热缓存 25ms</td></tr>
+<tr><td>1.3 万项首次全量生成时间长</td><td>浏览初期缩略图缺失</td><td>懒生成 + 后台队列（并发 8）+ in-flight 去重；冷生成 0.68s 现场兜底，热缓存 25ms</td></tr>
 <tr><td>浏览器 blob 对象堆积</td><td>内存涨、卡顿</td><td>LRU 上限 + 卸载视口外 blob（revokeObjectURL）；本地直接用 img + HTTP 缓存，blob 场景少</td></tr>
 <tr><td>目录变更（新增/删除照片）</td><td>数据过期</td><td>启动扫描 + 手动重扫按钮（POST /api/scan）；可选 chokidar 热监听</td></tr>
 <tr><td>原片误删</td><td>数据丢失</td><td>后端对原文件目录只读；删除操作仅移动至「最近删除」</td></tr>
