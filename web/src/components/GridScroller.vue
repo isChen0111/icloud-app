@@ -38,8 +38,8 @@ const scrollEl = ref<HTMLElement | null>(null)
 /** 容器当前宽度（ResizeObserver 维护） */
 const viewportWidth = ref(0)
 
-/** 列数档位（3~9，对标 iCloud 实测的 columnCountMin=3 / Max=9 / 默认5） */
-const colCount = ref(5)
+/** 列数档位（3~9，对标 iCloud 实测的 columnCountMin=3 / Max=9 / 默认8） */
+const colCount = ref(8)
 const MIN_COLS = 3
 const MAX_COLS = 9
 
@@ -233,7 +233,7 @@ watch(
     <!-- 顶部控制条：日期导航按钮 + 缩放滑块（对标 iCloud 顶部工具栏） -->
     <div class="toolbar">
       <!-- 方案 C：日期导航入口（复刻 iCloud 左上角导航按钮） -->
-      <button class="date-nav-btn" title="按日期跳转" @click="dateNavOpen = true">
+      <button class="date-nav-btn" title="按日期跳转" @click="dateNavOpen = !dateNavOpen">
         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden="true">
           <rect x="3" y="4" width="18" height="17" rx="2" stroke="currentColor" stroke-width="1.8" />
           <path d="M3 9h18M8 2v4M16 2v4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" />
@@ -324,10 +324,10 @@ watch(
   gap: 12px;
   padding: 10px 16px;
   flex-shrink: 0;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  border-bottom: 1px solid var(--border);
 }
-.label { font-size: 12px; color: #f5f5f7; }
-.dim { color: rgba(245, 245, 247, 0.55); }
+.label { font-size: 12px; color: var(--text-1); }
+.dim { color: var(--text-2); }
 .spacer { flex: 1; }
 .slider { width: 180px; accent-color: #0a84ff; }
 
@@ -337,8 +337,8 @@ watch(
   align-items: center;
   gap: 6px;
   border: none;
-  background: rgba(255, 255, 255, 0.08);
-  color: #f5f5f7;
+  background: var(--bg-field);
+  color: var(--text-1);
   font-size: 12px;
   font-weight: 600;
   padding: 6px 12px;
@@ -347,7 +347,7 @@ watch(
   font-family: inherit;
   transition: background 0.15s;
 }
-.date-nav-btn:hover { background: rgba(255, 255, 255, 0.16); }
+.date-nav-btn:hover { background: var(--bg-field-hover); }
 
 /* 吸顶月份指示器 */
 .month-sticky {
@@ -359,9 +359,9 @@ watch(
   flex-shrink: 0;
   font-size: 13px;
   font-weight: 600;
-  color: #f5f5f7;
-  background: rgba(18, 18, 20, 0.9);
-  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  color: var(--text-1);
+  background: var(--bg-float);
+  border-bottom: 1px solid var(--border);
   backdrop-filter: blur(8px);
   z-index: 3;
 }
@@ -379,7 +379,7 @@ watch(
   overflow-x: hidden;
   overscroll-behavior: contain;
   scrollbar-width: thin;
-  scrollbar-color: rgba(255, 255, 255, 0.3) transparent;
+  scrollbar-color: var(--text-2) transparent;
 }
 
 /* 月份头行：随行滚动（不吸顶，吸顶的是顶部指示器） */
@@ -396,7 +396,7 @@ watch(
 .month-label {
   font-size: 12px;
   font-weight: 600;
-  color: rgba(245, 245, 247, 0.75);
+  color: var(--text-2);
 }
 
 .grid-row {

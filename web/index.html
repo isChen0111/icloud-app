@@ -4,14 +4,98 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>本地照片</title>
+    <script>
+      /* 首屏防闪烁：在 CSS 生效前根据上次选择设置主题属性（默认深色）。
+         避免 JS 主包加载后才切主题导致的"先深后浅"闪白/闪黑。 */
+      try {
+        document.documentElement.dataset.theme =
+          localStorage.getItem('icloud-app-theme') === 'dark' ? 'dark' : 'light'
+      } catch (e) {
+        document.documentElement.dataset.theme = 'dark'
+      }
+    </script>
     <style>
-      /* 全局基础样式：仿 iCloud 的深色沉浸式照片浏览背景 */
+      /* ============ 主题变量（深/浅两套，运行时通过 [data-theme] 切换） ============
+         语义说明：
+           bg-page        页面背景
+           bg-topbar      顶栏背景（毛玻璃）
+           bg-float       吸顶条/悬浮层背景（毛玻璃）
+           bg-panel       日期面板等卡片背景
+           bg-field       输入框/按钮底色
+           bg-field-hover 输入框聚焦/按钮 hover 底色（更实）
+           bg-hover       通用 hover 底色
+           bg-hover-strong 更强的 hover（清除按钮等）
+           bg-active      选中高亮底色（accent 的浅色铺底）
+           bg-meta        卡片内信息条底色（极淡）
+           text-1         主文字
+           text-2         次级文字
+           text-3         弱化文字/placeholder
+           border         分隔线/描边
+           accent         品牌强调色（两主题共用 #0a84ff）
+           shadow         卡片投影
+      */
+      :root {
+        --bg-page: #f5f5f7;
+        --bg-topbar: rgba(255, 255, 255, 0.72);
+        --bg-float: rgba(255, 255, 255, 0.92);
+        --bg-panel: #ffffff;
+        --bg-field: rgba(0, 0, 0, 0.06);
+        --bg-field-hover: rgba(0, 0, 0, 0.1);
+        --bg-hover: rgba(0, 0, 0, 0.06);
+        --bg-hover-strong: rgba(0, 0, 0, 0.12);
+        --bg-active: rgba(10, 132, 255, 0.14);
+        --bg-meta: rgba(0, 0, 0, 0.03);
+        --text-1: #1d1d1f;
+        --text-2: rgba(0, 0, 0, 0.55);
+        --text-3: rgba(0, 0, 0, 0.45);
+        --border: rgba(0, 0, 0, 0.1);
+        --accent: #0a84ff;
+        --shadow: 0 12px 32px rgba(0, 0, 0, 0.18);
+      }
+      :root[data-theme='dark'] {
+        --bg-page: #1d1d1f;
+        --bg-topbar: rgba(0, 0, 0, 0.35);
+        --bg-float: rgba(18, 18, 20, 0.9);
+        --bg-panel: #1c1c1f;
+        --bg-field: rgba(255, 255, 255, 0.08);
+        --bg-field-hover: rgba(255, 255, 255, 0.12);
+        --bg-hover: rgba(255, 255, 255, 0.1);
+        --bg-hover-strong: rgba(255, 255, 255, 0.2);
+        --bg-active: rgba(10, 132, 255, 0.22);
+        --bg-meta: rgba(255, 255, 255, 0.04);
+        --text-1: #f5f5f7;
+        --text-2: rgba(245, 245, 247, 0.55);
+        --text-3: rgba(245, 245, 247, 0.4);
+        --border: rgba(255, 255, 255, 0.08);
+        --accent: #0a84ff;
+        --shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+      }
+      :root[data-theme='light'] {
+        --bg-page: #f5f5f7;
+        --bg-topbar: rgba(255, 255, 255, 0.72);
+        --bg-float: rgba(255, 255, 255, 0.92);
+        --bg-panel: #ffffff;
+        --bg-field: rgba(0, 0, 0, 0.06);
+        --bg-field-hover: rgba(0, 0, 0, 0.1);
+        --bg-hover: rgba(0, 0, 0, 0.06);
+        --bg-hover-strong: rgba(0, 0, 0, 0.12);
+        --bg-active: rgba(10, 132, 255, 0.14);
+        --bg-meta: rgba(0, 0, 0, 0.03);
+        --text-1: #1d1d1f;
+        --text-2: rgba(0, 0, 0, 0.55);
+        --text-3: rgba(0, 0, 0, 0.45);
+        --border: rgba(0, 0, 0, 0.1);
+        --accent: #0a84ff;
+        --shadow: 0 12px 32px rgba(0, 0, 0, 0.18);
+      }
+
+      /* 全局基础样式：背景/文字跟随主题变量 */
       html, body, #app {
         margin: 0;
         padding: 0;
         height: 100%;
-        background: #1d1d1f;
-        color: #f5f5f7;
+        background: var(--bg-page);
+        color: var(--text-1);
         font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
         overflow: hidden;
       }

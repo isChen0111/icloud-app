@@ -166,11 +166,11 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   width: 600px;
-  background: #1c1c1f;
-  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
   border-radius: 12px;
   overflow: hidden;
-  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+  box-shadow: var(--shadow);
 }
 
 /* 面板头 */
@@ -180,17 +180,17 @@ onUnmounted(() => {
   justify-content: space-between;
   padding: 10px 14px;
   flex-shrink: 0;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  border-bottom: 1px solid var(--border);
 }
 .dn-title {
   font-size: 13px;
   font-weight: 600;
-  color: #f5f5f7;
+  color: var(--text-1);
 }
 .dn-close {
   border: none;
-  background: rgba(255, 255, 255, 0.08);
-  color: #f5f5f7;
+  background: var(--bg-field);
+  color: var(--text-1);
   font-size: 15px;
   line-height: 1;
   width: 24px;
@@ -200,7 +200,7 @@ onUnmounted(() => {
   font-family: inherit;
   transition: background 0.15s;
 }
-.dn-close:hover { background: rgba(255, 255, 255, 0.18); }
+.dn-close:hover { background: var(--bg-field-hover); }
 
 /* 主体：左右两栏 */
 .dn-body {
@@ -213,18 +213,18 @@ onUnmounted(() => {
   width: 84px;
   flex-shrink: 0;
   overflow-y: auto; /* 年份最多 11 个，正常不滚动；超长时防御 */
-  border-right: 1px solid rgba(255, 255, 255, 0.08);
+  border-right: 1px solid var(--border);
   padding: 8px 6px;
   display: flex;
   flex-direction: column;
   gap: 1px;
   scrollbar-width: thin;
-  scrollbar-color: rgba(255, 255, 255, 0.2) transparent;
+  scrollbar-color: var(--text-2) transparent;
 }
 .dn-year {
   border: none;
   background: transparent;
-  color: rgba(245, 245, 247, 0.6);
+  color: var(--text-2);
   font-size: 12px;
   font-weight: 600;
   text-align: left;
@@ -235,11 +235,11 @@ onUnmounted(() => {
   transition: background 0.15s, color 0.15s;
 }
 .dn-year:hover {
-  background: rgba(255, 255, 255, 0.08);
-  color: #f5f5f7;
+  background: var(--bg-hover);
+  color: var(--text-1);
 }
 .dn-year.active {
-  background: rgba(10, 132, 255, 0.22);
+  background: var(--bg-active);
   color: #fff;
 }
 
@@ -253,7 +253,7 @@ onUnmounted(() => {
   margin: 0 0 9px;
   font-size: 17px;
   font-weight: 700;
-  color: #f5f5f7;
+  color: var(--text-1);
 }
 
 /* 固定 4 列网格；最多 12 个月 = 3 行，自然撑高不溢出 */
@@ -270,12 +270,12 @@ onUnmounted(() => {
   overflow: hidden;
   cursor: pointer;
   text-align: left;
-  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.12);
+  box-shadow: 0 0 0 1px var(--border);
   transition: transform 0.15s, box-shadow 0.15s;
 }
 .dn-month:hover {
   transform: scale(1.04);
-  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.55);
+  box-shadow: 0 0 0 2px var(--text-2);
 }
 .dn-month.active {
   box-shadow: 0 0 0 2px #0a84ff;
@@ -291,20 +291,20 @@ onUnmounted(() => {
   align-items: baseline;
   justify-content: space-between;
   padding: 5px 7px;
-  background: rgba(255, 255, 255, 0.04);
+  background: var(--bg-meta);
 }
 .dn-month-name {
   font-size: 12px;
   font-weight: 600;
-  color: #f5f5f7;
+  color: var(--text-1);
 }
 .dn-month-count {
   font-size: 10px;
-  color: rgba(245, 245, 247, 0.5);
+  color: var(--text-2);
 }
 .dn-empty {
   padding: 20px;
-  color: rgba(245, 245, 247, 0.4);
+  color: var(--text-3);
   font-size: 12px;
   grid-column: 1 / -1;
   text-align: center;
