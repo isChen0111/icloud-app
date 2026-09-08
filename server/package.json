@@ -9,6 +9,7 @@
     "start": "tsx src/index.ts",
     "scan": "tsx src/cli-scan.ts",
     "fix-size": "tsx scripts/fix-asset-size.ts",
+    "fix-thumbs": "tsx scripts/rebuild-orientation-thumbs.ts",
     "postinstall": "powershell -ExecutionPolicy Bypass -File scripts/install-ffmpeg-full.ps1"
   },
   "dependencies": {
