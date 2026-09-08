@@ -77,9 +77,9 @@ export function videoStreamUrl(id: number): string {
   return `${BASE}/video/${id}/stream`
 }
 
-/** 视频封面 URL */
-export function videoPosterUrl(id: number): string {
-  return `${BASE}/video/${id}/poster`
+/** 视频封面 URL（size=detail 用于详情页播放前的大封面，默认 grid 用于网格） */
+export function videoPosterUrl(id: number, size: ThumbSize = 'grid'): string {
+  return `${BASE}/video/${id}/poster?size=${size}`
 }
 
 /** 给对象 URL 加防缓存参数（本地 dev 调试用，生产可去掉） */

@@ -70,10 +70,17 @@ export async function registerThumbRoutes(app: FastifyInstance): Promise<void> {
       .send(fs.createReadStream(outPath))
   })
 
-  // 视频封面帧 = 视频的 grid 缩略图（生成路径里对 video 自动走 ffmpeg 抽帧）
+  // 视频封面帧 = 视频缩略图（生成路径里对 video 自动走 ffmpeg 抽帧）
+  // size 参数（修复：详情页播放前封面小——poster 默认 grid 档 320px，在详情舞台
+  // 只有 180x320 一小块；传 size=detail 抽 1600px 帧，播放前显示清晰大封面）
   app.get('/api/video/:id/poster', async (req, reply) => {
     const { id } = req.params as { id: string }
-    const outPath = await ensureThumbnail(Number(id), 'grid')
+    const query = req.query as { size?: string }
+    const size = (query.size ?? 'grid') as ThumbSize
+    if (!VALID_SIZES.has(size)) {
+      return reply.code(400).send({ error: `size must be one of: ${[...VALID_SIZES].join(',')}` })
+    }
+    const outPath = await ensureThumbnail(Number(id), size)
     if (!outPath || !fs.existsSync(outPath)) return reply.code(404).send({ error: 'poster not found' })
     return reply.type('image/webp').send(fs.createReadStream(outPath))
   })

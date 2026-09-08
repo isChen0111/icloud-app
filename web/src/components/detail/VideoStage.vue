@@ -17,7 +17,7 @@ const props = defineProps<{ id: number }>()
     <video
       class="player"
       :src="videoStreamUrl(props.id)"
-      :poster="videoPosterUrl(props.id)"
+      :poster="videoPosterUrl(props.id, 'detail')"
       controls
       playsinline
       preload="metadata"
@@ -35,8 +35,11 @@ const props = defineProps<{ id: number }>()
   justify-content: center;
 }
 .player {
-  max-width: 100%;
-  max-height: 100%;
+  /* 铺满舞台：poster 未加载视频流时也按舞台尺寸 contain 显示（修复播放前小图）；
+     播放后视频同样 contain，不裁切 */
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
   outline: none;
   border-radius: 4px;
   background: #000;
