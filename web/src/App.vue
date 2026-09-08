@@ -52,7 +52,7 @@ onBeforeUnmount(() => window.clearTimeout(retryTimer))
   <div class="app-shell">
     <!-- 顶栏：轻量信息条 + 主题切换 -->
     <header class="topbar">
-      <span class="brand">本地照片</span>
+      <span class="brand">iCloud本地照片</span>
       <span v-if="stats" class="stat">
         {{ stats.photos + stats.livePhotos }} 张照片 · {{ stats.videos }} 个视频
         <span v-if="stats.thumbQueue > 0" class="queue-hint">（缩略图生成中 {{ stats.thumbQueue }}）</span>
