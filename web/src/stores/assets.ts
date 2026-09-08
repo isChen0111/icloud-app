@@ -1,114 +1,103 @@
 /**
- * Pinia Store：资产分页缓存
+ * Pinia Store：资产区间缓存（照片墙「全量骨架 + 按需加载」的数据层）
  *
- * 设计目标（对标 iCloud 的"滚动即加载、回头不重拉"）：
- * 1. 分页游标翻页：滚动到底部自动拉下一页
- * 2. 已加载的页用 Map 缓存（id → 资产），重访同一段不重新请求
- * 3. 网格渲染时先查本地缓存，命中则秒出；miss 才发请求
+ * 设计背景（C 方案：滚动条 = 全库精确高度，跳转后上下自由）：
+ * 照片墙的总行数/总高度可由「月份分组 + 列数」精确预计算（见 GridScroller），
+ * 滚动条因此覆盖整个库；本 store 负责「按需拉取任意全局位置区间」并缓存：
+ *
+ *   1. 缓存按「页」组织：全局倒序流以 PAGE 条为一页，页起点为键
+ *      （页起点恒为 PAGE 的整数倍，任意区间请求都能复用到整页）
+ *   2. getRange(start, end)：命中返回数组；缺页返回 null（网格渲染占位骨架）
+ *   3. ensureRange(start, end)：缺页则发起请求（幂等 + 加载中去重，滚动风暴安全）
+ *   4. 跳转 = 设置目标位置后滚动到对应行，可视区自动触发 ensureRange，
+ *      不再需要「重置 items + 归零」的旧模型
  */
 import { defineStore } from 'pinia'
-import { ref } from 'vue'
+import { computed, reactive, ref } from 'vue'
 import { fetchAssets } from '../api/client'
-import type { AssetDto } from '../types'
+import type { AssetDto, MonthGroup } from '../types'
+
+/** 缓存页大小（条）。越大越省请求但首屏越重；120 与旧分页一致 */
+const PAGE = 120
 
 export const useAssetStore = defineStore('assets', () => {
-  /** 已加载的全部资产（按列表顺序，id 为键做缓存） */
-  const items = ref<AssetDto[]>([])
-  /** 是否还有下一页 */
-  const hasMore = ref(true)
-  /** 下一页游标 */
-  const nextCursor = ref<string | null>(null)
+  /** 月份分组（倒序：最新在前），来自 /api/dates；骨架/总数/跳转定位的数据源 */
+  const months = ref<MonthGroup[]>([])
+  /** 全库资产总数（= Σ months.count；照片墙「共 N 项」与骨架行数用） */
+  const totalCount = computed(() => months.value.reduce((s, m) => s + m.count, 0))
+
+  /** 页缓存：key = 页全局起点（PAGE 整数倍），value = 该页资产（倒序流切片） */
+  const pages = reactive(new Map<number, AssetDto[]>())
+  /** 加载中的页起点集合（并发去重：同页只发一个请求） */
+  const pageLoading = reactive(new Set<number>())
+  /** 是否有任一请求进行中（工具栏「加载中…」提示） */
   const loading = ref(false)
-  /** 是否已完整加载（网格总高度计算用） */
-  const exhausted = ref(false)
-  /** items[0] 在全局倒序流中的位置（滚动续载时恒为 0；日期跳转后为该月偏移） */
-  const baseOffset = ref(0)
-  /** 跳转期间被再次点击的目标偏移（连点合并：跳完一个接着跳最新目标） */
-  const pendingOffset = ref<number | null>(null)
+  /** 失败页起点集合（请求失败后静默，滚动离开再回来会重试） */
+  const failed = reactive(new Set<number>())
 
-  /** 首次加载或重置 */
+  /** 当前已加载资产数（调试信息） */
+  const loadedCount = computed(() => {
+    let n = 0
+    for (const arr of pages.values()) n += arr.length
+    return n
+  })
+
+  /** 初始化月份分组（首次进入照片墙时由 GridScroller 调用） */
+  function initMonths(list: MonthGroup[]): void {
+    if (list.length > 0) months.value = list
+  }
+
+  /** 取 [start, end) 区间的资产；缺页返回 null（调用方渲染占位并调 ensureRange） */
+  function getRange(start: number, end: number): AssetDto[] | null {
+    const out: AssetDto[] = []
+    for (let p = Math.floor(start / PAGE) * PAGE; p < end; p += PAGE) {
+      const arr = pages.get(p)
+      if (!arr) return null // 任缺一页 → 整体视为未加载
+      const from = Math.max(0, start - p)
+      const to = Math.min(arr.length, end - p)
+      if (from < to) out.push(...arr.slice(from, to))
+    }
+    return out
+  }
+
+  /** 确保 [start, end) 区间已加载：缺页发起请求（幂等；已加载/加载中/失败重试均处理） */
+  function ensureRange(start: number, end: number): void {
+    const need: number[] = []
+    for (let p = Math.floor(start / PAGE) * PAGE; p < end; p += PAGE) {
+      if (!pages.has(p) && !pageLoading.has(p)) need.push(p)
+    }
+    if (need.length === 0) return
+    loading.value = true
+    for (const p of need) {
+      pageLoading.add(p)
+      fetchAssets({ offset: p, limit: PAGE })
+        .then((res) => {
+          pages.set(p, res.items)
+          failed.delete(p)
+        })
+        .catch(() => failed.add(p))
+        .finally(() => {
+          pageLoading.delete(p)
+          if (pageLoading.size === 0) loading.value = false
+        })
+    }
+  }
+
+  /** 首次加载：拉第 0 页（照片墙顶部 = 最新） */
   async function loadFirstPage(): Promise<void> {
-    if (items.value.length > 0) return
-    await loadMore()
-  }
-
-  /** 拉取下一页（幂等：loading 时忽略；游标无缝续载） */
-  async function loadMore(): Promise<void> {
-    if (loading.value || !hasMore.value) return
-    loading.value = true
-    try {
-      const page = await fetchAssets({ cursor: nextCursor.value })
-      items.value.push(...page.items)
-      nextCursor.value = page.nextCursor
-      hasMore.value = page.nextCursor !== null
-      if (!page.nextCursor) exhausted.value = true
-    } finally {
-      loading.value = false
-      // 加载期间用户点了月份定位条 → 补执行跳转（否则 loading 解锁后跳转丢失）
-      void drainPendingJump()
-    }
-  }
-
-  /**
-   * 跳到全局 offset 位置（日期快速定位）。
-   * 后端保证「该页以目标月第一资产开头」，所以跳转后 items[0] 即目标月首条，
-   * 网格把滚动位置归零即可让月份头出现在顶部。
-   *
-   * 修复（审查 P1-⑤）：旧实现 loading 时直接 return，快速连点两个月只会
-   * 跳第一个。现在 loading 期间的新目标记入 pendingOffset，当前跳转完成后
-   * 自动续跳，最终 await 返回时已位于最新目标月。
-   */
-  async function jumpToOffset(offset: number): Promise<void> {
-    if (loading.value) {
-      pendingOffset.value = offset
-      return
-    }
-    loading.value = true
-    try {
-      while (true) {
-        const page = await fetchAssets({ offset })
-        items.value = page.items
-        baseOffset.value = offset
-        nextCursor.value = page.nextCursor
-        hasMore.value = page.nextCursor !== null
-        exhausted.value = page.nextCursor === null
-        // 跳转期间又被点了月份 → 用最新目标继续跳（连点合并）
-        if (pendingOffset.value !== null) {
-          offset = pendingOffset.value
-          pendingOffset.value = null
-          continue
-        }
-        break
-      }
-    } finally {
-      loading.value = false
-    }
-  }
-
-  /** 补执行 pending 的跳转（由 loadMore/jumpToOffset 完成时调用） */
-  async function drainPendingJump(): Promise<void> {
-    const target = pendingOffset.value
-    if (target === null) return
-    pendingOffset.value = null
-    await jumpToOffset(target)
-  }
-
-  /** 按 id 查缓存 */
-  function getById(id: number): AssetDto | undefined {
-    return items.value.find((a) => a.id === id)
+    if (pages.has(0) || pageLoading.has(0)) return
+    ensureRange(0, PAGE)
   }
 
   return {
-    items,
-    hasMore,
+    months,
+    totalCount,
+    pages,
     loading,
-    exhausted,
-    nextCursor,
-    baseOffset,
-    pendingOffset,
+    loadedCount,
+    initMonths,
+    getRange,
+    ensureRange,
     loadFirstPage,
-    loadMore,
-    jumpToOffset,
-    getById,
   }
 })
