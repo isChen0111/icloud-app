@@ -15,7 +15,7 @@ export type ThemeMode = 'dark' | 'light'
 
 const STORAGE_KEY = 'icloud-app-theme'
 
-/** 读取上次选择；异常（隐私模式等）时回退深色 */
+/** 读取上次选择；异常（隐私模式等）时回退浅色（应用默认浅色） */
 function readStoredTheme(): ThemeMode {
   try {
     return localStorage.getItem(STORAGE_KEY) === 'dark' ? 'dark' : 'light'

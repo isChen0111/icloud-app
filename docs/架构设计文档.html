@@ -61,7 +61,7 @@
 
 <div class="grid">
   <div class="g stat"><div class="n">11,009</div><div class="l">媒体资产总数（已全量入库，实况照片合并计数）</div></div>
-  <div class="g stat"><div class="n">3~9</div><div class="l">网格列数（滑块连续缩放范围，实测默认 5）</div></div>
+  <div class="g stat"><div class="n">3~9</div><div class="l">网格列数（滑块连续缩放范围，实测默认 8）</div></div>
   <div class="g stat"><div class="n">~168</div><div class="l">DOM 常驻网格节点（视口 + 缓冲区，实测 iCloud）</div></div>
   <div class="g stat"><div class="n">0.68s/25ms</div><div class="l">缩略图冷生成 / 热缓存耗时（本地实测）</div></div>
 </div>
@@ -251,7 +251,7 @@ CREATE VIRTUAL TABLE assets_fts USING fts5(filename, location_text);
 <ul>
 <li><b>行模型混合</b>：虚拟滚动的行数组 =「月份头行 + 资产行」混合（月份变化时插一行头，<code>estimateSize</code> 按行类型返回 34px / 资产行高），滚动条长度依然精确；</li>
 <li><b>吸顶月份指示器</b>：滚动容器外固定一条，取第一个可视行的月份实时更新（对标 iCloud GridHeader）；</li>
-<li><b>右侧月份快速定位条</b>：<code>/api/dates</code> 一次拉全（约 108 个月，含每月全局 offset），点击 → <code>/api/assets?offset=N</code> 跳页加载（后端保证该页以目标月首资产开头）→ 滚动归零即直达月份头，之后游标无缝接续向下滚动。</li>
+<li><b>日期导航面板（方案 C，复刻 iCloud 截图布局）</b>：工具栏「日期」按钮 → 下拉面板（左侧年份列表 + 右侧月份缩略图网格 3 行×4 列，无滚动条；<code>/api/dates</code> 一次拉全约 108 个月，含每月 offset 与代表缩略图 thumbId）。点月份 → <code>/api/assets?offset=N</code> 跳页加载（后端保证该页以目标月首资产开头）→ 滚动归零即直达月份头，之后游标无缝接续向下滚动。面板 toggle 开/关，点击外部/Esc 关闭。</li>
 </ul>
 <p class="muted">已实现但暂未覆盖：向上翻页（跳转后向更早月份继续滚动只能靠再次点定位条）——留待 P2 补「加载上一页」。内存 LRU 因本地场景收益低已后置。</p>
 
@@ -289,9 +289,20 @@ CREATE VIRTUAL TABLE assets_fts USING fts5(filename, location_text);
 
 <h3>4.6 网格视图其余细节</h3>
 <ul>
-<li><b>顶部工具栏</b>：返回 / 全屏 / 缩放滑块（连续 3~9 列）/ 信息 / 收藏 / 下载 / 删除（删除 = 移动到「最近删除」目录，软删除）。</li>
+<li><b>顶部工具栏</b>：「日期」按钮（打开日期导航面板）+ 缩放滑块（连续 3~9 列，默认 8）+ 主题切换按钮（浅色/深色）。<span class="muted">（收藏 / 下载 / 删除 / 全屏 / 批量选择按 P2 范围收缩不做——本地原文件齐全，云管理类功能无必要）</span></li>
 <li><b>日期定位</b>：侧边「年份/月份」导航（<code>/api/dates</code>），点击滚动到对应 offset；滚动中顶部 <code>GridHeader</code> 实时显示当前日期。</li>
 <li><b>选择模式</b>：shift 连选 + 拖拽框选（可选，P2）。</li>
+</ul>
+
+<h3>4.7 主题切换与详情返回位置保留（2026-09-08 审查后落地）</h3>
+<ul>
+<li><b>主题系统</b>：浅色/深色双主题 = 根元素 <code>[data-theme]</code> + CSS 变量（<code>--bg-*/--text-*/--border/--accent</code>），所有组件引用 var()，切换零重渲染。<b>默认浅色</b>。持久化 localStorage（key <code>icloud-app-theme</code>），index.html 内联脚本在 CSS 生效前设初值防闪烁。详情页/实况/视频<b>查看区恒深</b>（对标 iCloud 白天主题下详情查看器仍为黑底白字）。主题化范围：App/GridView/GridScroller/DateNavPanel。</li>
+<li><b>KeepAlive 缓存照片墙</b>：<code>&lt;KeepAlive :include="['GridView']"&gt;</code> 包路由出口，返回详情时滚动位置/已加载数据/搜索态原样保留（详情页不缓存，大图 DOM 不常驻）。
+  <ul>
+  <li><b>滚动位置保存/恢复</b>：deactivated 钩子与路由切换瞬间都读不到真值（DOM 已移出文档），改为 onScroll 持续记录 + onActivated 写回 + 派发 scroll 事件重算可视窗口。</li>
+  <li><b>行高错位坑</b>：缓存期间 ResizeObserver 把 clientWidth 读成 0 → viewportWidth 污染 → 恢复瞬间用兜底行高测量 → 行重叠/间距异常（实测宽窗口重叠、窄窗口间距变大，同源）。修复：RO 忽略宽度 0 + 恢复时 rAF 内先 measure 再派发 scroll。</li>
+  </ul></li>
+<li><b>⚠ 缓存失效机制（P2+-1 前置注意）</b>：KeepAlive 缓存的照片墙在<span class="muted">同步/热监听/删除同步</span>落地后不会自动感知后端数据变化——P2+-1 必须实现「同步完成 → 前端通知照片墙失效缓存并刷新」（如 store 暴露 reload 标志 + GridView onActivated 时检查，或同步后强制整页刷新路由）。当前本地静态库无影响。</li>
 </ul>
 
 <h2>5. 项目结构（已落地）</h2>
@@ -316,10 +327,10 @@ F:\iPhone\icloud-app\
 ├─ web/
 │  ├─ src/
 │  │  ├─ views/GridView.vue / DetailView.vue
-│  │  ├─ components/GridScroller.vue / GridItem.vue    <span class="c"># 虚拟滚动 + 单项（blur→real）</span>
+│  │  ├─ components/GridScroller.vue / GridItem.vue / DateNavPanel.vue   <span class="c"># 虚拟滚动 + 单项（blur→real）+ 日期导航面板（方案 C）</span>
 │  │  ├─ components/detail/LivePhoto.vue / VideoStage.vue
 │  │  ├─ composables/useLazyImage.ts   <span class="c"># IntersectionObserver 懒加载</span>
-│  │  ├─ stores/assets.ts    <span class="c"># Pinia 游标分页缓存</span>
+│  │  ├─ stores/assets.ts / theme.ts   <span class="c"># Pinia 游标分页缓存 / 深浅主题（localStorage 持久化）</span>
 │  │  ├─ router/index.ts     <span class="c"># hash 模式：#/photo/:id</span>
 │  │  └─ api/client.ts       <span class="c"># API 封装（thumb/video/stream URL，含缩略图 rev 版本号）</span>
 │  └─ vite.config.ts         <span class="c"># /api 代理 → 8899</span>
@@ -333,7 +344,7 @@ F:\iPhone\icloud-app\
 <tr><td><span class="tag green">P1 还原体验</span></td><td>缩放滑块（3~9 列）+ 详情邻居预加载 + 实况照片（按住播放）+ blur 占位 + hash 深链 + 键盘切换 + 日期分组定位（月份头行 + 吸顶月份指示器 + 右侧月份快速定位条）</td><td>对标 iCloud 交互：缩放不闪、详情秒开、实况按住即动、点月份直达该月首行</td><td><span class="tag green">✅ 已验收</span><br><span class="tag orange">剩 1 项待做</span>：内存 LRU（本地场景收益低，可后置）</td></tr>
 <tr><td><span class="tag orange">P2 增强</span></td><td>搜索（FTS5 trigram：文件名/日期子串）<span class="tag green" style="margin-left:6px">✅ 已验收</span><br><span class="muted">用户已决定不做：HEVC 按需转码缓存（本机 Chrome 已直出）/ 收藏 / 最近删除 / 下载原片 / 批量选择（本地原文件齐全，云管理类功能无必要）</span></td><td>全平台视频可播；功能完整自用</td><td><span class="tag green">✅ 已完成（范围收缩）</span></td></tr>
 <tr><td><span class="tag blue">稳定化（2026-09-08）</span></td><td>代码审查 P1×5 + P2×7 共 12 项问题全部修复：stats 异步体积统计+落盘缓存（首屏 229ms）、原图宽高 11,009 条全量修正（fix-size）、EXIF 方向缩略图重建（fix-thumbs 103 张）、浏览器缩略图缓存失效链路（thumbUrl rev 版本号 + 响应头去 immutable）、实况按住播放带原声 + id 变化重置 + 静音兜底、详情/搜索竞态守卫、扫描断点续跑容错</td><td>全量回归通过（网格/详情/实况/视频/搜索/日期定位）；git 私有仓库 + GitHub 远程（isChen0111/icloud-app），每次修复提交推送</td><td><span class="tag green">✅ 已验收</span></td></tr>
-<tr><td><span class="tag blue">P2+-1 同步与热更新（已纳入计划）</span></td><td>一键拉取同步：前端按钮 → 后端 spawn <b>icloudpd 官方 exe</b>（<code>icloudpd-1.32.3-windows-amd64.exe</code>，14.4MB，<b>免 Python</b>，已核验官方 Release 提供；<b>已定 exe 方案</b>——exe 由首次启动脚本自动下载到 <code>iCloudTool\bin\</code>，gitignore 排除不入仓库，完全离线可用）。<br>目录热监听：chokidar 监听 <code>iCloudPhoto/</code> 增删 → 增量入库/出库 + 新缩略图入队。<br>删除同步：scanner 增加「目录文件集合 vs DB 集合」对比（当前<b>只增不删</b>，本地删文件后 DB 记录残留会 404）。<br>冷启动增量：启动时对比「目录文件数 vs 库记录数」，不一致自动增量扫描 → 手动拷入的文件开机即被发现</td><td>点按钮自动拉取→增量入库→缩略图生成；手动拷文件重启即同步；删文件后列表消失</td><td><span class="tag orange">待开发</span></td></tr>
+<tr><td><span class="tag blue">P2+-1 同步与热更新（已纳入计划）</span></td><td>一键拉取同步：前端按钮 → 后端 spawn <b>icloudpd 官方 exe</b>（<code>icloudpd-1.32.3-windows-amd64.exe</code>，14.4MB，<b>免 Python</b>，已核验官方 Release 提供；<b>已定 exe 方案</b>——exe 由首次启动脚本自动下载到 <code>iCloudTool\bin\</code>，gitignore 排除不入仓库，完全离线可用）。<br>目录热监听：chokidar 监听 <code>iCloudPhoto/</code> 增删 → 增量入库/出库 + 新缩略图入队。<br>删除同步：scanner 增加「目录文件集合 vs DB 集合」对比（当前<b>只增不删</b>，本地删文件后 DB 记录残留会 404）。<br>冷启动增量：启动时对比「目录文件数 vs 库记录数」，不一致自动增量扫描 → 手动拷入的文件开机即被发现</td><td>点按钮自动拉取→增量入库→缩略图生成；手动拷文件重启即同步；删文件后列表消失</td><td><span class="tag orange">待开发</span><br><span class="muted">前置：实现「同步完成 → 前端失效 KeepAlive 照片墙缓存」（见 §4.7）</span></td></tr>
 <tr><td><span class="tag blue">P2+-2 冷启动体验（已纳入计划）</span></td><td>顶部状态栏轮询 <code>/api/stats</code>：扫描中显示「正在准备照片库：已扫描 x/20026 · 已找到 y 个资产」进度；缩略图预热显示「生成中 N（可先浏览，未生成的现场补）」；扫描是分批写库，前端轮询到新数据即刷新 → 照片墙<b>边扫边出现</b>，不用干等</td><td>首次启动不再白屏等待：进度可见、部分可浏览</td><td><span class="tag orange">待开发</span></td></tr>
 <tr><td><span class="tag gray">P2+-3 语义搜索（已评估，暂缓）</span></td><td>语义搜索（人物/地点/场景任意组合，如「邓州 2023 年 陈咏新」）：<b>不连大模型</b>——face-api.js + tfjs-node 本地人脸检测/embedding → 特征聚类成 person → 一次性命名；地点/场景由 EXIF GPS（逆地理作为语义搜索的组成部分）+ 标签表补充；查询解析器把「时间/地点/人物」分词组合检索。视频抽帧入人脸库。语义标签写入独立 asset_tags 表（<b>不写文件元数据</b>，避免污染原片）</td><td>搜索"陈咏新" / "1岁的陈咏新" / "邓州2023年陈咏新" 命中正确子集</td><td><span class="tag gray">⏸ 用户已确认暂缓</span></td></tr>
 </table>
@@ -378,9 +389,11 @@ F:\iPhone\icloud-app\
 <tr><td><b>exifr Orientation 返回字符串</b></td><td>API 返回 <code>"Rotate 90 CW"</code> 而非数字 1~8</td><td>exifr 默认翻译值。修复：<code>parse(..., { translateValues: false })</code></td></tr>
 <tr><td><b>实况照片按住不播放</b></td><td>按住只有淡入效果，视频不动</td><td>只设了 <code>playing=true</code>（opacity），从未调用 <code>video.play()</code>。修复：nextTick 后 <code>play()</code>，松开 <code>pause() + currentTime=0</code>；setPointerCapture 包 try/catch 兼容合成事件</td></tr>
 <tr><td><b>Windows npm 安装二进制下载失败</b></td><td>better-sqlite3 / ffmpeg-static postinstall 从 GitHub 下载超时</td><td>GitHub 主站不通时用 npmmirror 二进制镜像：<code>npm_config_better_sqlite3_binary_host=...</code>、<code>FFMPEG_BINARIES_URL=...</code>（不带版本号）</td></tr>
+<tr><td><b>KeepAlive 下滚动位置读不到</b></td><td>详情返回后照片墙总是回到顶部</td><td>deactivated 钩子触发时 DOM 已移出文档（scrollTop 归零），路由切换瞬间亦然。修复：onScroll 持续记录位置，onActivated 写回 + 派发 scroll 事件</td></tr>
+<tr><td><b>KeepAlive 返回后行高错位</b></td><td>宽窗口行重叠 / 窄窗口间距变大（同源）</td><td>缓存期间 ResizeObserver 把 clientWidth 读成 0 污染 viewportWidth → 恢复用兜底行高测量。修复：RO 忽略宽度 0 + 恢复时 rAF 先 measure 再派发 scroll</td></tr>
 </table>
 
-<p class="muted" style="margin-top:32px;">文档生成：2026-09-08（含 P0 落地同步）｜ 实测数据来源：icloud.com.cn/photos 浏览器实测与 photos3 前端源码分析；本机照片库全量扫描与浏览器端到端验证 ｜ 行业参考：Immich（缩略图三档 + 后台任务架构）、@tanstack/vue-virtual（虚拟滚动）、sharp / BtbN ffmpeg（HEIC 解码）。</p>
+<p class="muted" style="margin-top:32px;">文档生成：2026-09-08（含 P0 落地同步；同日审查后更新主题/KeepAlive/日期面板方案 C/默认 8 列）｜ 实测数据来源：icloud.com.cn/photos 浏览器实测与 photos3 前端源码分析；本机照片库全量扫描与浏览器端到端验证 ｜ 行业参考：Immich（缩略图三档 + 后台任务架构）、@tanstack/vue-virtual（虚拟滚动）、sharp / BtbN ffmpeg（HEIC 解码）。</p>
 
 </div>
 </body>

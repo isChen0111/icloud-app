@@ -239,7 +239,8 @@ onUnmounted(() => {
   color: var(--text-1);
 }
 .dn-year.active {
-  background: var(--bg-active);
+  /* 审查修复：浅色主题下 bg-active 是淡蓝底 + 白字看不清；统一用 accent 蓝底白字，深浅主题都清晰 */
+  background: #0a84ff;
   color: #fff;
 }
 

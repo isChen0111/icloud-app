@@ -7,7 +7,7 @@
 ```
 icloud-app/
 ├── iCloudPhoto/          # 照片库（iCloudPD 拉取，只读，162.8GB）
-├── iCloudTool/           # iCloudPD 工具（与本应用无关）
+├── iCloudTool/           # iCloudPD 工具（cookie 配置；P2+-1 计划内置 exe 一键拉取）
 ├── docs/
 │   ├── 架构设计文档.html        # 完整架构设计（逆向 iCloud 的结论都在这里）
 │   ├── CONTEXT-项目上下文快照.md # 项目上下文速查
@@ -28,8 +28,8 @@ icloud-app/
 └── web/                  # 前端：Vue 3 + Vite + TS + Pinia
     └── src/
         ├── views/              # 照片墙 GridView / 详情 DetailView
-        ├── components/         # GridScroller / GridItem + detail/（LivePhoto/VideoStage）
-        ├── stores/             # Pinia 数据缓存
+        ├── components/         # GridScroller / GridItem / DateNavPanel + detail/（LivePhoto/VideoStage）
+        ├── stores/             # Pinia：assets（分页缓存）/ theme（深浅主题，localStorage 持久化）
         ├── composables/        # 懒加载等组合式函数
         ├── api/                # API 客户端（含缩略图 rev 版本号）
         ├── router/             # hash 路由（#/photo/:id）
@@ -90,6 +90,8 @@ npm run dev
 - **HEIC 解码**：sharp 官方预编译无 HEVC 插件，用 BtbN ffmpeg full 版（libheif）解码后再交 sharp 缩放。
 - **实况照片**：静止帧（HEIC）+ 配对视频（_HEVC.MOV），按住播放（**带原声**）、松开暂停复位。
 - **视频流**：原生 `<video>` + HTTP Range 206，拖动进度条零延迟。
+- **主题切换**：浅色/深色双主题（CSS 变量 `--bg-*/--text-*`），**默认浅色**；切换持久化 localStorage，index.html 内联脚本首屏防闪烁；详情页/实况/视频查看区按 iCloud 惯例恒深。
+- **详情返回位置保留**：照片墙组件 KeepAlive 缓存（仅 GridView），返回时滚动位置/搜索态原样保留；恢复时 rAF 重测虚拟行，避免行高错位（重叠/间距异常）。
 - **FTS5 搜索**：trigram 分词器支持任意子串（搜 "9188" 或 "202409" 都秒出）；索引存小写文件名 + 原始/紧凑日期，入库时同步、启动时校验回填。
 - **配对规则**：基名相同即配对（`IMG_1234.HEIC ⇄ IMG_1234_HEVC.MOV`，`_HEVC` 后缀归一），无时间差校验（iCloudPD 的 suffix 命名天然保证一一对应）。
 
@@ -98,15 +100,16 @@ npm run dev
 | 功能 | 结果 |
 |---|---|
 | 全量扫描入库 | 11,009 资产（照片 3,781 + 实况 5,635 + 视频 1,593） |
-| 照片墙虚拟滚动 | 5 列/3 列切换正常，DOM 稳定 ~16 行，滚动流畅 |
+| 照片墙虚拟滚动 | 3~9 列滑块切换正常（默认 8 列），DOM 稳定 ~16 行，滚动流畅 |
 | 滚动翻页 | 接近底部自动加载下一页（游标分页） |
 | 缩略图懒加载 | blur 占位秒出 → 320px 缩略图淡入，滚过即请求、离开即回收 |
 | 详情页 | hash 深链 `#/photo/:id`，键盘 ←→ 切换邻居 |
 | 实况照片 | 静止帧 + 按住播放（HEVC 流 206 播放验证通过） |
 | 视频 | poster 封面 + Range 流 + 时长/控件正常 |
-| **日期分组定位（P1）** | 网格内月份头行 + 顶部吸顶月份指示器 + 右侧月份快速定位条（108 个月，点击 → offset 跳页直达该月首行，高亮跟随滚动） |
+| **日期分组定位（P1）** | 网格内月份头行 + 顶部吸顶月份指示器 + 工具栏「日期」按钮 → 下拉面板（左侧年份 + 右侧月份缩略图，方案 C 复刻 iCloud；点击月份 → offset 跳页直达该月首行） |
 | **FTS5 搜索（P2）** | 搜索框防抖 300ms → trigram 子串匹配（文件名不区分大小写 / 日期宽匹配 / 紧凑日期），Esc 退出回照片墙，点结果进详情 |
 | **稳定性修复（2026-09-08）** | 代码审查 12 项问题全部修复：stats 异步缓存（首屏 229ms）、原图宽高 11,009 条修正、EXIF 方向缩略图重建（fix-thumbs 103 张）、浏览器缩略图缓存失效链路（rev=2 + 去 immutable）、实况按住带原声、详情/搜索竞态守卫、扫描容错等 |
+| **主题 + 返回保留（2026-09-08 审查后）** | 浅色默认双主题切换 + 日期面板 toggle + 默认 8 列；详情返回滚动位置精确保留（KeepAlive，600/1800px 两档深度实测），并修复缓存期间 ResizeObserver 污染导致的行高错位重叠 |
 | 冷/热缓存 | 冷生成 grid 0.68s / blur 0.41s，热缓存 25ms |
 
 ## 踩坑记录（学习价值）
@@ -120,3 +123,5 @@ npm run dev
 - **sharp 的 `rotate: true` 构造选项不生效**（0.33.5）：必须用链式 `.rotate()` 才会应用 EXIF 方向——构造选项静默忽略导致竖拍 JPG 缩略图全横。
 - **`Cache-Control: immutable` 会把旧图锁死一年**：缩略图内容可能因修复而变化，不能用 immutable；应保留 ETag 协商 + 前端 URL 版本号（rev）实现缓存失效。
 - **Windows npm 安装**：GitHub 二进制下载不通时用 npmmirror 二进制镜像（见上文安装说明）。
+- **KeepAlive 下读不到滚动位置**：deactivated 钩子触发时组件 DOM 已移出文档，scrollTop 已归零；路由切换瞬间的 watch 也读不到真值。正确做法：滚动过程（onScroll）持续记录位置，缓存激活（onActivated）后写回 + 派发 scroll 事件重算可视窗口。
+- **KeepAlive 返回后行高错位**：缓存期间 ResizeObserver 把 clientWidth 读成 0，污染 viewportWidth → 恢复瞬间用兜底 200px 行高测量 → 行重叠/间距异常。修复：ResizeObserver 忽略宽度 0 + 恢复时 rAF 内先 measure 再派发 scroll。

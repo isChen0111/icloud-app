@@ -109,6 +109,9 @@ async function generate(assetId: number, size: ThumbSize): Promise<string | null
     return outPath
   } catch (err) {
     console.error(`[thumb] 生成失败 asset=${assetId} size=${size}`, (err as Error).message)
+    // 兜底（审查 #7）：删除可能留下的 0 字节/半成品文件——否则 ensureThumbnail 的
+    // existsSync 会把"存在"的坏文件永久当有效返回，修复后也不会重新生成
+    fs.rmSync(outPath, { force: true })
     if (size === 'grid') db.prepare(`UPDATE assets SET thumb_status='error' WHERE id=?`).run(assetId)
     return null
   }
