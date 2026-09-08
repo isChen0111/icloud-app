@@ -27,6 +27,7 @@ import { computed, onActivated, onMounted, ref, watch } from 'vue'
 import { useVirtualizer } from '@tanstack/vue-virtual'
 import { useAssetStore } from '../stores/assets'
 import { fetchDates } from '../api/client'
+import { formatDateRange } from '../utils/format'
 import type { MonthGroup } from '../types'
 import GridItem from './GridItem.vue'
 import DateNavPanel from './DateNavPanel.vue'
@@ -118,7 +119,28 @@ const rowVirtualizer = useVirtualizer({
   getItemKey: (index) => rows.value[index]?.key ?? index,
 })
 
-/** 顶部吸顶月份：取第一个可视行的月份（header 行直接用，asset 行看首资产） */
+/**
+ * 顶部吸顶日期跨度（对标 iCloud GridHeader 的日期范围，本次需求 1）：
+ * 取视口内第一个与最后一个「资产行」的首末资产日期，格式化为
+ * "2021年4月22日 - 5月15日" 式跨度；视口内没有资产行（极端：只有月份头）
+ * 或日期解析失败时，退化为「当前可视月份」显示。
+ */
+const viewDateRange = computed(() => {
+  const vs = rowVirtualizer.value?.getVirtualItems() ?? []
+  if (vs.length === 0) return ''
+  const first = vs.find((v) => rows.value[v.index]?.type === 'asset')
+  const last = [...vs].reverse().find((v) => rows.value[v.index]?.type === 'asset')
+  if (!first || !last) return currentMonthLabel.value
+  const fRow = rows.value[first.index]
+  const lRow = rows.value[last.index]
+  if (!fRow || !lRow) return currentMonthLabel.value
+  const startIso = store.items[fRow.start]?.dateTaken
+  const endIso = store.items[lRow.end - 1]?.dateTaken
+  if (!startIso || !endIso) return currentMonthLabel.value
+  return formatDateRange(startIso, endIso)
+})
+
+/** 顶部吸顶月份的退化显示：取第一个可视行的月份（header 行直接用，asset 行看首资产） */
 const currentMonthLabel = computed(() => {
   const vs = rowVirtualizer.value?.getVirtualItems() ?? []
   if (vs.length === 0) return ''
@@ -281,9 +303,9 @@ watch(
       <span v-if="store.loading" class="label dim">加载中…</span>
     </div>
 
-    <!-- 吸顶月份指示器：随滚动实时更新（对标 iCloud GridHeader） -->
-    <div v-if="currentMonthLabel" class="month-sticky">
-      <span class="month-dot" />{{ currentMonthLabel }}
+    <!-- 吸顶日期跨度指示器：随滚动实时更新（对标 iCloud GridHeader 的日期范围） -->
+    <div v-if="viewDateRange" class="month-sticky">
+      <span class="month-dot" />{{ viewDateRange }}
       <span class="dim" style="margin-left: 8px; font-weight: 400">共 {{ store.items.length }} 项</span>
     </div>
 
