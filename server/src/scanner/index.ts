@@ -53,11 +53,17 @@ interface PairedAsset {
 
 /**
  * 递归遍历目录，返回相对路径列表。
- * 跳过隐藏目录（以 . 开头）与 iCloudTool 等非库目录（由 libraryRoot 限定，天然不含）。
+ * 跳过隐藏目录（以 . 开头）；目录不可读（无权限/已删除）时跳过而非抛错，
+ * 避免单个坏目录让整个扫描中断。
  */
 function walkDir(dir: string): string[] {
   const results: string[] = []
-  const entries = fs.readdirSync(dir, { withFileTypes: true })
+  let entries: fs.Dirent[]
+  try {
+    entries = fs.readdirSync(dir, { withFileTypes: true })
+  } catch {
+    return results
+  }
   for (const entry of entries) {
     if (entry.name.startsWith('.')) continue // 隐藏文件/目录
     const full = path.join(dir, entry.name)
@@ -70,12 +76,20 @@ function walkDir(dir: string): string[] {
   return results
 }
 
-/** 主扫描入口：全量扫描 + 入库。可重复调用（增量幂等）。 */
+/** 主扫描入口：全量扫描 + 入库。可重复调用（增量幂等）。
+ *
+ * 容错与断点续跑（审查 P1-B1）：
+ *  - 整体 try/catch：任何异常都把 scanProgress 置为 error 并上抛，
+ *    不再"半途静默崩溃、状态卡在 scanning"。
+ *  - 增量续跑：已入库的 file_path 直接跳过元数据提取（照片库是 iCloudPD
+ *    只读快照，文件内容不变），中断后重跑只补新文件，无需全量重来。
+ */
 export async function runScan(): Promise<void> {
   const db = getDb()
   scanProgress.status = 'scanning'
   scanProgress.message = '正在遍历目录…'
 
+  try {
   // ① 收集所有媒体文件
   const absPaths = walkDir(config.libraryRoot)
   const allFiles: RawFile[] = []
@@ -89,6 +103,11 @@ export async function runScan(): Promise<void> {
   const files = config.scanLimit > 0 ? allFiles.slice(0, config.scanLimit) : allFiles
   scanProgress.totalFiles = files.length
   scanProgress.scannedFiles = 0
+
+  // 已入库路径集合：增量续跑的核心（见函数头注释）
+  const existing = new Set(
+    (db.prepare(`SELECT file_path FROM assets`).all() as { file_path: string }[]).map((r) => r.file_path),
+  )
 
   // ② 实况配对：按「配对基名」索引。
   //    配对基名 = 文件名去扩展名；对 *_HEVC.MOV 再去掉 _HEVC（与静止帧同名）。
@@ -162,6 +181,14 @@ export async function runScan(): Promise<void> {
   let i = 0
   for (const a of assets) {
     const absPath = a.image.absPath
+
+    // —— 断点续跑：已入库的文件直接跳过（iCloudPD 只读快照，文件不会变）——
+    // 中断后重跑到这里会瞬间跨过已处理部分，只补未入库的新文件
+    if (existing.has(a.image.relPath)) {
+      scanProgress.scannedFiles++
+      continue
+    }
+
     const isVideo = a.image.kind === 'video'
     // —— 图片：EXIF ——
     // —— 视频：ffprobe ——
@@ -196,8 +223,14 @@ export async function runScan(): Promise<void> {
     // 时间兜底链：EXIF/ffprobe → 目录 YYYY/MM/DD → 文件修改时间
     if (!dateTaken) dateTaken = parseDateFromDir(a.image.relPath)
     if (!dateTaken) {
-      const st = fs.statSync(absPath)
-      dateTaken = st.mtime.toISOString()
+      try {
+        const st = fs.statSync(absPath)
+        dateTaken = st.mtime.toISOString()
+      } catch {
+        // 文件瞬时不可读（刚被移动/删除）：跳过本资产，下次重扫再试
+        console.warn(`[scan] 跳过不可读文件: ${a.image.relPath}`)
+        continue
+      }
     }
 
     batch.push([
@@ -236,4 +269,11 @@ export async function runScan(): Promise<void> {
   scanProgress.status = 'done'
   scanProgress.message = `扫描完成：共 ${scanProgress.assetsFound} 个媒体资产，${livePairs} 个实况照片`
   console.log(scanProgress.message)
+  } catch (err) {
+    // 容错：任何异常都收敛为可查询的 error 状态并上抛（/api/scan 的 catch 会接到）
+    scanProgress.status = 'error'
+    scanProgress.message = `扫描失败：${(err as Error).message}`
+    console.error('[scan] failed:', err)
+    throw err
+  }
 }

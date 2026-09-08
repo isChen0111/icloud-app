@@ -43,16 +43,23 @@ export async function registerSearchRoutes(app: FastifyInstance): Promise<void> 
       return reply.send({ query: q ?? '', items: [] })
     }
 
-    // MATCH 子串匹配两列（search_text / date_taken 任一命中即可），join 回资产表取真实数据
-    const rows = db
-      .prepare(
-        `SELECT a.* FROM assets_fts f
-         JOIN assets a ON a.id = f.rowid
-         WHERE assets_fts MATCH ?
-         ORDER BY a.date_taken DESC, a.id DESC
-         LIMIT ?`,
-      )
-      .all(query, limit) as AssetRow[]
+    // MATCH 子串匹配两列（search_text / date_taken 任一命中即可），join 回资产表取真实数据。
+    // try/catch 兜底（审查 P2-B6）：清洗后仍有极少数输入会让 FTS5 抛语法错误
+    // （如超长输入/畸形 token 组合），此时返回空结果而非 500。
+    let rows: AssetRow[] = []
+    try {
+      rows = db
+        .prepare(
+          `SELECT a.* FROM assets_fts f
+           JOIN assets a ON a.id = f.rowid
+           WHERE assets_fts MATCH ?
+           ORDER BY a.date_taken DESC, a.id DESC
+           LIMIT ?`,
+        )
+        .all(query, limit) as AssetRow[]
+    } catch (err) {
+      console.warn(`[search] FTS 查询失败，返回空: ${query}`, (err as Error).message)
+    }
 
     return reply.send({ query: q ?? '', items: rows.map(toDto) })
   })

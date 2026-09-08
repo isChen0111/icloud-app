@@ -37,6 +37,22 @@ function parseRange(rangeHeader: string | undefined, total: number): { start: nu
   return { start, end }
 }
 
+/**
+ * 创建读流并挂上 error 处理器。
+ * 修复（审查 P1-B2）：旧实现 createReadStream 无 error 监听，响应发出 206 后
+ * 文件被删/IO 错误 → Node 触发 unhandled 'error' → 进程崩溃。
+ * 现在：记录日志 + 终止挂起的响应连接（浏览器侧会自行报错/重试，进程不再崩）。
+ */
+function createSafeStream(abs: string, reply: { raw: import('node:http').ServerResponse }, opts?: { start: number; end: number }): fs.ReadStream {
+  const stream = fs.createReadStream(abs, opts)
+  stream.on('error', (err) => {
+    console.error(`[video] 流读取错误 ${abs}:`, err.message)
+    // 响应头已发出（206/200），无法改状态码；销毁连接让浏览器感知中断
+    if (!reply.raw.destroyed) reply.raw.destroy(err)
+  })
+  return stream
+}
+
 /** 根据资产类型解析要播放的视频文件相对路径 */
 function resolvePlaybackPath(type: string, filePath: string, liveVideo: string | null): string | null {
   if (type === 'video') return filePath
@@ -64,6 +80,11 @@ export async function registerVideoRoutes(app: FastifyInstance): Promise<void> {
     const total = stat.size
     const range = parseRange(req.headers.range as string | undefined, total)
 
+    // 有 Range 头但解析失败/起始越界 → 416 Range Not Satisfiable（RFC 7233）
+    if (!range && req.headers.range) {
+      return reply.code(416).header('Content-Range', `bytes */${total}`).send()
+    }
+
     // 按扩展名给更准确的 MIME（mov 容器 ≠ mp4 容器）
     const mime = path.extname(abs).toLowerCase() === '.mov' ? 'video/quicktime' : 'video/mp4'
 
@@ -78,10 +99,10 @@ export async function registerVideoRoutes(app: FastifyInstance): Promise<void> {
         .code(206)
         .header('Content-Range', `bytes ${start}-${end}/${total}`)
         .header('Content-Length', end - start + 1)
-        .send(fs.createReadStream(abs, { start, end }))
+        .send(createSafeStream(abs, reply, { start, end }))
     }
 
     // —— 整文件响应 200 ——
-    return reply.header('Content-Length', total).send(fs.createReadStream(abs))
+    return reply.header('Content-Length', total).send(createSafeStream(abs, reply))
   })
 }

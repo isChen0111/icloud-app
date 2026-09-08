@@ -74,11 +74,15 @@ async function generate(assetId: number, size: ThumbSize): Promise<string | null
     if (row.type === 'video') {
       // —— 视频：ffmpeg 抽帧 → sharp 缩放 ——
       const framePath = await extractVideoFrame(abs, target)
-      await sharp(framePath, { failOn: 'none' })
-        .resize(target, target, { fit: 'inside', withoutEnlargement: true })
-        .webp({ quality })
-        .toFile(outPath)
-      fs.rmSync(framePath, { force: true })
+      try {
+        await sharp(framePath, { failOn: 'none' })
+          .resize(target, target, { fit: 'inside', withoutEnlargement: true })
+          .webp({ quality })
+          .toFile(outPath)
+      } finally {
+        // 修复（审查 P2-B5）：异常路径也必须删临时帧，否则 tmp 目录累积垃圾
+        fs.rmSync(framePath, { force: true })
+      }
     } else if (isHeic(row.file_path)) {
       // —— HEIC：sharp 官方预编译无 HEVC 解码器 → 用 ffmpeg(libheif) 解码为 JPEG 再处理 ——
       const jpegPath = await heicToJpeg(abs)
