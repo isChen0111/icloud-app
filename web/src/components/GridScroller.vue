@@ -186,7 +186,10 @@ watch(colCount, () => rowVirtualizer.value?.measure())
 function observeWidth(): void {
   if (!scrollEl.value) return
   const ro = new ResizeObserver(() => {
-    viewportWidth.value = scrollEl.value?.clientWidth ?? 0
+    // 忽略 0：KeepAlive 缓存期间组件 DOM 被移出文档，clientWidth 变为 0，
+    // 若写入会让 itemWidth 走兜底值 200 → 虚拟器按错误行高测量 → 返回后行错位（重叠/间距异常）
+    const w = scrollEl.value?.clientWidth ?? 0
+    if (w > 0) viewportWidth.value = w
   })
   ro.observe(scrollEl.value)
   viewportWidth.value = scrollEl.value.clientWidth
@@ -214,8 +217,13 @@ onActivated(() => {
   const el = scrollEl.value
   if (!el) return
   el.scrollTop = savedScrollTop
-  el.dispatchEvent(new Event('scroll'))
-  rowVirtualizer.value?.measure()
+  // 先等一帧：DOM 重新插入 + ResizeObserver 把真实宽度写回后，
+  // measure 用真实 rowHeight 重算 measurements，再派发 scroll 更新可视窗口，
+  // 否则会用 deactivate 期间被污染的兜底行高（200px）测量 → 行与行重叠/间距异常
+  requestAnimationFrame(() => {
+    rowVirtualizer.value?.measure()
+    el.dispatchEvent(new Event('scroll'))
+  })
 })
 
 onMounted(async () => {
