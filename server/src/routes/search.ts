@@ -17,7 +17,7 @@
  */
 import type { FastifyInstance } from 'fastify'
 import { getDb } from '../db/index.js'
-import { toDto } from './assets.js'
+import { toDto, type AssetRow } from './assets.js'
 
 /** FTS5 查询清洗：小写 + 标点转空格 + 丢弃 <3 字符 token */
 function sanitizeQuery(raw: string): string {
@@ -52,7 +52,7 @@ export async function registerSearchRoutes(app: FastifyInstance): Promise<void> 
          ORDER BY a.date_taken DESC, a.id DESC
          LIMIT ?`,
       )
-      .all(query, limit)
+      .all(query, limit) as AssetRow[]
 
     return reply.send({ query: q ?? '', items: rows.map(toDto) })
   })

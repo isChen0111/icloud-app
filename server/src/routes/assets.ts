@@ -34,8 +34,8 @@ export interface AssetDto {
   thumbUrl: string
 }
 
-/** 输出给前端的资产结构（不含内部状态字段）；导出供 search 路由复用 */
-export function toDto(row: {
+/** 数据库行类型（assets 表，better-sqlite3 的 .all() 返回 unknown[]，需显式断言） */
+export interface AssetRow {
   id: number
   type: string
   filename: string
@@ -46,7 +46,10 @@ export function toDto(row: {
   orientation: number | null
   gps_lat: number | null
   gps_lon: number | null
-}): AssetDto {
+}
+
+/** 输出给前端的资产结构（不含内部状态字段）；导出供 search 路由复用 */
+export function toDto(row: AssetRow): AssetDto {
   return {
     id: row.id,
     type: row.type as AssetDto['type'],
@@ -90,17 +93,19 @@ export async function registerAssetRoutes(app: FastifyInstance): Promise<void> {
     const offset = Number(query.offset ?? 0) || 0
 
     // 优先游标模式（滚动续载）；提供 offset 时走跳页模式（日期定位）
-    const rows = cursor
-      ? db
-          .prepare(
-            `SELECT * FROM assets
-             WHERE (date_taken < ?) OR (date_taken = ? AND id < ?)
-             ORDER BY date_taken DESC, id DESC LIMIT ?`,
-          )
-          .all(cursor.dateTaken, cursor.dateTaken, cursor.id, limit + 1)
-      : db
-          .prepare(`SELECT * FROM assets ORDER BY date_taken DESC, id DESC LIMIT ? OFFSET ?`)
-          .all(limit + 1, offset)
+    const rows = (
+      cursor
+        ? db
+            .prepare(
+              `SELECT * FROM assets
+               WHERE (date_taken < ?) OR (date_taken = ? AND id < ?)
+               ORDER BY date_taken DESC, id DESC LIMIT ?`,
+            )
+            .all(cursor.dateTaken, cursor.dateTaken, cursor.id, limit + 1)
+        : db
+            .prepare(`SELECT * FROM assets ORDER BY date_taken DESC, id DESC LIMIT ? OFFSET ?`)
+            .all(limit + 1, offset)
+    ) as AssetRow[]
 
     const hasMore = rows.length > limit
     const page = rows.slice(0, limit)

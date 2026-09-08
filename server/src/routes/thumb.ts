@@ -8,9 +8,8 @@
  */
 import type { FastifyInstance } from 'fastify'
 import fs from 'node:fs'
-import path from 'node:path'
 import { getDb } from '../db/index.js'
-import { ensureThumbnail, thumbCachePath, type ThumbSize } from '../pipeline/thumbnails.js'
+import { ensureThumbnail, ensureSize, type ThumbSize } from '../pipeline/thumbnails.js'
 
 const VALID_SIZES = new Set<ThumbSize>(['grid', 'detail', 'blur'])
 
@@ -43,17 +42,12 @@ export async function registerThumbRoutes(app: FastifyInstance): Promise<void> {
       return reply.code(500).send({ error: 'thumbnail generation failed' })
     }
 
-    // 若该资产至今没有尺寸信息，顺手用生成的缩略图回填（宽高比占位用）
-    if (!row.width && !row.height) {
-      try {
-        const { default: sharp } = await import('sharp')
-        const meta = await sharp(outPath).metadata()
-        if (meta.width && meta.height) {
-          db.prepare(`UPDATE assets SET width=?, height=? WHERE id=?`).run(meta.width, meta.height, assetId)
-        }
-      } catch {
-        /* 忽略 */
-      }
+    // 若该资产至今没有尺寸信息，用原文件尺寸回填（宽高比占位用）。
+    // 修复（审查 P1-②）：必须读「原文件」而非缩略图——旧实现用 sharp 读
+    // 刚生成的缩略图 metadata，把 320/1600/32 等缩略图尺寸写进了原图宽高，
+    // 导致竖图被当横图、宽高比占位全错。ensureSize 内部已对 HEIC 用 ffprobe 兜底。
+    if (!row.width && !row.height && row.type === 'photo') {
+      await ensureSize(assetId)
     }
 
     // 长缓存 + ETag 校验（缩略图内容由 assetId 唯一决定，永不变化）
@@ -76,7 +70,4 @@ export async function registerThumbRoutes(app: FastifyInstance): Promise<void> {
     if (!outPath || !fs.existsSync(outPath)) return reply.code(404).send({ error: 'poster not found' })
     return reply.type('image/webp').send(fs.createReadStream(outPath))
   })
-
-  // 保留：缓存目录兜底静态服务（某些场景可直接访问文件）
-  void path
 }

@@ -8,6 +8,7 @@
     "dev": "tsx watch src/index.ts",
     "start": "tsx src/index.ts",
     "scan": "tsx src/cli-scan.ts",
+    "fix-size": "tsx scripts/fix-asset-size.ts",
     "postinstall": "powershell -ExecutionPolicy Bypass -File scripts/install-ffmpeg-full.ps1"
   },
   "dependencies": {

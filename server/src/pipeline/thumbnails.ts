@@ -92,7 +92,8 @@ async function generate(assetId: number, size: ThumbSize): Promise<string | null
       }
     } else {
       // —— 其他图片（JPG/PNG/…）：sharp 直接解码 ——
-      await sharp(abs, { failOn: 'none', rotate: true }) // rotate: 应用 EXIF 方向
+      await sharp(abs, { failOn: 'none' }) // failOn: 容忍 EXIF 损坏的半坏图
+        .rotate() // 应用 EXIF 方向（rotate 是链式方法，不是构造选项）
         .resize(target, target, { fit: 'inside', withoutEnlargement: true })
         .webp({ quality })
         .toFile(outPath)
@@ -145,8 +146,14 @@ function extractVideoFrame(absPath: string, maxSize: number): Promise<string> {
 }
 
 /**
- * 获取图片像素尺寸（EXIF 缺失时的兜底，供前端计算宽高比占位）。
+ * 获取媒体原图/原视频的像素尺寸（EXIF 缺失时的兜底，供前端计算宽高比占位）。
  * 结果写入 assets 表并返回。
+ *
+ * 修复（审查 P1-②）：此函数必须返回「原文件尺寸」。
+ * 旧实现曾用缩略图 metadata 回填，导致 assets.width/height 被污染成
+ * 320/1600/32 这类缩略图尺寸（竖图会被当横图）。这里只读原文件：
+ *   - sharp 可解码（JPG/PNG/…）→ sharp.metadata()
+ *   - HEIC/HEIF（sharp 官方无 HEVC 解码器）→ ffprobe 兜底读分辨率
  */
 export async function ensureSize(assetId: number): Promise<{ width: number; height: number } | null> {
   const db = getDb()
@@ -155,14 +162,48 @@ export async function ensureSize(assetId: number): Promise<{ width: number; heig
     | undefined
   if (!row) return null
   if (row.width && row.height) return { width: row.width, height: row.height }
+
+  const abs = path.join(config.libraryRoot, row.file_path)
+  if (!fs.existsSync(abs)) return null
+
+  // ① sharp 直接读（支持 JPG/PNG/GIF/WebP 等）
   try {
-    const meta = await sharp(path.join(config.libraryRoot, row.file_path), { failOn: 'none' }).metadata()
+    const meta = await sharp(abs, { failOn: 'none' }).metadata()
     if (meta.width && meta.height) {
       db.prepare(`UPDATE assets SET width=?, height=? WHERE id=?`).run(meta.width, meta.height, assetId)
       return { width: meta.width, height: meta.height }
     }
   } catch {
+    /* sharp 无法解码 → 走 ffprobe */
+  }
+
+  // ② ffprobe 兜底（HEIC/HEIF/罕见编码；BtbN full 版 ffprobe 带 libheif 可读）
+  try {
+    const size = await probeSize(abs)
+    if (size) {
+      db.prepare(`UPDATE assets SET width=?, height=? WHERE id=?`).run(size.width, size.height, assetId)
+      return size
+    }
+  } catch {
     /* 忽略 */
   }
   return null
+}
+
+/** 用 ffprobe 读取媒体像素尺寸（HEIC 等 sharp 不支持格式的兜底） */
+function probeSize(absPath: string): Promise<{ width: number; height: number } | null> {
+  return new Promise((resolve) => {
+    ffmpeg.ffprobe(absPath, (err, data) => {
+      if (err || !data?.streams) {
+        resolve(null)
+        return
+      }
+      const stream = data.streams.find((s) => s.codec_type === 'video' || s.codec_type === 'image')
+      if (stream?.width && stream?.height) {
+        resolve({ width: stream.width, height: stream.height })
+        return
+      }
+      resolve(null)
+    })
+  })
 }
