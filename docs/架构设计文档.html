@@ -281,7 +281,7 @@ CREATE VIRTUAL TABLE assets_fts USING fts5(filename, location_text);
 <li>DOM 常驻 3 个 <code>OneUpItem</code>（前/中/后），切换用 CSS transform 滑动 + 位置索引滚动；方向键 / 触摸 / 点击左右区域切换。</li>
 <li><b>预加载邻居</b>：进入详情即请求「当前 ± 2」的 detail 档缩略图；若邻居为实况照片或视频，同时预取其实况视频头（metadata 级）。</li>
 <li><b>hash 路由同步</b>：<code>#/i,pz,&lt;assetId&gt;,&lt;index&gt;/</code>，支持浏览器后退直接回到网格对应位置。</li>
-<li><b>渐进显示</b>：先 blur 占位 → grid 档秒出 → detail 档淡入替换（三步渐进，对标 iCloud 体验）。</li>
+<li><b>渐进显示（已实现 2026-09-08）</b>：先 blur 占位 → grid 档秒出 → detail 档淡入替换（三步渐进，对标 iCloud 体验）。实现细节：详情页复用照片墙已缓存的 grid 档做模糊占位（blur 16px）秒出，detail 加载完成 0.3s 淡入覆盖——<b>detail 缓存命中时两图并行、直接显示清晰大图</b>；冷生成期间占位撑场不白屏。实况静止帧 / 视频 poster 同款（LivePhoto / VideoStage，后端零改动）。</li>
 </ul>
 
 <h3>4.5 实况照片组件（LivePhotoPresenter）</h3>
@@ -298,6 +298,7 @@ CREATE VIRTUAL TABLE assets_fts USING fts5(filename, location_text);
 <ul>
 <li>桌面：<code>pointerdown/pointerup</code>；移动端：<code>touchstart/touchend</code>（300ms 判定长按阈值防误触）。</li>
 <li>视频源优先转码后的 H.264 版（兼容），无转码版时用原 MOV（可静音，实况视频本就无声或轻音频）。</li>
+<li><b>LIVE 徽标（已实现 2026-09-08）</b>：网格 + 详情同款简约白字胶囊；实况按住播放、视频加载期间徽标内显示旋转加载动画（@loadstart/@waiting → loading，@canplay/@playing → 结束），松开复位。</li>
 </ul>
 
 <h3>4.6 网格视图其余细节</h3>

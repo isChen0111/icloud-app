@@ -14,6 +14,8 @@ const props = defineProps<{ id: number }>()
 
 <template>
   <div class="video-stage">
+    <!-- 封面占位（grid 档秒出；poster 未就绪前模糊铺底） -->
+    <img :src="videoPosterUrl(props.id, 'grid')" class="poster-placeholder" alt="" draggable="false" />
     <video
       class="player"
       :src="videoStreamUrl(props.id)"
@@ -33,6 +35,19 @@ const props = defineProps<{ id: number }>()
   display: flex;
   align-items: center;
   justify-content: center;
+  /* video 透明后留边黑底由舞台承担（poster 未加载时占位图可见） */
+  background: #000;
+}
+.poster-placeholder {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  filter: blur(16px);
+  transform: scale(1.02);
+  opacity: 0.9;
+  pointer-events: none;
 }
 .player {
   /* 铺满舞台：poster 未加载视频流时也按舞台尺寸 contain 显示（修复播放前小图）；
@@ -42,6 +57,8 @@ const props = defineProps<{ id: number }>()
   object-fit: contain;
   outline: none;
   border-radius: 4px;
-  background: #000;
+  background: transparent; /* poster 未加载时透出占位图；留边黑底由 .video-stage 承担 */
+  position: relative;
+  z-index: 1;
 }
 </style>
