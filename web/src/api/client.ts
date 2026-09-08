@@ -4,7 +4,7 @@
  * 所有后端请求集中在这里，页面组件只调用这些函数。
  * 返回类型统一用 Promise<T>，失败抛错由调用方处理。
  */
-import type { AssetDetail, AssetDto, MonthGroup, PageResult, Stats, ThumbSize } from '../types'
+import type { AssetDetail, AssetDto, AssetInfo, MonthGroup, PageResult, Stats, ThumbSize } from '../types'
 
 const BASE = '/api'
 
@@ -23,9 +23,14 @@ export function fetchAssets(opts: { cursor?: string | null; offset?: number; lim
   return get<PageResult>(`/assets${q}`)
 }
 
-/** 单个资产详情 + 邻居 */
+/** 单个资产详情 + 邻居 + 序号/总数 */
 export function fetchAsset(id: number): Promise<AssetDetail> {
   return get<AssetDetail>(`/assets/${id}`)
+}
+
+/** 资产信息（详情页「信息」面板：实时解析原文件 EXIF/ffprobe，低频） */
+export function fetchAssetInfo(id: number): Promise<AssetInfo> {
+  return get<AssetInfo>(`/assets/${id}/info`)
 }
 
 /** 库统计（也返回扫描进度） */

@@ -150,11 +150,22 @@ export async function registerAssetRoutes(app: FastifyInstance): Promise<void> {
     // 实况照片的播放视频相对路径（供前端拼 /api/video/stream）
     const liveVideo = (row.live_video as string | null) ?? null
 
+    // 序号 / 总数（顶栏 "第 N / total 项"）：照片墙按 (date_taken DESC, id DESC) 倒序流，
+    // 排在该资产之前（更新）的数量 = 序号 - 1。走 idx_assets_date 索引，毫秒级。
+    const total = (db.prepare(`SELECT COUNT(*) AS c FROM assets`).get() as { c: number }).c
+    const before = (db
+      .prepare(
+        `SELECT COUNT(*) AS c FROM assets WHERE (date_taken > ?) OR (date_taken = ? AND id > ?)`,
+      )
+      .get(row.date_taken as string, row.date_taken as string, row.id) as { c: number }).c
+
     return reply.send({
       ...toDto(row as never),
       liveVideo,
       prevId: prev?.id ?? null,
       nextId: next?.id ?? null,
+      position: before + 1,
+      total,
     })
   })
 }
