@@ -104,18 +104,57 @@ export async function runScan(): Promise<void> {
   scanProgress.totalFiles = files.length
   scanProgress.scannedFiles = 0
 
-  // 已入库路径集合：增量续跑的核心（见函数头注释）
-  const existing = new Set(
-    (db.prepare(`SELECT file_path FROM assets`).all() as { file_path: string }[]).map((r) => r.file_path),
-  )
+  // 已入库路径 → 现有元数据（增量续跑复用；配对修正时无需重新提取元数据）。
+  // 注意：之前用 Set 直接 continue 跳过，会导致重扫时 type/live_video 配对修正
+  // 永远不生效；改为 Map 后已入库资产也会执行 UPSERT（只更新 type/live_video）。
+  interface ExistingMeta {
+    dateTaken: string | null
+    width: number | null
+    height: number | null
+    duration: number | null
+    orientation: number | null
+    gpsLat: number | null
+    gpsLon: number | null
+  }
+  const existingMeta = new Map<string, ExistingMeta>()
+  for (const r of db
+    .prepare(
+      `SELECT file_path, date_taken, width, height, duration, orientation, gps_lat, gps_lon FROM assets`,
+    )
+    .all() as {
+    file_path: string
+    date_taken: string | null
+    width: number | null
+    height: number | null
+    duration: number | null
+    orientation: number | null
+    gps_lat: number | null
+    gps_lon: number | null
+  }[]) {
+    existingMeta.set(r.file_path, {
+      dateTaken: r.date_taken,
+      width: r.width,
+      height: r.height,
+      duration: r.duration,
+      orientation: r.orientation,
+      gpsLat: r.gps_lat,
+      gpsLon: r.gps_lon,
+    })
+  }
 
-  // ② 实况配对：按「配对基名」索引。
+  // ② 实况配对：按「目录 + 配对基名」索引。
   //    配对基名 = 文件名去扩展名；对 *_HEVC.MOV 再去掉 _HEVC（与静止帧同名）。
   //    例：IMG_1234_HEVC.MOV → IMG_1234；IMG_1234.HEIC → IMG_1234
+  //    ⚠ 配对必须限定在同一目录内：iCloudPD 会把同名文件（不同设备 / 编辑版本）
+  //    归档进不同的日期目录，只看基名会把不同照片错误配对成一组，
+  //    并导致同组多余视频（videos[0] 之外）被直接丢弃（曾丢失 3382 个视频）。
   const byPairKey = new Map<string, RawFile[]>()
   for (const f of files) {
-    let key = baseName(f.fileName)
-    if (f.kind === 'video' && key.endsWith('_HEVC')) key = key.slice(0, -'_HEVC'.length)
+    let base = baseName(f.fileName)
+    if (f.kind === 'video' && base.endsWith('_HEVC')) base = base.slice(0, -'_HEVC'.length)
+    // Windows 下 relPath 是反斜杠，统一转 / 再拼目录，保证跨平台一致
+    const dirKey = path.posix.dirname(f.relPath.replace(/\\/g, '/'))
+    const key = `${dirKey}/${base}`
     const arr = byPairKey.get(key) ?? []
     arr.push(f)
     byPairKey.set(key, arr)
@@ -182,18 +221,38 @@ export async function runScan(): Promise<void> {
   for (const a of assets) {
     const absPath = a.image.absPath
 
-    // —— 断点续跑：已入库的文件直接跳过（iCloudPD 只读快照，文件不会变）——
-    // 中断后重跑到这里会瞬间跨过已处理部分，只补未入库的新文件
-    if (existing.has(a.image.relPath)) {
-      scanProgress.scannedFiles++
-      continue
-    }
-
     const isVideo = a.image.kind === 'video'
     // —— 图片：EXIF ——
     // —— 视频：ffprobe ——
     let type: 'photo' | 'video' | 'live' = a.image.kind === 'image' ? 'photo' : 'video'
     if (a.liveVideo) type = 'live'
+
+    // —— 配对修正（本次修复重点）——
+    // 已入库的文件：复用现有元数据（文件内容不变，iCloudPD 只读快照），
+    // 但仍执行 UPSERT，让 type / live_video 按新的「目录+基名」配对结果修正，
+    // 同时把之前因跨目录同名而漏掉的视频（现在是独立 video 或新 live）补进来。
+    const exist = existingMeta.get(a.image.relPath)
+    if (exist) {
+      batch.push([
+        a.image.relPath,
+        type,
+        a.image.fileName,
+        exist.dateTaken,
+        exist.width,
+        exist.height,
+        exist.duration,
+        exist.orientation,
+        exist.gpsLat,
+        exist.gpsLon,
+        a.liveVideo ? a.liveVideo.relPath : null,
+      ])
+      scanProgress.scannedFiles++
+      if (batch.length >= 200) {
+        scanAll(batch.splice(0))
+      }
+      i++
+      continue
+    }
 
     let dateTaken: string | null = null
     let width: number | null = null
