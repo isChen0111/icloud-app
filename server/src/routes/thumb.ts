@@ -3,7 +3,8 @@
  *
  * GET /api/thumb/:id?size=grid|detail|blur
  *   - 懒生成：缓存不存在 → 现场生成（sharp/ffmpeg）→ 写盘
- *   - 长缓存：缩略图内容不可变（路径含资产 id），CDN/浏览器可无限期缓存
+ *   - 长缓存：缩略图路径含资产 id，可安全长缓存（max-age 1 年）；不用 immutable，
+ *     留刷新协商通道（见下方修复注释）
  *   - ETag：基于文件 mtime+size 的弱校验，省重复传输
  */
 import type { FastifyInstance } from 'fastify'
@@ -50,13 +51,19 @@ export async function registerThumbRoutes(app: FastifyInstance): Promise<void> {
       await ensureSize(assetId)
     }
 
-    // 长缓存 + ETag 校验（缩略图内容由 assetId 唯一决定，永不变化）
+    // 长缓存 + ETag 协商。
+    // 修复（审查 P2-*）：曾用 `max-age=31536000, immutable`——immutable 会让
+    // 浏览器连刷新都不重新验证，缩略图内容一旦因生成参数修复/缓存重建而变化
+    // （如 EXIF 方向修复），旧内容会被永久锁死。去掉 immutable：强缓存期间
+    // 零请求，刷新时走 if-none-match 协商（ETag 基于文件 mtime+size，内容变
+    // 则返回 200 新图），配合前端 thumbUrl 的 rev 版本参数（URL 变化强制
+    // 重新拉取）形成完整缓存失效链路。
     const etag = etagFor(outPath)
     if (req.headers['if-none-match'] === etag) {
       return reply.code(304).send()
     }
     return reply
-      .header('Cache-Control', 'public, max-age=31536000, immutable')
+      .header('Cache-Control', 'public, max-age=31536000')
       .header('ETag', etag)
       .type('image/webp')
       .header('Content-Length', fs.statSync(outPath).size)

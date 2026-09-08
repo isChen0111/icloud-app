@@ -48,9 +48,28 @@ export function triggerScan(): Promise<{ started: boolean }> {
   return fetch(`${BASE}/scan`, { method: 'POST' }).then((r) => r.json())
 }
 
-/** 缩略图 URL（网格/详情/占位） */
+/**
+ * 缩略图内容版本号（cache-busting）
+ *
+ * 为什么需要：缩略图接口响应头为 `Cache-Control: public, max-age=31536000`
+ * （一年强缓存）。缩略图内容一旦因生成参数修复/缓存重建而变化，浏览器仍会
+ * 命中旧缓存、永远不重新请求——URL 相同则旧内容不可见。
+ *
+ * 规则：**任何改变缩略图内容的变更后 +1**（生成参数、解码链路、缓存重建等）；
+ * 不改变内容的改动（如仅调响应头）不需要 bump。bump 后旧 URL 自动失效，
+ * 浏览器重新拉取，新 URL 继续享受长缓存。
+ *
+ * 版本历史：
+ *  - v1 初始
+ *  - v2 2026-09-08：修复早期 JPG 竖拍照片缩略图方向错误（sharp 构造选项
+ *    rotate:true 失效 → 横图缓存；代码已改链式 .rotate() 并重建服务器缓存，
+ *    但浏览器旧横图被一年强缓存锁定，bump 强制重新拉取）
+ */
+const THUMB_REV = 2
+
+/** 缩略图 URL（网格/详情/占位）；带 rev 使内容变更可强制刷新浏览器缓存 */
 export function thumbUrl(id: number, size: ThumbSize = 'grid'): string {
-  return `${BASE}/thumb/${id}?size=${size}`
+  return `${BASE}/thumb/${id}?size=${size}&rev=${THUMB_REV}`
 }
 
 /** 视频流 URL（Range 由浏览器自动带） */
