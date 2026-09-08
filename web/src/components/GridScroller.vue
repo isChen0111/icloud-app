@@ -236,7 +236,10 @@ const viewDateRange = computed(() => {
 const currentMonthLabel = computed(() => {
   const vs = rowVirtualizer.value?.getVirtualItems() ?? []
   if (vs.length === 0) return ''
-  const r = rows.value[vs[0].index]
+  // 只取与视口有交集的行（过滤上方 overscan 预热行，避免退化显示偏旧）
+  const ch = scrollEl.value?.clientHeight ?? 0
+  const inView = ch > 0 ? vs.filter((v) => v.end > 0 && v.start < ch) : vs
+  const r = rows.value[inView[0]?.index ?? -1]
   if (!r) return ''
   if (r.type === 'header') return r.label ?? fmtMonth(r.month)
   return fmtMonth(r.month)
@@ -248,7 +251,11 @@ const months = ref<MonthGroup[]>([])
 const currentYm = computed(() => {
   const vs = rowVirtualizer.value?.getVirtualItems() ?? []
   if (vs.length === 0) return ''
-  return rows.value[vs[0].index]?.month ?? ''
+  // 与 viewDateRange 同口径：过滤 overscan 预热行，面板高亮与视口首行一致
+  const ch = scrollEl.value?.clientHeight ?? 0
+  const inView = ch > 0 ? vs.filter((v) => v.end > 0 && v.start < ch) : vs
+  const r = rows.value[inView[0]?.index ?? -1]
+  return r?.month ?? ''
 })
 
 /** 日期导航面板开关 */

@@ -82,6 +82,13 @@ export async function registerThumbRoutes(app: FastifyInstance): Promise<void> {
     }
     const outPath = await ensureThumbnail(Number(id), size)
     if (!outPath || !fs.existsSync(outPath)) return reply.code(404).send({ error: 'poster not found' })
-    return reply.type('image/webp').send(fs.createReadStream(outPath))
+    // 长缓存 + ETag 协商（与缩略图同策略：封面内容修复后走 if-none-match 刷新）
+    const etag = etagFor(outPath)
+    if (req.headers['if-none-match'] === etag) return reply.code(304).send()
+    return reply
+      .header('Cache-Control', 'public, max-age=31536000')
+      .header('ETag', etag)
+      .type('image/webp')
+      .send(fs.createReadStream(outPath))
   })
 }
