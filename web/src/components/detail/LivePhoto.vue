@@ -169,7 +169,8 @@ function onVideoEnded(video: HTMLVideoElement): void {
   transform: translateX(-50%);
   z-index: 3;
   font-size: 11px;
-  color: rgba(245, 245, 247, 0.6);
+  /* 主题化：浅色主题下为深色提示（原硬编码白字在浅底上不可见） */
+  color: var(--detail-text-2);
   pointer-events: none;
 }
 </style>

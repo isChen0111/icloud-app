@@ -134,7 +134,8 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
 .detail-view {
   position: absolute;
   inset: 0;
-  background: #111113;
+  /* 主题化：浅色主题浅底深字，深色主题深底白字（变量在 index.html 定义） */
+  background: var(--detail-bg);
   display: flex;
   flex-direction: column;
 }
@@ -148,24 +149,24 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
 }
 .back {
   background: none;
-  border: 1px solid rgba(255, 255, 255, 0.2);
-  color: #f5f5f7;
+  border: 1px solid var(--detail-border);
+  color: var(--detail-text-1);
   font-size: 12px;
   padding: 5px 12px;
   border-radius: 6px;
   cursor: pointer;
 }
-.back:hover { background: rgba(255, 255, 255, 0.1); }
+.back:hover { background: var(--bg-hover); }
 .name {
   font-size: 13px;
-  color: rgba(245, 245, 247, 0.85);
+  color: var(--detail-text-1);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 .meta {
   font-size: 12px;
-  color: rgba(245, 245, 247, 0.45);
+  color: var(--detail-text-2);
   margin-left: auto;
 }
 .stage {
@@ -197,7 +198,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
   display: flex;
   align-items: center;
   justify-content: center;
-  color: rgba(245, 245, 247, 0.5);
+  color: var(--detail-text-2);
   font-size: 13px;
 }
 .nav {
