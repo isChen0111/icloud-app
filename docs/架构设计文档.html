@@ -61,12 +61,12 @@
 
 <div class="grid">
   <div class="g stat"><div class="n">12,591</div><div class="l">媒体资产总数（已全量入库，实况照片合并计数）</div></div>
-  <div class="g stat"><div class="n">3~9</div><div class="l">网格列数（滑块连续缩放范围，实测默认 8）</div></div>
+  <div class="g stat"><div class="n">4~12</div><div class="l">网格列数（本应用滑块范围，默认 8）</div></div>
   <div class="g stat"><div class="n">~168</div><div class="l">DOM 常驻网格节点（视口 + 缓冲区，实测 iCloud）</div></div>
   <div class="g stat"><div class="n">0.68s/25ms</div><div class="l">缩略图冷生成 / 热缓存耗时（本地实测）</div></div>
 </div>
 
-<div class="callout"><b>P0 落地状态（2026-09-08 已验收）</b>：本设计中的 P0+P1 大部分已实现并通过浏览器端到端实测——照片墙虚拟滚动、缩放滑块、翻页、blur→real 懒加载、详情页（hash 深链 + 键盘切换 + 邻居预取）、实况照片按住播放、视频 206 流式播放全部工作。本文档已同步实际落地时的关键调整与踩坑（见 §9）。</div>
+<div class="callout"><b>落地状态（2026-09-08 已验收）</b>：P0+P1+P2 全部实现并通过浏览器端到端实测——照片墙虚拟滚动（全量骨架 + 区间懒加载）、缩放滑块（4~12 列）、吸顶日期跨度、blur→real 懒加载、详情页（hash 深链 + 键盘切换 + 邻居预取 + 信息面板）、实况照片按住播放、视频 206 流式播放、FTS5 搜索全部工作。本文档已同步实际落地时的关键调整与踩坑（见 §9）。</div>
 
 <h2>1. iCloud 网页端机制 · 实测逆向结论</h2>
 <p class="sub">以下结论来自 2026-09-08 对 icloud.com.cn/photos 的实际操作（滚动 / 缩放 / 详情 / 实况 / 视频）、网络请求抓包与前端 JS bundle 源码分析（photos3 应用，2632Build19）。</p>
@@ -187,15 +187,17 @@
 
 <h3>3.6 API 设计</h3>
 <pre>
-GET /api/assets?cursor=&lt;id&gt;&amp;limit=200&amp;dir=desc    <span class="c"># 分页资产流（按拍摄时间倒序），返回 {items, nextCursor}</span>
-GET /api/assets/:id                         <span class="c"># 单资产详情（含配对实况信息）</span>
-GET /api/dates?unit=year|month|day          <span class="c"># 日期分组树（侧边栏/快速定位）</span>
-GET /api/thumb/:id?size=grid|detail|blur     <span class="c"># 缩略图（自动生成 + ETag 缓存）</span>
-GET /api/video/:id/stream?variant=original|h264  <span class="c"># 视频流，支持 Range（拖动进度条）</span>
-GET /api/video/:id/poster                    <span class="c"># 视频封面帧</span>
-GET /api/search?q=&amp;type=all                <span class="c"># 可选：文件名/日期/地点 FTS5 搜索</span>
-GET /api/stats                               <span class="c"># 图/视频数、各目录空间占用</span>
-POST /api/scan                               <span class="c"># 触发增量扫描（或启动时自动 + 文件监听可选）</span>
+GET /api/assets?cursor=&lt;id&gt;&amp;limit=200       <span class="c"># 资产流（时间倒序）：cursor 模式返回 {items, nextCursor}</span>
+GET /api/assets?offset=&amp;limit=120           <span class="c"># 任意全局区间（offset+limit，照片墙全量骨架的懒加载取数）</span>
+GET /api/assets/:id                         <span class="c"># 单资产详情（含配对实况 + prevId/nextId + position/total）</span>
+GET /api/assets/:id/info                    <span class="c"># 详情信息面板：实时解析 EXIF / ffprobe（低频，不落库）</span>
+GET /api/dates                              <span class="c"># 年月分组：{ym, label, count, offset, thumbId}，offset=该月首资产全局位置</span>
+GET /api/thumb/:id?size=grid|detail|blur     <span class="c"># 缩略图（懒生成 + ETag 长缓存，前端 URL 带 rev 版本号）</span>
+GET /api/video/:id/stream                   <span class="c"># 视频流（HTTP Range 206）；variant=h264 转码版为规划未实现</span>
+GET /api/video/:id/poster?size=grid|detail   <span class="c"># 视频封面帧（懒生成 + ETag 长缓存）</span>
+GET /api/search?q=&amp;limit=20                <span class="c"># FTS5 trigram 搜索（文件名/日期子串，≥3 字符）</span>
+GET /api/stats                               <span class="c"># 库统计 + 扫描进度（异步体积统计 + 落盘缓存）</span>
+POST /api/scan                               <span class="c"># 触发增量扫描（Content-Type: application/json，body {}）</span>
 </pre>
 
 <h3>3.7 数据库 Schema（SQLite）</h3>
@@ -240,7 +242,7 @@ CREATE VIRTUAL TABLE assets_fts USING fts5(filename, location_text);
 
 <h3>4.2 网格虚拟滚动（对标 iCloud 核心）</h3>
 <div class="flow">
-  <div class="step"><b>① 布局计算</b>容器宽 ÷ 列数（3~9）→ item 尺寸；总高度 = Σ行高 + 日期头高度</div>
+  <div class="step"><b>① 布局计算</b>容器宽 ÷ 列数（4~12）→ item 尺寸；总高度 = Σ行高 + 日期头高度</div>
   <div class="arrow">→</div>
   <div class="step"><b>② 滚动监听</b>scrollTop → 可见行区间 [start, end] + overscan 2~3 行</div>
   <div class="arrow">→</div>
@@ -253,12 +255,17 @@ CREATE VIRTUAL TABLE assets_fts USING fts5(filename, location_text);
 <p class="muted">关键参数：overscan 行数 2~3（对标 iCloud 的 ~168 节点 ≈ 视口的 4~5 倍）；滚动节流用 rAF 合并，避免每帧重算。</p>
 <div class="note"><b>@tanstack/vue-virtual 两个必踩的坑（P0 实测定位）</b>：① <code>useVirtualizer</code> 返回的是 <b>ref</b>（shallowRef 包装），script 里必须 <code>rowVirtualizer.value.xxx()</code>，模板会自动解包；② <code>count</code> 选项必须写成对象 getter（<code>get count() { return totalRows.value }</code>）——直接传 ref 或函数，core 会用「数值 vs 对象」比较，虚拟项恒为空（virt=0），且元素挂载晚于初始化时需手动 <code>measure()</code>。</div>
 
-<p><b>日期分组定位（P1 已落地，2026-09-08）</b>——把「按日期浏览」还原为三层：</p>
+<p><b>日期分组定位（P1 已落地，C 方案全量骨架 2026-09-08 重构）</b>——把「按日期浏览」还原为三层：</p>
 <ul>
-<li><b>行模型混合</b>：虚拟滚动的行数组 =「月份头行 + 资产行」混合（月份变化时插一行头，<code>estimateSize</code> 按行类型返回 34px / 资产行高），滚动条长度依然精确；</li>
-<li><b>吸顶月份指示器</b>：滚动容器外固定一条，取第一个可视行的月份实时更新（对标 iCloud GridHeader）；</li>
-<li><b>日期导航面板（方案 C，复刻 iCloud 截图布局）</b>：工具栏「日期」按钮 → 下拉面板（左侧年份列表 + 右侧月份缩略图网格 3 行×4 列，无滚动条；<code>/api/dates</code> 一次拉全约 108 个月，含每月 offset 与代表缩略图 thumbId）。点月份 → <code>/api/assets?offset=N</code> 跳页加载（后端保证该页以目标月首资产开头）→ 滚动归零即直达月份头，之后游标无缝接续向下滚动。面板 toggle 开/关，点击外部/Esc 关闭。</li>
+<li><b>行模型混合</b>：虚拟滚动的行数组 =「月份头行 + 资产行」混合（月份变化时插一行头，<code>estimateSize</code> 按行类型返回 34px / 资产行高）；</li>
+<li><b>全量骨架（C 方案）</b>：行序列由「月份分组 + 列数」<b>一次精确生成全库</b>——月份头行插在行首月份跳变处（标签 = 组内首末月份区间，如「2021年4月-3月」），资产行按全局位置连续切片。总行数/总高度精确 → 滚动条 = 全库（8 列 1,676 行 / 219,106px），任意位置双向滚动，无需滚动中校正比例。行高走 <code>getRowHeight(row)</code> 函数（原比例显示的预留扩展点，当前固定方形）。</li>
+<li><b>区间懒加载</b>：store 按页（120 条）缓存 <code>pages: Map&lt;页起点, AssetDto[]&gt;</code>，滚动到哪行取哪行（<code>ensureRange</code> 幂等 + 并发去重），未加载的行渲染灰块占位；内存随浏览自然增长（全库 ~2.4MB，本地可接受）。</li>
+<li><b>吸顶日期跨度</b>：视口内首末资产行的日期区间直出（倒序新→旧，如「2021年5月30日 - 5月11日」），与 iCloud GridHeader 同构；过滤 overscan 预热行保证与真实可视范围一致。</li>
+<li><b>日期导航面板（方案 C，复刻 iCloud 截图布局）</b>：工具栏「日期」按钮 → 下拉面板（左侧年份列表 + 右侧月份缩略图网格 3 行×4 列，无滚动条；<code>/api/dates</code> 一次拉全约 108 个月，含每月 offset 与代表缩略图 thumbId）。点月份 → 关闭面板 + <b>滚动定位到该月首资产行</b>（不再重置数据/归零，基于精确总高度直接设 scrollTop）。面板 toggle 开/关，点击外部/Esc 关闭。</li>
+<li><b>月份面板高亮</b>：currentYm 与吸顶同口径（过滤 overscan），打开面板时高亮 = 视口首行月份。</li>
 </ul>
+<p class="muted">C 方案关键收益：总高度精确 → 滚动条无需按加载进度伸缩；滚动跳转（如跳到 2021年5月）后向上/向下双向滚动加载均自然衔接，无需「加载上一页」补丁。内存 LRU 因本地场景收益低已后置。</p>
+
 <p class="muted">已实现但暂未覆盖：向上翻页（跳转后向更早月份继续滚动只能靠再次点定位条）——留待 P2 补「加载上一页」。内存 LRU 因本地场景收益低已后置。</p>
 
 <h3>4.3 图片加载器（对标 DerivativeImage）</h3>
@@ -295,8 +302,8 @@ CREATE VIRTUAL TABLE assets_fts USING fts5(filename, location_text);
 
 <h3>4.6 网格视图其余细节</h3>
 <ul>
-<li><b>顶部工具栏</b>：「日期」按钮（打开日期导航面板）+ 缩放滑块（连续 3~9 列，默认 8）+ 主题切换按钮（浅色/深色）。<span class="muted">（收藏 / 下载 / 删除 / 全屏 / 批量选择按 P2 范围收缩不做——本地原文件齐全，云管理类功能无必要）</span></li>
-<li><b>日期定位</b>：侧边「年份/月份」导航（<code>/api/dates</code>），点击滚动到对应 offset；滚动中顶部 <code>GridHeader</code> 实时显示当前日期。</li>
+<li><b>顶部工具栏</b>：「日期」按钮（打开日期导航面板）+ 缩放滑块（连续 4~12 列，默认 8）+ 主题切换按钮（浅色/深色）。<span class="muted">（收藏 / 下载 / 删除 / 全屏 / 批量选择按 P2 范围收缩不做——本地原文件齐全，云管理类功能无必要）</span></li>
+<li><b>日期定位</b>：侧边「年份/月份」导航（<code>/api/dates</code>），点击滚动定位到对应月份首行；滚动中顶部吸顶实时显示<b>视口日期跨度</b>（如「2021年5月30日 - 5月11日」）。</li>
 <li><b>选择模式</b>：shift 连选 + 拖拽框选（可选，P2）。</li>
 </ul>
 
@@ -326,7 +333,7 @@ F:\iPhone\icloud-app\
 │  │  ├─ metadata/index.ts   <span class="c"># exifr（EXIF/GPS/Orientation）+ ffprobe（视频时长）</span>
 │  │  ├─ scanner/index.ts    <span class="c"># 目录扫描、实况配对（基名归一 _HEVC）、UPSERT 幂等入库</span>
 │  │  ├─ pipeline/           <span class="c"># thumbnails（懒生成三档）+ queue（p-queue 并发 8）+ in-flight 去重</span>
-│  │  └─ routes/             <span class="c"># assets（游标分页）/ thumb / video（Range 206）/ stats（含 /api/dates）/ search（FTS5）</span>
+│  │  └─ routes/             <span class="c"># assets（cursor + offset 区间）/ thumb / video（Range 206）/ stats（含 /api/dates）/ search（FTS5）/ info（EXIF 详情）</span>
 │  ├─ scripts/               <span class="c"># install-ffmpeg-full.ps1（HEIC 解码）+ fix-asset-size.ts（宽高修正）+ rebuild-orientation-thumbs.ts（方向缓存重建）</span>
 │  ├─ vendor/                <span class="c"># BtbN ffmpeg full 版（含 libheif）</span>
 │  └─ cache/                 <span class="c"># thumbs/ 缩略图 + library.db + stats.json（可删重建）</span>
@@ -336,7 +343,7 @@ F:\iPhone\icloud-app\
 │  │  ├─ components/GridScroller.vue / GridItem.vue / DateNavPanel.vue   <span class="c"># 虚拟滚动 + 单项（blur→real）+ 日期导航面板（方案 C）</span>
 │  │  ├─ components/detail/LivePhoto.vue / VideoStage.vue
 │  │  ├─ composables/useLazyImage.ts   <span class="c"># IntersectionObserver 懒加载</span>
-│  │  ├─ stores/assets.ts / theme.ts   <span class="c"># Pinia 游标分页缓存 / 深浅主题（localStorage 持久化）</span>
+│  │  ├─ stores/assets.ts / theme.ts   <span class="c"># Pinia 区间懒加载缓存（pages Map）/ 深浅主题（localStorage 持久化）</span>
 │  │  ├─ router/index.ts     <span class="c"># hash 模式：#/photo/:id</span>
 │  │  └─ api/client.ts       <span class="c"># API 封装（thumb/video/stream URL，含缩略图 rev 版本号）</span>
 │  └─ vite.config.ts         <span class="c"># /api 代理 → 8899</span>
@@ -347,7 +354,8 @@ F:\iPhone\icloud-app\
 <table>
 <tr><th>阶段</th><th>内容</th><th>验收标准</th><th>状态</th></tr>
 <tr><td><span class="tag blue">P0 最小可用</span></td><td>扫描入库 + 网格虚拟滚动 + grid 缩略图懒生成 + 单击进详情（detail 图）+ 视频原生播放</td><td>全部资产可见；快速滚动无白屏闪烁；视频可拖动进度</td><td><span class="tag green">✅ 已验收</span></td></tr>
-<tr><td><span class="tag green">P1 还原体验</span></td><td>缩放滑块（3~9 列）+ 详情邻居预加载 + 实况照片（按住播放）+ blur 占位 + hash 深链 + 键盘切换 + 日期分组定位（月份头行 + 吸顶月份指示器 + 右侧月份快速定位条）</td><td>对标 iCloud 交互：缩放不闪、详情秒开、实况按住即动、点月份直达该月首行</td><td><span class="tag green">✅ 已验收</span><br><span class="tag orange">剩 1 项待做</span>：内存 LRU（本地场景收益低，可后置）</td></tr>
+<tr><td><span class="tag green">P1 还原体验</span></td><td>缩放滑块（4~12 列）+ 详情邻居预加载 + 实况照片（按住播放）+ blur 占位 + hash 深链 + 键盘切换 + 日期分组定位（月份头行 + 吸顶月份指示器 + 右侧月份快速定位条）</td><td>对标 iCloud 交互：缩放不闪、详情秒开、实况按住即动、点月份直达该月首行</td><td><span class="tag green">✅ 已验收</span><br><span class="tag orange">剩 1 项待做</span>：内存 LRU（本地场景收益低，可后置）</td></tr>
+<tr><td><span class="tag green">照片墙全量骨架（C 方案，2026-09-08）</span></td><td>行序列全量精确生成（月份头 + 资产行）→ 滚动条 = 全库、双向滚动；store 改页区间懒加载（pages Map）；吸顶月份指示器升级为<b>日期跨度</b>（视口首末资产行，倒序直出）；月份头标签改区间（如「2021年4月-3月」）；列数范围 4~12 + 行高抽象 <code>getRowHeight</code>（原比例扩展点）</td><td>跳转 2021年5月滚动条全库可用；双向滚动加载自然衔接；吸顶跨度与可视范围一致</td><td><span class="tag green">✅ 已合并</span></td></tr>
 <tr><td><span class="tag orange">P2 增强</span></td><td>搜索（FTS5 trigram：文件名/日期子串）<span class="tag green" style="margin-left:6px">✅ 已验收</span><br><span class="muted">用户已决定不做：HEVC 按需转码缓存（本机 Chrome 已直出）/ 收藏 / 最近删除 / 下载原片 / 批量选择（本地原文件齐全，云管理类功能无必要）</span></td><td>全平台视频可播；功能完整自用</td><td><span class="tag green">✅ 已完成（范围收缩）</span></td></tr>
 <tr><td><span class="tag blue">稳定化（2026-09-08）</span></td><td>代码审查 P1×5 + P2×7 共 12 项问题全部修复：stats 异步体积统计+落盘缓存（首屏 229ms）、原图宽高 11,009 条全量修正（fix-size）、EXIF 方向缩略图重建（fix-thumbs 103 张）、浏览器缩略图缓存失效链路（thumbUrl rev 版本号 + 响应头去 immutable）、实况按住播放带原声 + id 变化重置 + 静音兜底、详情/搜索竞态守卫、扫描断点续跑容错</td><td>全量回归通过（网格/详情/实况/视频/搜索/日期定位）；git 私有仓库 + GitHub 远程（isChen0111/icloud-app），每次修复提交推送</td><td><span class="tag green">✅ 已验收</span></td></tr>
 <tr><td><span class="tag blue">扫描配对修复（2026-09-08 二次）</span></td><td><b>跨目录同名文件坑</b>（详见 §3.2 callout）：iCloudPD 把同名文件（不同设备/编辑版本）归档进不同日期目录，早期按「文件名基名」配对导致实况配对错乱、3,382 个视频被静默丢弃。修复：配对 key 改为「目录 + 基名」+ 增量扫描复用元数据仅修正 type/live_video。重扫后 11,009 → 12,591 资产（photo 1,982 / live 7,434 / video 3,175），与磁盘文件精确一致；与 iCloud 统计基本对齐（照片 9,416≈9,419，视频 3,175≈3,033）</td><td>全量重扫完成；实况配对跨目录 0、live 配对视频磁盘缺失 0、video 文件磁盘缺失 0；缩略图缓存孤儿 0</td><td><span class="tag green">✅ 已修复</span></td></tr>
