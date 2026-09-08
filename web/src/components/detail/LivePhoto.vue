@@ -11,18 +11,40 @@
  *   - pointer capture：按住后把指针"锁"在本元素，滑出屏幕松开也能收到事件
  *   - 首次播放前不加载视频（onPointerDown 时才设 src，节省网络/内存）
  */
-import { nextTick, ref } from 'vue'
+import { computed, nextTick, ref, watch } from 'vue'
 import { thumbUrl, videoStreamUrl } from '../../api/client'
 
 const props = defineProps<{ id: number }>()
 
-/** 静止帧（detail 档大图） */
-const stillSrc = thumbUrl(props.id, 'detail')
+/**
+ * 静止帧（detail 档大图）。
+ * 修复（详情页连按切换验证发现）：旧实现是 setup 里的普通常量，props.id 变化
+ * 后 stillSrc 不会重新计算 → 快速翻页时图片停在第一张。必须用 computed 响应 id。
+ */
+const stillSrc = computed(() => thumbUrl(props.id, 'detail'))
 /** 实况视频 URL（首次按下才注入，避免提前拉流量） */
 const videoSrc = ref('')
 const playing = ref(false)
 /** video 元素引用（按下播放/松开暂停复位都要用它） */
 const videoEl = ref<HTMLVideoElement | null>(null)
+
+/**
+ * id 变化（详情页连按 ←→ 复用本组件）：重置视频状态。
+ * 旧实现 videoSrc 只在为空时赋值，切换 id 后按下仍播放上一个实况的视频。
+ */
+watch(
+  () => props.id,
+  () => {
+    videoSrc.value = ''
+    playing.value = false
+    const v = videoEl.value
+    if (v) {
+      v.pause()
+      v.removeAttribute('src')
+      v.load()
+    }
+  },
+)
 
 async function onPointerDown(e: PointerEvent): Promise<void> {
   // 指针捕获：按住后把指针"锁"在本元素，滑出屏幕松开也能收到 pointerup

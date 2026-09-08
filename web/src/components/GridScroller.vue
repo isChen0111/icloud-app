@@ -140,7 +140,32 @@ async function jumpToMonth(offset: number): Promise<void> {
   if (offset === store.baseOffset) return // 已在目标位置
   await store.jumpToOffset(offset)
   if (scrollEl.value) scrollEl.value.scrollTop = 0
-  requestAnimationFrame(() => rowVirtualizer.value?.measure())
+  requestAnimationFrame(() => {
+    rowVirtualizer.value?.measure()
+    // 目标月资产很少（不足一屏）时滚动条不存在 → onScroll 永不触发 → 卡死。
+    // 跳转后主动检查并自动补载下一页，直到撑满视口或加载到底。
+    autoFillIfNeeded()
+  })
+}
+
+/**
+ * 内容不足一屏时自动续载（修复审查 P1-③ 死区）：
+ * 跳到资产稀疏的月份后，网格高度 < 视口高度 → 没有滚动条 → loadMore 永不触发，
+ * 用户会被卡在这几行里看不到后续内容。本函数在 items 变化/跳转后检查，
+ * 未撑满视口（含 800px 预取余量）就继续加载，直到填满或 exhausted。
+ */
+function autoFillIfNeeded(): void {
+  const el = scrollEl.value
+  if (!el) return
+  if (store.loading || !store.hasMore) return
+  if (el.scrollHeight <= el.clientHeight + 800) {
+    void store.loadMore().then(() => {
+      requestAnimationFrame(() => {
+        rowVirtualizer.value?.measure()
+        autoFillIfNeeded() // 一页仍不够 → 递归补载
+      })
+    })
+  }
 }
 
 /** 列数变化 → 行高/行数变化 → 让虚拟器重新测量 */
@@ -180,10 +205,15 @@ onMounted(async () => {
   }
 })
 
-// 翻页/跳转后行数变化 → 重新测量（让新行立即进入可滚范围）
+// 翻页/跳转后行数变化 → 重新测量（让新行立即进入可滚范围）；
+// 顺带检查是否需要自动补载（稀疏月死区修复）
 watch(
   () => store.items.length,
-  () => requestAnimationFrame(() => rowVirtualizer.value?.measure()),
+  () =>
+    requestAnimationFrame(() => {
+      rowVirtualizer.value?.measure()
+      autoFillIfNeeded()
+    }),
 )
 </script>
 

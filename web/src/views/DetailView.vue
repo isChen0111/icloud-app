@@ -21,6 +21,11 @@ const router = useRouter()
 const detail = ref<AssetDetail | null>(null)
 const loading = ref(false)
 const loadError = ref(false)
+/** 大图 <img> 加载失败（坏图/生成失败时显示占位，避免破损图标） */
+const photoError = ref(false)
+
+/** 请求序号守卫：快速连按 ←→ 时丢弃过期响应（修复审查 P1-④ 竞态） */
+let loadSeq = 0
 
 /** 当前 id（来自路由参数） */
 const currentId = computed(() => Number(route.params.id))
@@ -32,21 +37,30 @@ const bigSrc = computed(() => (detail.value ? thumbUrl(detail.value.id, 'detail'
 const isLive = computed(() => detail.value?.type === 'live')
 const isVideo = computed(() => detail.value?.type === 'video')
 
-/** 加载指定 id 的详情 */
+/**
+ * 加载指定 id 的详情。
+ * 竞态说明：切换 id 后若旧请求晚返回，会覆盖当前显示（文件名/序号错位）。
+ * 每次 load 递增 loadSeq，只有 seq 与最新一致的响应才允许写入 state。
+ */
 async function load(id: number): Promise<void> {
+  const seq = ++loadSeq
   loading.value = true
   loadError.value = false
+  photoError.value = false
   try {
-    detail.value = await fetchAsset(id)
+    const data = await fetchAsset(id)
+    if (seq !== loadSeq) return // 过期响应：丢弃，不覆盖新数据
+    detail.value = data
     // 预取下一个邻居的大图（隐藏 Image 预热，切换时直接命中浏览器缓存）
-    if (detail.value?.nextId) {
+    if (data.nextId) {
       const img = new Image()
-      img.src = thumbUrl(detail.value.nextId, 'detail')
+      img.src = thumbUrl(data.nextId, 'detail')
     }
   } catch {
+    if (seq !== loadSeq) return
     loadError.value = true
   } finally {
-    loading.value = false
+    if (seq === loadSeq) loading.value = false
   }
 }
 
@@ -95,9 +109,17 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
         <LivePhoto v-if="isLive" :id="detail.id" />
         <!-- 普通视频：原生播放器 -->
         <VideoStage v-else-if="isVideo" :id="detail.id" />
-        <!-- 普通照片：大图（detail 档淡入） -->
+        <!-- 普通照片：大图（detail 档淡入；失败时显示占位而非破损图标） -->
         <div v-else class="photo-stage">
-          <img :src="bigSrc" class="big-photo" alt="" draggable="false" />
+          <img
+            v-if="!photoError"
+            :src="bigSrc"
+            class="big-photo"
+            alt=""
+            draggable="false"
+            @error="photoError = true"
+          />
+          <div v-else class="center-hint">图片加载失败</div>
         </div>
       </div>
     </div>
