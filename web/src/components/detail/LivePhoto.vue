@@ -22,6 +22,10 @@ const props = defineProps<{ id: number }>()
  * 后 stillSrc 不会重新计算 → 快速翻页时图片停在第一张。必须用 computed 响应 id。
  */
 const stillSrc = computed(() => thumbUrl(props.id, 'detail'))
+/** 静止帧占位（grid 档秒出，detail 加载完前模糊铺底） */
+const stillPlaceholder = computed(() => thumbUrl(props.id, 'grid'))
+/** detail 静止帧是否加载完成（淡入覆盖占位） */
+const stillLoaded = ref(false)
 /** 实况视频 URL（首次按下才注入，避免提前拉流量） */
 const videoSrc = ref('')
 const playing = ref(false)
@@ -39,6 +43,7 @@ watch(
   () => {
     videoSrc.value = ''
     playing.value = false
+    stillLoaded.value = false // 新资产：占位重新显示，等 detail 淡入
     const v = videoEl.value
     if (v) {
       v.pause()
@@ -106,8 +111,10 @@ function onVideoEnded(video: HTMLVideoElement): void {
     @pointerup="onPointerUp"
     @pointercancel="onPointerUp"
   >
-    <!-- 静止帧 -->
-    <img :src="stillSrc" class="stage still" alt="" draggable="false" />
+    <!-- 静止帧占位（grid 档秒出，模糊铺底） -->
+    <img :src="stillPlaceholder" class="stage still-placeholder" alt="" draggable="false" />
+    <!-- 静止帧（detail 档，加载完成淡入覆盖占位） -->
+    <img :src="stillSrc" class="stage still" :class="{ loaded: stillLoaded }" alt="" draggable="false" @load="stillLoaded = true" />
 
     <!-- 实况视频叠层：:muted="!playing" —— 按住播放带原声（iCloud 原版行为），松开复位静音属性 -->
     <video
@@ -150,6 +157,20 @@ function onVideoEnded(video: HTMLVideoElement): void {
   height: 100%;
   object-fit: contain;
   pointer-events: none;
+}
+/* 静止帧 detail 档：加载完成前隐藏，@load 后 0.3s 淡入覆盖占位 */
+.still {
+  z-index: 1;
+  opacity: 0;
+  transition: opacity 0.3s ease;
+}
+.still.loaded { opacity: 1; }
+/* 静止帧占位（grid 档）：模糊 + 轻微放大防边缘透底 */
+.still-placeholder {
+  z-index: 0;
+  filter: blur(16px);
+  transform: scale(1.02);
+  opacity: 0.9;
 }
 .motion {
   z-index: 2;

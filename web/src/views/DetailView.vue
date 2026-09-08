@@ -44,6 +44,9 @@ const currentId = computed(() => Number(route.params.id))
 /** 大图 URL（detail 档） */
 const bigSrc = computed(() => (detail.value ? thumbUrl(detail.value.id, 'detail') : ''))
 
+/** 占位图 URL（grid 档，照片墙已生成 + 浏览器已缓存 → 秒出；detail 加载完前模糊铺底） */
+const placeholderSrc = computed(() => (detail.value ? thumbUrl(detail.value.id, 'grid') : ''))
+
 /** 根据类型选择展示器 */
 const isLive = computed(() => detail.value?.type === 'live')
 const isVideo = computed(() => detail.value?.type === 'video')
@@ -167,6 +170,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
         <VideoStage v-else-if="isVideo" :id="detail.id" />
         <!-- 普通照片：大图（detail 档淡入；失败时显示占位而非破损图标） -->
         <div v-else class="photo-stage">
+          <img :src="placeholderSrc" class="photo-placeholder" alt="" draggable="false" />
           <img
             v-if="!photoError"
             :src="bigSrc"
@@ -287,7 +291,22 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
   align-items: center;
   justify-content: center;
 }
+/* 占位（grid 档）：铺满舞台 + 模糊 + 轻微放大（防模糊边缘透出背景黑边） */
+.photo-placeholder {
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  filter: blur(16px);
+  transform: scale(1.02);
+  opacity: 0.9;
+}
 .big-photo {
+  position: absolute;
+  inset: 0;
+  margin: auto;
   max-width: 100%;
   max-height: 100%;
   object-fit: contain;
