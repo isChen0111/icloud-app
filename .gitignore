@@ -1,0 +1,38 @@
+# ============ 本地 iCloud 照片浏览器 .gitignore ============
+# 原则：代码、文档、脚本入库；照片、依赖、缓存、可重下的大二进制一律排除。
+
+# 照片库（162GB，iCloudPD 只读拉取，绝不提交）
+/iCloudPhoto/
+
+# iCloudPD 工具（与本项目无关）
+/iCloudTool/
+
+# 依赖
+node_modules/
+/server/node_modules/
+/web/node_modules/
+
+# 缓存与生成产物（SQLite 库 + 缩略图，可删除重建）
+/server/cache/
+
+# 前端构建产物
+/web/dist/
+
+# 大体积二进制（163MB zip + 300MB 解压目录；scripts/install-ffmpeg-full.ps1 可从 GitHub 重新下载）
+/server/vendor/ffmpeg-full.zip
+/server/vendor/ffmpeg-full/
+
+# 日志与系统文件
+*.log
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE
+.vscode/
+.idea/
+
+# 环境变量与密钥（本地路径、令牌等绝不入库）
+.env
+.env.*
+*.local
