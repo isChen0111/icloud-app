@@ -55,14 +55,24 @@ async function onPointerDown(e: PointerEvent): Promise<void> {
   }
 
   if (!videoSrc.value) videoSrc.value = videoStreamUrl(props.id)
-  playing.value = true // 触发 video 淡入（opacity 过渡）
+  playing.value = true // 触发 video 淡入（opacity 过渡）+ :muted="!playing" 取消静音
 
   // 关键：必须显式调用 play()！video 元素由 v-if="videoSrc" 刚创建，
   // 等它在 DOM 挂载后再播放（play() 会自行等待首帧数据就绪）
   await nextTick()
-  await videoEl.value?.play().catch(() => {
-    /* 播放被拒（极少见，muted+playsinline 下一般放行） */
-  })
+  const v = videoEl.value
+  if (!v) return
+  // 带声播放（修复：实况原声。pointerdown 是用户手势，满足自动播放策略的激活条件）
+  v.muted = false
+  try {
+    await v.play()
+  } catch {
+    // 兜底：个别环境仍拒绝带声播放 → 回退静音，保证"至少出画面"不丢
+    v.muted = true
+    await v.play().catch(() => {
+      /* 静音播放也被拒（极少见），保持静帧即可 */
+    })
+  }
 }
 
 function onPointerUp(): void {
@@ -93,15 +103,15 @@ function onVideoEnded(video: HTMLVideoElement): void {
     <!-- 静止帧 -->
     <img :src="stillSrc" class="stage still" alt="" draggable="false" />
 
-    <!-- 实况视频叠层 -->
+    <!-- 实况视频叠层：:muted="!playing" —— 按住播放带原声（iCloud 原版行为），松开复位静音属性 -->
     <video
       ref="videoEl"
       v-if="videoSrc"
       :src="videoSrc"
       class="stage motion"
       :class="{ on: playing }"
+      :muted="!playing"
       playsinline
-      muted
       loop
       @ended="(e) => onVideoEnded(e.target as HTMLVideoElement)"
     ></video>
