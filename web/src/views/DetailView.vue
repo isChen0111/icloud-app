@@ -7,13 +7,17 @@
  *   - 方向键/点击切换，切换时预取邻居大图（隐藏 Image 预热），回来秒开
  *   - type=live → 实况照片（按住播放）；type=video → 原生视频播放器
  *   - hash 路由深链：#/photo/:id
+ *   - 顶栏：左（返回+文件名）· 中（拍摄时间 + "第 N / total 项"）· 右（信息按钮）
+ *   - 「信息」：右侧抽屉 InfoPanel，实时拉取 /api/assets/:id/info
  */
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { fetchAsset, thumbUrl } from '../api/client'
-import type { AssetDetail } from '../types'
+import { fetchAsset, fetchAssetInfo, thumbUrl } from '../api/client'
+import type { AssetDetail, AssetInfo } from '../types'
+import { formatTakenShort } from '../utils/format'
 import LivePhoto from '../components/detail/LivePhoto.vue'
 import VideoStage from '../components/detail/VideoStage.vue'
+import InfoPanel from '../components/detail/InfoPanel.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -27,6 +31,13 @@ const photoError = ref(false)
 /** 请求序号守卫：快速连按 ←→ 时丢弃过期响应（修复审查 P1-④ 竞态） */
 let loadSeq = 0
 
+/** 信息面板状态：是否打开 / 拉取中 / 数据 */
+const infoOpen = ref(false)
+const infoLoading = ref(false)
+const info = ref<AssetInfo | null>(null)
+/** 信息请求序号守卫（切换资产时丢弃过期响应） */
+let infoSeq = 0
+
 /** 当前 id（来自路由参数） */
 const currentId = computed(() => Number(route.params.id))
 
@@ -36,6 +47,9 @@ const bigSrc = computed(() => (detail.value ? thumbUrl(detail.value.id, 'detail'
 /** 根据类型选择展示器 */
 const isLive = computed(() => detail.value?.type === 'live')
 const isVideo = computed(() => detail.value?.type === 'video')
+
+/** 顶栏：拍摄时间短格式（"2026年8月31日 15:45"，对齐 iCloud 顶栏） */
+const timeText = computed(() => (detail.value ? formatTakenShort(detail.value.dateTaken) : ''))
 
 /**
  * 加载指定 id 的详情。
@@ -64,6 +78,31 @@ async function load(id: number): Promise<void> {
   }
 }
 
+/** 打开信息面板：懒拉取（点开才解析原文件 EXIF，低频操作） */
+async function openInfo(): Promise<void> {
+  if (infoOpen.value) return // 已打开则忽略（按钮 toggle 在关闭处处理）
+  infoOpen.value = true
+  infoLoading.value = true
+  info.value = null
+  const seq = ++infoSeq
+  try {
+    const data = await fetchAssetInfo(currentId.value)
+    if (seq !== infoSeq) return // 已切换资产：丢弃过期响应
+    info.value = data
+  } catch {
+    if (seq !== infoSeq) return
+    info.value = null
+  } finally {
+    if (seq === infoSeq) infoLoading.value = false
+  }
+}
+
+/** 关闭信息面板（Esc / 遮罩 / × 共用） */
+function closeInfo(): void {
+  infoOpen.value = false
+  info.value = null
+}
+
 /** 切到邻居 */
 function go(direction: 1 | -1): void {
   const target = direction === 1 ? detail.value?.nextId : detail.value?.prevId
@@ -73,6 +112,11 @@ function go(direction: 1 | -1): void {
 
 /** 键盘导航 */
 function onKeydown(e: KeyboardEvent): void {
+  // 信息面板打开时：Esc 优先关面板，不返回网格
+  if (infoOpen.value && e.key === 'Escape') {
+    closeInfo()
+    return
+  }
   if (e.key === 'ArrowRight' || e.key === ' ') { e.preventDefault(); go(1) }
   else if (e.key === 'ArrowLeft') { e.preventDefault(); go(-1) }
   else if (e.key === 'Escape') { void router.push({ name: 'grid' }) }
@@ -83,22 +127,34 @@ onMounted(() => {
   void load(currentId.value)
 })
 
-watch(currentId, (id) => void load(id))
+watch(currentId, (id) => {
+  void load(id)
+  // 切换资产时关闭信息面板（面板数据属于上一个资产）
+  if (infoOpen.value) closeInfo()
+})
 
 onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
 </script>
 
 <template>
   <div class="detail-view">
-    <!-- 顶栏：返回 + 文件名 + 序号 -->
+    <!-- 顶栏：左（返回+文件名）｜中（时间+序号/总数，绝对居中）｜右（信息按钮） -->
     <div class="detail-topbar">
-      <button class="back" @click="router.push({ name: 'grid' })">← 返回</button>
-      <span class="name">{{ detail?.filename ?? '…' }}</span>
-      <span class="meta">
-        <template v-if="detail?.type === 'live'">实况照片</template>
-        <template v-else-if="detail?.type === 'video'">视频{{ detail?.duration ? ` · ${Math.round(detail.duration)}s` : '' }}</template>
-        <template v-else>照片</template>
-      </span>
+      <div class="tb-left">
+        <button class="back" @click="router.push({ name: 'grid' })">← 返回</button>
+        <span class="name" :title="detail?.filename">{{ detail?.filename ?? '…' }}</span>
+      </div>
+
+      <div class="tb-center">
+        <div class="time">{{ timeText }}</div>
+        <div v-if="detail" class="count">{{ detail.position.toLocaleString() }} / {{ detail.total.toLocaleString() }} 项</div>
+      </div>
+
+      <div class="tb-right">
+        <button class="info-btn" aria-label="信息" :class="{ active: infoOpen }" @click="infoOpen ? closeInfo() : openInfo()">
+          i
+        </button>
+      </div>
     </div>
 
     <!-- 舞台 -->
@@ -127,6 +183,9 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
     <!-- 左右切换（隐藏式，hover 出现） -->
     <button v-if="detail?.prevId != null" class="nav prev" @click="go(-1)">‹</button>
     <button v-if="detail?.nextId != null" class="nav next" @click="go(1)">›</button>
+
+    <!-- 信息抽屉 -->
+    <InfoPanel v-if="infoOpen" :info="info" :loading="infoLoading" @close="closeInfo" />
   </div>
 </template>
 
@@ -140,12 +199,45 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
   flex-direction: column;
 }
 .detail-topbar {
+  position: relative; /* 作为中栏绝对居中的定位参考 */
   display: flex;
   align-items: center;
   gap: 16px;
-  height: 44px;
+  height: 52px;
   padding: 0 16px;
   flex-shrink: 0;
+}
+.tb-left {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+.tb-center {
+  /* 真正居中（不随左右内容宽度偏移） */
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  text-align: center;
+  pointer-events: none;
+}
+.tb-right {
+  flex: 1;
+  display: flex;
+  justify-content: flex-end;
+}
+.time {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--detail-text-1);
+  white-space: nowrap;
+}
+.count {
+  font-size: 11px;
+  color: var(--detail-text-2);
+  margin-top: 2px;
+  white-space: nowrap;
 }
 .back {
   background: none;
@@ -155,6 +247,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
   padding: 5px 12px;
   border-radius: 6px;
   cursor: pointer;
+  flex-shrink: 0;
 }
 .back:hover { background: var(--bg-hover); }
 .name {
@@ -164,11 +257,21 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.meta {
-  font-size: 12px;
-  color: var(--detail-text-2);
-  margin-left: auto;
+.info-btn {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  border: 1px solid var(--detail-border);
+  background: none;
+  color: var(--detail-text-1);
+  font-size: 17px;
+  font-style: italic;
+  font-family: Georgia, serif;
+  line-height: 1;
+  cursor: pointer;
 }
+.info-btn:hover { background: var(--bg-hover); }
+.info-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
 .stage {
   flex: 1;
   min-height: 0;

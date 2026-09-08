@@ -18,6 +18,7 @@ import { registerThumbRoutes } from './routes/thumb.js'
 import { registerVideoRoutes } from './routes/video.js'
 import { registerStatsRoutes } from './routes/stats.js'
 import { registerSearchRoutes } from './routes/search.js'
+import { registerInfoRoutes } from './routes/info.js'
 import { runScan, scanProgress } from './scanner/index.js'
 
 async function main(): Promise<void> {
@@ -39,6 +40,7 @@ async function main(): Promise<void> {
   await registerVideoRoutes(app)
   await registerStatsRoutes(app)
   await registerSearchRoutes(app)
+  await registerInfoRoutes(app)
 
   // ③ 首次启动自动扫描（幂等：已有数据则直接跳过）
   const { c } = getDb().prepare(`SELECT COUNT(*) AS c FROM assets`).get() as { c: number }
