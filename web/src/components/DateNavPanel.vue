@@ -144,7 +144,7 @@ onUnmounted(() => {
             />
             <span class="dn-month-meta">
               <span class="dn-month-name">{{ Number(m.ym.slice(5)) }}月</span>
-              <span class="dn-month-count">{{ m.count }}</span>
+              <span class="dn-month-count">{{ m.count }} 项</span>
             </span>
           </button>
 
