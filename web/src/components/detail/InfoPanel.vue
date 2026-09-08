@@ -9,7 +9,7 @@
  * 主题：全部走全局 CSS 变量（--bg-panel / --text-1/2/3 / --border / --bg-meta），
  * 浅色深色自动适配，无需额外判断。
  */
-import type { AssetInfo } from '../types'
+import type { AssetInfo } from '../../types'
 import {
   formatAperture,
   formatBitRate,

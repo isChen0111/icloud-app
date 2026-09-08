@@ -23,6 +23,46 @@ export function formatTakenFull(iso: string): string {
   return `${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日 星期${WEEK[d.getDay()]} ${p(d.getHours())}:${p(d.getMinutes())}`
 }
 
+/**
+ * 日期跨度（照片墙顶部吸顶指示器，对标 iCloud GridHeader 的日期范围显示）。
+ * 输入视口内首张与末张资产的 dateTaken（ISO8601）。
+ * **照片墙为倒序流（上新下旧）**，因此保持传入顺序直出（新 → 旧），
+ * 例如 "2021年5月30日 - 5月11日"；同年省略第二个年份，跨年补全：
+ *   同年       "2021年5月30日 - 5月11日" / "2021年4月22日 - 4月30日"
+ *   跨年       "2026年1月2日 - 2025年12月31日"
+ *   同一天     "2021年4月22日"
+ * 解析失败时原样返回 isoA（前端兜底，不抛错）。
+ */
+export function formatDateRange(isoA: string, isoB: string): string {
+  const a = new Date(isoA)
+  const b = new Date(isoB)
+  if (Number.isNaN(a.getTime()) || Number.isNaN(b.getTime())) return isoA
+  const y1 = a.getFullYear()
+  const m1 = a.getMonth() + 1
+  const d1 = a.getDate()
+  const y2 = b.getFullYear()
+  const m2 = b.getMonth() + 1
+  const d2 = b.getDate()
+  if (y1 === y2 && m1 === m2 && d1 === d2) return `${y1}年${m1}月${d1}日`
+  if (y1 === y2) return `${y1}年${m1}月${d1}日 - ${m2}月${d2}日`
+  return `${y1}年${m1}月${d1}日 - ${y2}年${m2}月${d2}日`
+}
+
+/**
+ * 月份区间（照片墙月份头行标签，倒序流新 → 旧）：
+ * 跨行切片下某月组的尾行可能混入相邻月资源，标签需反映该组真实月份范围。
+ *   同月       "2021年4月"
+ *   同年跨月   "2021年4月-3月"（省略第二个年份）
+ *   跨年       "2022年1月-2021年12月"
+ */
+export function formatMonthRange(ymStart: string, ymEnd: string): string {
+  const [y1, m1] = ymStart.split('-')
+  const [y2, m2] = ymEnd.split('-')
+  if (ymStart === ymEnd) return `${Number(y1)}年${Number(m1)}月`
+  if (y1 === y2) return `${Number(y1)}年${Number(m1)}月-${Number(m2)}月`
+  return `${Number(y1)}年${Number(m1)}月-${Number(y2)}年${Number(m2)}月`
+}
+
 /** 文件大小："1.3 MB" / "45.2 MB" / "2.1 GB" */
 export function formatBytes(bytes: number): string {
   if (!bytes || bytes <= 0) return '—'
