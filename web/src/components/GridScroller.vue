@@ -14,7 +14,8 @@
  *   ⑤ 日期分组定位（P1）：
  *      - 行模型 = 「月份头行 + 资产行」混合，月份变化时插一行头
  *      - 顶部吸顶月份指示器（随滚动实时更新，对标 iCloud GridHeader）
- *      - 右侧月份快速定位条（点击 → offset 跳页加载 → 归零滚动即到该月）
+ *      - 日期导航（方案 C）：工具栏「日期」按钮 → 弹出 DateNavPanel
+ *        （左侧年份 + 右侧月份缩略图，点月份 → offset 跳页加载 → 归零滚动即到该月）
  *
  * 数学关系（重点理解）：
  *   itemWidth   = (容器宽 - (列数-1)*间距) / 列数
@@ -28,6 +29,7 @@ import { useAssetStore } from '../stores/assets'
 import { fetchDates } from '../api/client'
 import type { MonthGroup } from '../types'
 import GridItem from './GridItem.vue'
+import DateNavPanel from './DateNavPanel.vue'
 
 const store = useAssetStore()
 
@@ -126,14 +128,23 @@ const currentMonthLabel = computed(() => {
   return fmtMonth(r.month)
 })
 
-/** 右侧定位条数据（一次拉全，~100 个月份） */
+/** 日期导航面板数据（一次拉全，~100 个月份） */
 const months = ref<MonthGroup[]>([])
-/** 当前可视月份（定位条高亮） */
+/** 当前可视月份（面板当前月高亮） */
 const currentYm = computed(() => {
   const vs = rowVirtualizer.value?.getVirtualItems() ?? []
   if (vs.length === 0) return ''
   return rows.value[vs[0].index]?.month ?? ''
 })
+
+/** 方案 C：日期导航面板开关 */
+const dateNavOpen = ref(false)
+
+/** 面板选择月份 → 关闭面板 + offset 跳页 */
+function onNavSelect(offset: number): void {
+  dateNavOpen.value = false
+  void jumpToMonth(offset)
+}
 
 /** 点月份 → offset 跳页加载 → 滚动归零（后端保证该页以目标月开头） */
 async function jumpToMonth(offset: number): Promise<void> {
@@ -196,7 +207,7 @@ onMounted(async () => {
   // 关键：虚拟器在 setup 时初始化，当时滚动容器还没挂载（getScrollElement 返回 null），
   // 必须在元素就绪 + 数据就绪后手动 measure 一次，虚拟行才会填充
   rowVirtualizer.value.measure()
-  // 拉取月份列表（失败静默，定位条隐藏即可）
+  // 拉取月份列表（失败静默，导航面板无数据即打不开）
   try {
     const res = await fetchDates()
     months.value = res.items
@@ -219,8 +230,17 @@ watch(
 
 <template>
   <div class="grid-shell">
-    <!-- 顶部控制条：缩放滑块（对标 iCloud 顶部缩略图尺寸滑块） -->
+    <!-- 顶部控制条：日期导航按钮 + 缩放滑块（对标 iCloud 顶部工具栏） -->
     <div class="toolbar">
+      <!-- 方案 C：日期导航入口（复刻 iCloud 左上角导航按钮） -->
+      <button class="date-nav-btn" title="按日期跳转" @click="dateNavOpen = true">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <rect x="3" y="4" width="18" height="17" rx="2" stroke="currentColor" stroke-width="1.8" />
+          <path d="M3 9h18M8 2v4M16 2v4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" />
+        </svg>
+        <span>日期</span>
+      </button>
+
       <span class="label">缩略图尺寸</span>
       <input
         v-model.number="colCount"
@@ -265,6 +285,7 @@ watch(
             class="grid-row"
             :style="{
               transform: `translateY(${row.start}px)`,
+
               height: `${rowHeight}px`,
             }"
           >
@@ -279,25 +300,20 @@ watch(
       </div>
     </div>
 
-    <!-- 右侧月份快速定位条（点击跳转） -->
-    <nav v-if="months.length" class="month-rail">
-      <button
-        v-for="m in months"
-        :key="m.ym"
-        class="month-rail-item"
-        :class="{ active: m.ym === currentYm }"
-        :title="`${m.label} · ${m.count} 项`"
-        @click="jumpToMonth(m.offset)"
-      >
-        {{ m.ym.slice(2) }}
-      </button>
-    </nav>
+    <!-- 方案 C：日期导航面板（左年份 + 右月份缩略图） -->
+    <DateNavPanel
+      v-if="dateNavOpen"
+      :months="months"
+      :current-ym="currentYm"
+      @select="onNavSelect"
+      @close="dateNavOpen = false"
+    />
   </div>
 </template>
 
 <style scoped>
 .grid-shell {
-  position: relative; /* 月份定位条的定位上下文 */
+  position: relative; /* 面板/定位条的定位上下文 */
   display: flex;
   flex-direction: column;
   height: 100%;
@@ -314,6 +330,24 @@ watch(
 .dim { color: rgba(245, 245, 247, 0.55); }
 .spacer { flex: 1; }
 .slider { width: 180px; accent-color: #0a84ff; }
+
+/* 方案 C：日期导航按钮（工具栏最左侧） */
+.date-nav-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  border: none;
+  background: rgba(255, 255, 255, 0.08);
+  color: #f5f5f7;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 6px 12px;
+  border-radius: 8px;
+  cursor: pointer;
+  font-family: inherit;
+  transition: background 0.15s;
+}
+.date-nav-btn:hover { background: rgba(255, 255, 255, 0.16); }
 
 /* 吸顶月份指示器 */
 .month-sticky {
@@ -373,46 +407,5 @@ watch(
   gap: 8px;
   padding: 0 12px;
   will-change: transform;
-}
-
-/* 右侧月份定位条 */
-.month-rail {
-  position: absolute;
-  right: 6px;
-  top: 96px; /* 工具栏 + 吸顶条之下 */
-  bottom: 16px;
-  width: 34px;
-  overflow-y: auto;
-  overflow-x: hidden;
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-  padding: 4px 0;
-  border-radius: 10px;
-  background: rgba(20, 20, 24, 0.55);
-  backdrop-filter: blur(6px);
-  scrollbar-width: none;
-  z-index: 4;
-}
-.month-rail-item {
-  border: none;
-  background: transparent;
-  color: rgba(245, 245, 247, 0.55);
-  font-size: 10px;
-  line-height: 1;
-  padding: 5px 2px;
-  border-radius: 6px;
-  cursor: pointer;
-  font-family: inherit;
-  transition: background 0.15s, color 0.15s;
-}
-.month-rail-item:hover {
-  background: rgba(255, 255, 255, 0.1);
-  color: #f5f5f7;
-}
-.month-rail-item.active {
-  background: rgba(10, 132, 255, 0.25);
-  color: #fff;
-  font-weight: 700;
 }
 </style>

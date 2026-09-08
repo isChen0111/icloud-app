@@ -147,8 +147,20 @@ export async function registerStatsRoutes(app: FastifyInstance): Promise<void> {
 
   app.get('/api/dates', async (_req, reply) => {
     const groups = db
-      .prepare(`SELECT substr(date_taken, 1, 7) AS ym, COUNT(*) AS cnt FROM assets GROUP BY ym ORDER BY ym DESC`)
-      .all() as { ym: string; cnt: number }[]
+      .prepare(
+        `SELECT ym, COUNT(*) AS cnt,
+                MAX(CASE WHEN rn = 1 THEN id END) AS thumb_id
+         FROM (
+           SELECT substr(date_taken, 1, 7) AS ym, id,
+                  ROW_NUMBER() OVER (
+                    PARTITION BY substr(date_taken, 1, 7)
+                    ORDER BY date_taken DESC, id DESC
+                  ) AS rn
+           FROM assets
+         )
+         GROUP BY ym ORDER BY ym DESC`,
+      )
+      .all() as { ym: string; cnt: number; thumb_id: number | null }[]
 
     // 累加出每月全局偏移（倒序：最新月 offset=0，其后顺延）→ 前端点月份即可 offset 跳页
     let acc = 0
@@ -158,6 +170,7 @@ export async function registerStatsRoutes(app: FastifyInstance): Promise<void> {
         label: `${Number(g.ym.slice(0, 4))}年${Number(g.ym.slice(5))}月`,
         count: g.cnt,
         offset: acc,
+        thumbId: g.thumb_id, // 该月代表缩略图（可能为 null，理论上每月都有资产故非空）
       }
       acc += g.cnt
       return item

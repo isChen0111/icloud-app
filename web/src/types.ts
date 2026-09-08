@@ -53,6 +53,8 @@ export interface MonthGroup {
   label: string
   count: number
   offset: number
+  /** 该月代表缩略图资产 id（倒序首资产，后端 /api/dates 提供；缩略图导航条用） */
+  thumbId?: number
 }
 
 /** 缩略图档位 */
