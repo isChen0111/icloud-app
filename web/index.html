@@ -33,6 +33,10 @@
            border         分隔线/描边
            accent         品牌强调色（两主题共用 #0a84ff）
            shadow         卡片投影
+           detail-bg      详情页背景（浅色主题浅底，深色主题深底）
+           detail-text-1  详情页主文字（文件名）
+           detail-text-2  详情页次级文字（序号/提示/加载占位）
+           detail-border  详情页描边（返回按钮）
       */
       :root {
         --bg-page: #f5f5f7;
@@ -51,6 +55,10 @@
         --border: rgba(0, 0, 0, 0.1);
         --accent: #0a84ff;
         --shadow: 0 12px 32px rgba(0, 0, 0, 0.18);
+        --detail-bg: #f5f5f7;
+        --detail-text-1: #1d1d1f;
+        --detail-text-2: rgba(0, 0, 0, 0.55);
+        --detail-border: rgba(0, 0, 0, 0.12);
       }
       :root[data-theme='dark'] {
         --bg-page: #1d1d1f;
@@ -69,6 +77,10 @@
         --border: rgba(255, 255, 255, 0.08);
         --accent: #0a84ff;
         --shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+        --detail-bg: #111113;
+        --detail-text-1: #f5f5f7;
+        --detail-text-2: rgba(245, 245, 247, 0.55);
+        --detail-border: rgba(255, 255, 255, 0.2);
       }
       :root[data-theme='light'] {
         --bg-page: #f5f5f7;
@@ -87,6 +99,10 @@
         --border: rgba(0, 0, 0, 0.1);
         --accent: #0a84ff;
         --shadow: 0 12px 32px rgba(0, 0, 0, 0.18);
+        --detail-bg: #f5f5f7;
+        --detail-text-1: #1d1d1f;
+        --detail-text-2: rgba(0, 0, 0, 0.55);
+        --detail-border: rgba(0, 0, 0, 0.12);
       }
 
       /* 全局基础样式：背景/文字跟随主题变量 */
