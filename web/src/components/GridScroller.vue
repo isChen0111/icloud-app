@@ -211,13 +211,20 @@ watch(
  * 视口内第一个与最后一个「资产行」的首末资产日期，**倒序流直出（新 → 旧）**，
  * 如「2021年5月30日 - 5月11日」；数据未加载或视口无资产行时退化为月份显示。
  */
+/** 吸顶日期兜底：虚拟器 measure 异步瞬间 getVirtualItems 可能短暂为空，
+ * 若直接返回 '' 会触发 v-show 隐藏 → 滚动中闪一下。缓存最后一次有效值。 */
+const lastRange = ref('')
+
 const viewDateRange = computed(() => {
   const vs = rowVirtualizer.value?.getVirtualItems() ?? []
-  if (vs.length === 0) return ''
-  // 过滤 overscan 预热行：只取与视口有交集的行（修复跨度比可视范围更旧）
+  if (vs.length === 0) return lastRange.value
+  // 过滤 overscan 预热行：只取与滚动窗口 [scrollTop, scrollTop+容器高] 有交集的行。
+  // ⚠️ v.start/v.end 是相对滚动内容的绝对坐标，不是相对视口——
+  //   旧实现用 v.start < clientHeight 比较，scrollTop 超过一屏后 inView 恒空 → 吸顶消失
   const ch = scrollEl.value?.clientHeight ?? 0
-  const inView = ch > 0 ? vs.filter((v) => v.end > 0 && v.start < ch) : vs
-  if (inView.length === 0) return ''
+  const st = scrollEl.value?.scrollTop ?? 0
+  const inView = ch > 0 ? vs.filter((v) => v.end > st && v.start < st + ch) : vs
+  if (inView.length === 0) return lastRange.value
   const first = inView.find((v) => rows.value[v.index]?.type === 'asset')
   const last = [...inView].reverse().find((v) => rows.value[v.index]?.type === 'asset')
   if (!first || !last) return currentMonthLabel.value
@@ -229,16 +236,19 @@ const viewDateRange = computed(() => {
   const startIso = fAssets?.[0]?.dateTaken
   const endIso = lAssets?.[lAssets.length - 1]?.dateTaken
   if (!startIso || !endIso) return currentMonthLabel.value
-  return formatDateRange(startIso, endIso)
+  const text = formatDateRange(startIso, endIso)
+  lastRange.value = text
+  return text
 })
 
 /** 顶部吸顶的退化显示：第一个可视行的月份（header 行直接用，asset 行看首资产） */
 const currentMonthLabel = computed(() => {
   const vs = rowVirtualizer.value?.getVirtualItems() ?? []
   if (vs.length === 0) return ''
-  // 只取与视口有交集的行（过滤上方 overscan 预热行，避免退化显示偏旧）
+  // 只取与滚动窗口有交集的行（过滤上方 overscan 预热行，避免退化显示偏旧）
   const ch = scrollEl.value?.clientHeight ?? 0
-  const inView = ch > 0 ? vs.filter((v) => v.end > 0 && v.start < ch) : vs
+  const st = scrollEl.value?.scrollTop ?? 0
+  const inView = ch > 0 ? vs.filter((v) => v.end > st && v.start < st + ch) : vs
   const r = rows.value[inView[0]?.index ?? -1]
   if (!r) return ''
   if (r.type === 'header') return r.label ?? fmtMonth(r.month)
@@ -253,7 +263,8 @@ const currentYm = computed(() => {
   if (vs.length === 0) return ''
   // 与 viewDateRange 同口径：过滤 overscan 预热行，面板高亮与视口首行一致
   const ch = scrollEl.value?.clientHeight ?? 0
-  const inView = ch > 0 ? vs.filter((v) => v.end > 0 && v.start < ch) : vs
+  const st = scrollEl.value?.scrollTop ?? 0
+  const inView = ch > 0 ? vs.filter((v) => v.end > st && v.start < st + ch) : vs
   const r = rows.value[inView[0]?.index ?? -1]
   return r?.month ?? ''
 })
@@ -379,7 +390,7 @@ onMounted(async () => {
     </div>
 
     <!-- 吸顶日期跨度指示器：随滚动实时更新（对标 iCloud GridHeader 的日期范围） -->
-    <div v-if="viewDateRange" class="month-sticky">
+    <div v-show="viewDateRange" class="month-sticky">
       <span class="month-dot" />{{ viewDateRange }}
       <span class="dim" style="margin-left: 8px; font-weight: 400">共 {{ store.totalCount }} 项</span>
     </div>
