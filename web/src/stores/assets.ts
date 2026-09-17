@@ -127,13 +127,8 @@ export const useAssetStore = defineStore('assets', () => {
     const idSet = new Set(ids)
     if (idSet.size === 0) return
 
-    // ① 页缓存移除
-    for (const [p, arr] of [...pages]) {
-      const next = arr.filter((a) => !idSet.has(a.id))
-      if (next.length !== arr.length) pages.set(p, next)
-    }
-
-    // ② 统计被删资产所属月份（从已加载页收集）→ 月份 count 减 + offset 重算
+    // ① 月份统计必须在页清理之前：页清理会把被删 id 从 pages 移除，
+    //    之后再遍历就永远匹配不到（B1 修复曾先清理后统计，导致月份 count 不更新）
     const ymDelta = new Map<string, number>()
     for (const arr of pages.values()) {
       for (const a of arr) {
@@ -149,6 +144,31 @@ export const useAssetStore = defineStore('assets', () => {
         .map((m) => ({ ...m, count: m.count - (ymDelta.get(m.ym) ?? 0) }))
         .filter((m) => m.count > 0) // 整月删光 → 移除该月（不再产生空头行）
         .map((m) => ({ ...m, offset: (acc += m.count) - m.count }))
+    }
+
+    // ② 页缓存处理（审查 B1：删除后全局位置流前移，删除点之后的页缓存
+    //    内容全部错位——旧实现只移除被删 id，向下滚动会看到"删除前"的旧内容）
+    //    - 找到包含被删资产的最小页起点（最先受影响的页）
+    //    - 该页 filter 移除被删 id（页内索引 slice 恰好对上，无需重拉）
+    //    - 该页之后的所有页清空（内容已整体错位），滚动到那里时按需重拉
+    let minPage = Infinity
+    for (const [p, arr] of pages) {
+      for (const a of arr) {
+        if (idSet.has(a.id)) {
+          minPage = Math.min(minPage, p)
+          break
+        }
+      }
+    }
+    if (minPage !== Infinity) {
+      const affected = pages.get(minPage)
+      if (affected) {
+        const next = affected.filter((a) => !idSet.has(a.id))
+        pages.set(minPage, next)
+      }
+      for (const p of [...pages.keys()]) {
+        if (p > minPage) pages.delete(p)
+      }
     }
 
     // ③ 清空选中

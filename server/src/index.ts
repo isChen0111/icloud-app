@@ -32,7 +32,7 @@ async function main(): Promise<void> {
   app.addHook('onSend', async (_req, reply) => {
     reply.header('Access-Control-Allow-Origin', '*')
     reply.header('Access-Control-Allow-Headers', 'Content-Type, Range')
-    reply.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
+    reply.header('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS')
   })
 
   // ② 路由

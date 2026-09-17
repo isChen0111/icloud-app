@@ -31,18 +31,18 @@ const placeholderBg = computed(() => {
 })
 
 
-  /** 单击 = 单选；Ctrl/⌘+单击 = 追加多选（stop 冒泡防触发空白清空） */
-  function onSelect(e: MouseEvent): void {
-    e.stopPropagation()
-    if (e.ctrlKey || e.metaKey) store.toggleSelect(props.asset.id)
-    else store.selectOnly(props.asset.id)
-  }
+/** 单击 = 单选；Ctrl/⌘+单击 = 追加多选（stop 冒泡防触发空白清空） */
+function onSelect(e: MouseEvent): void {
+  e.stopPropagation()
+  if (e.ctrlKey || e.metaKey) store.toggleSelect(props.asset.id)
+  else store.selectOnly(props.asset.id)
+}
 
-  /** 双击 = 进详情（先清空选中，避免返回后误删） */
-  function openDetail(): void {
-    store.clearSelection()
-    router.push({ name: 'detail', params: { id: String(props.asset.id) } })
-  }
+/** 双击 = 进详情（先清空选中，避免返回后误删） */
+function openDetail(): void {
+  store.clearSelection()
+  router.push({ name: 'detail', params: { id: String(props.asset.id) } })
+}
 
 </script>
 <template>

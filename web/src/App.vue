@@ -47,14 +47,13 @@ async function pollStats(): Promise<void> {
   }
 }
 
-
-  /** 回到照片墙时刷新统计（详情页删除后返回，顶栏计数保持准确） */
-  watch(
-    () => route.name,
-    (n) => {
-      if (n === 'grid') void pollStats()
-    },
-  )
+/** 回到照片墙时刷新统计（详情页删除后返回，顶栏计数保持准确） */
+watch(
+  () => route.name,
+  (n) => {
+    if (n === 'grid') void pollStats()
+  },
+)
 onMounted(() => void pollStats())
 onBeforeUnmount(() => window.clearTimeout(retryTimer))
 </script>

@@ -319,6 +319,40 @@ CREATE VIRTUAL TABLE assets_fts USING fts5(filename, location_text);
 <li><b>⚠ 缓存失效机制（P2+-1 前置注意）</b>：KeepAlive 缓存的照片墙在<span class="muted">同步/热监听/删除同步</span>落地后不会自动感知后端数据变化——P2+-1 必须实现「同步完成 → 前端通知照片墙失效缓存并刷新」（如 store 暴露 reload 标志 + GridView onActivated 时检查，或同步后强制整页刷新路由）。当前本地静态库无影响。</li>
 </ul>
 
+<h3>4.8 P2 搜索：FTS5 trigram 全文搜索（已落地）</h3>
+<ul>
+<li><b>索引</b>：<code>assets_fts</code> 是 trigram 分词器虚拟表（每次启动 DROP+CREATE，db/index.ts 校验行数不一致即全量回填，11k 行毫秒级）。三列：<code>search_text</code>（小写文件名）/ <code>date_taken</code>（原始 ISO，支持搜 "2024-09" 按年宽匹配）/ <code>date_compact</code>（去标点 "20240913T084028"，支持搜 "202409"）。</li>
+<li><b>查询清洗</b>：小写 + 非中英文数字统一转空格 + 丢弃 &lt;3 字符 token（trigram 最小 3 字符）——避免 FTS5 语法特殊字符（引号/括号/AND 等）破坏 MATCH、日期 "-" 被误读为列分隔符。</li>
+<li><b>路由</b>：GET /api/search?q=&amp;limit=（防抖 300ms，Esc/清除退出回照片墙，结果 flex-wrap 网格最多 100 条，复用 GridItem 进同一详情路由）。</li>
+</ul>
+
+<h3>4.9 P2+-1 目录热监听 + 删除对账 + 启动同步（已落地，一键拉取仍待开发）</h3>
+<ul>
+<li><b>热监听（scanner/watcher.ts）</b>：chokidar 监听 <code>iCloudPhoto/</code> 目录树——<code>ignoreInitial</code>（启动时已有文件不触发，由启动同步负责）+ <code>awaitWriteFinish 500ms</code>（拷贝完成才视为落盘）+ 忽略隐藏文件；add/change/unlink/unlinkDir 任一事件 → 防抖 1.5s 合并 → 触发一次 <code>runScan('watcher')</code>（幂等增量）。扫描互斥：扫描中延后 2s 补一次（dirty 标志）。</li>
+<li><b>删除对账</b>：runScan 末尾「磁盘文件集合 vs DB 资产集合」——磁盘已消失的文件清理资产记录 + FTS 索引 + 缩略图缓存（<code>deleteAssetById</code>，三档 grid/detail/blur）+ 孤儿缩略图清理（<code>cleanOrphanThumbs</code>，含 in-flight 竞态遗留）。只删"遍历明确缺失"的文件，IO 瞬时抖动不误删；实况视频缺失但主图还在的行不删（配对阶段已降级为 photo）。</li>
+<li><b>启动同步</b>：index.ts 启动即后台 <code>runScan('startup')</code>（不 await 不阻塞），手动拷入的文件开机即被发现。</li>
+<li><b>⚠ 已知缺口（未实现，列待办）</b>：KeepAlive 缓存的照片墙不会感知 watcher 同步带来的后端数据变化——手动拷入/删除文件后<b>需刷新页面</b>才可见。规划机制：「同步完成 → 前端失效照片墙缓存并刷新」（store 暴露 reload 标志 / GridView onActivated 时检查 / 或同步后整页刷新路由）。</li>
+</ul>
+
+<h3>4.10 客户端删除（照片墙多选 + 详情页删除，已落地）</h3>
+<ul>
+<li><b>交互</b>：单击单选 / Ctrl(⌘)+单击多选（<code>selectOnly</code> / <code>toggleSelect</code>，选中态画在缩略图内——蓝色描边 + 左上对勾，<code>pointer-events:none</code> 不参与布局计算）；双击进详情（进详情前清空选中，避免返回误删）；点空白/Esc 清空选中。</li>
+<li><b>选中记忆</b>：选中集合放 Pinia store（<code>selectedIds</code>）——虚拟滚动销毁/重建 DOM 不影响，滚动走远再回来 GridItem 查 <code>has(id)</code> 恢复选框。</li>
+<li><b>删除按钮</b>：照片墙在搜索栏一行右侧（未选中灰禁、选中后亮蓝 + 浅蓝底 + 「已选 N 项」计数）；详情页在信息按钮旁（同款 34px 蓝色圆形）。共用 <code>DeleteConfirm</code> 确认弹框（文案明确「永久删除、无法恢复」）。</li>
+<li><b>后端</b>：DELETE /api/assets（body <code>{ ids }</code>，去重限 1000）→ 查磁盘路径 → unlink 源文件（主文件+实况视频，失败只计数）→ 事务删 DB 行 + FTS 索引 + 三档缩略图缓存；磁盘 unlink 触发热监听自动对账（幂等空转）。</li>
+<li><b>前端一致性（审查 B1 修复）</b>：删除后 store 页缓存「被删资产所在页 splice + 该页之后全部清空」——全局位置流前移，后续页缓存内容已错位，必须清空按需重拉；月份 count 减 + offset 重算（整月删光移除该月，骨架行数/总高度自动变化）。</li>
+</ul>
+
+<h3>4.11 UI 迭代汇总（2026-09-08 ~ 09-17）</h3>
+<ul>
+<li><b>日期导航面板（方案 C）</b>：左栏年份（升序）+ 右栏月份缩略图 3行×4列（无滚动条，点月份 → <code>jumpToMonth(offset)</code> 滚动定位该月首行，不重置数据）；面板锚定「日期」按钮下方，点按钮 toggle 开合。</li>
+<li><b>吸顶日期跨度</b>：视口内首末资产行日期直出（倒序「2021年5月30日 - 5月11日」式，<code>formatDateRange</code> 同年省略年份、同天单日）；过滤 overscan 预热行（v.start/v.end 是绝对坐标，与滚动窗口求交），measure 异步空窗期缓存上一次有效值防闪烁。</li>
+<li><b>月份头区间标签</b>：跨行切片下组尾行可能混入相邻月资源 → 标签显示真实月份区间（「2021年4月-3月」，<code>formatMonthRange</code>）。</li>
+<li><b>徽标体系</b>：标题「iCloud本地照片」+ favicon；网格/详情 LIVE 胶囊（详情按住播放时徽标内旋转加载动画）；视频时长胶囊（右下黑底，≥1h 显示 1:02:03）；详情页「按住播放」毛玻璃胶囊 + 手势图标 + 按住淡出；HDR 未做（实测库内仅 1 张含 GainMap）。</li>
+<li><b>详情页三级渐进</b>：grid 档模糊占位秒出 → detail 档淡入覆盖（<code>@load</code> 后 0.3s opacity 过渡）；实况静止帧 / 视频 poster 同款；占位图 <code>object-fit: contain</code> + 无 scale（iCloud 简洁式完整画面）。</li>
+<li><b>详情页顶栏信息</b>：拍摄时间（「2026年8月31日 15:45」）+ 序号/总数（「1/1 项」）+ 信息按钮（iCloud 信息抽屉：EXIF/ffprobe 实时解析）。</li>
+</ul>
+
 <h2>5. 项目结构（已落地）</h2>
 <pre>
 F:\iPhone\icloud-app\
@@ -332,7 +366,7 @@ F:\iPhone\icloud-app\
 │  │  ├─ cli-scan.ts         <span class="c"># 命令行扫描工具</span>
 │  │  ├─ db/schema.ts, index.ts  <span class="c"># SQLite 建表 + WAL 连接（better-sqlite3）</span>
 │  │  ├─ metadata/index.ts   <span class="c"># exifr（EXIF/GPS/Orientation）+ ffprobe（视频时长）</span>
-│  │  ├─ scanner/index.ts    <span class="c"># 目录扫描、实况配对（基名归一 _HEVC）、UPSERT 幂等入库</span>
+│  │  ├─ scanner/index.ts, watcher.ts  <span class="c"># 目录扫描、实况配对（目录+基名）、UPSERT 幂等入库；chokidar 热监听（P2+-1）</span>
 │  │  ├─ pipeline/           <span class="c"># thumbnails（懒生成三档）+ queue（p-queue 并发 8）+ in-flight 去重</span>
 │  │  └─ routes/             <span class="c"># assets（cursor + offset 区间）/ thumb / video（Range 206）/ stats（含 /api/dates）/ search（FTS5）/ info（EXIF 详情）</span>
 │  ├─ scripts/               <span class="c"># install-ffmpeg-full.ps1（HEIC 解码）+ fix-asset-size.ts（宽高修正）+ rebuild-orientation-thumbs.ts（方向缓存重建）</span>
@@ -341,10 +375,10 @@ F:\iPhone\icloud-app\
 ├─ web/
 │  ├─ src/
 │  │  ├─ views/GridView.vue / DetailView.vue
-│  │  ├─ components/GridScroller.vue / GridItem.vue / DateNavPanel.vue   <span class="c"># 虚拟滚动 + 单项（blur→real）+ 日期导航面板（方案 C）</span>
+│  │  ├─ components/GridScroller.vue / GridItem.vue / DateNavPanel.vue / DeleteConfirm.vue   <span class="c"># 虚拟滚动 + 单项（blur→real）+ 日期导航面板（方案 C）+ 删除确认弹框</span>
 │  │  ├─ components/detail/LivePhoto.vue / VideoStage.vue
 │  │  ├─ composables/useLazyImage.ts   <span class="c"># IntersectionObserver 懒加载</span>
-│  │  ├─ stores/assets.ts / theme.ts   <span class="c"># Pinia 区间懒加载缓存（pages Map）/ 深浅主题（localStorage 持久化）</span>
+│  │  ├─ stores/assets.ts / theme.ts   <span class="c"># Pinia 区间懒加载缓存（pages Map + 删除选中集合 selectedIds）/ 深浅主题（localStorage 持久化）</span>
 │  │  ├─ router/index.ts     <span class="c"># hash 模式：#/photo/:id</span>
 │  │  └─ api/client.ts       <span class="c"># API 封装（thumb/video/stream URL，含缩略图 rev 版本号）</span>
 │  └─ vite.config.ts         <span class="c"># /api 代理 → 8899</span>
@@ -360,15 +394,17 @@ F:\iPhone\icloud-app\
 <tr><td><span class="tag orange">P2 增强</span></td><td>搜索（FTS5 trigram：文件名/日期子串）<span class="tag green" style="margin-left:6px">✅ 已验收</span><br><span class="muted">用户已决定不做：HEVC 按需转码缓存（本机 Chrome 已直出）/ 收藏 / 最近删除 / 下载原片 / 批量选择（本地原文件齐全，云管理类功能无必要）</span></td><td>全平台视频可播；功能完整自用</td><td><span class="tag green">✅ 已完成（范围收缩）</span></td></tr>
 <tr><td><span class="tag blue">稳定化（2026-09-08）</span></td><td>代码审查 P1×5 + P2×7 共 12 项问题全部修复：stats 异步体积统计+落盘缓存（首屏 229ms）、原图宽高 11,009 条全量修正（fix-size）、EXIF 方向缩略图重建（fix-thumbs 103 张）、浏览器缩略图缓存失效链路（thumbUrl rev 版本号 + 响应头去 immutable）、实况按住播放带原声 + id 变化重置 + 静音兜底、详情/搜索竞态守卫、扫描断点续跑容错</td><td>全量回归通过（网格/详情/实况/视频/搜索/日期定位）；git 私有仓库 + GitHub 远程（isChen0111/icloud-app），每次修复提交推送</td><td><span class="tag green">✅ 已验收</span></td></tr>
 <tr><td><span class="tag blue">扫描配对修复（2026-09-08 二次）</span></td><td><b>跨目录同名文件坑</b>（详见 §3.2 callout）：iCloudPD 把同名文件（不同设备/编辑版本）归档进不同日期目录，早期按「文件名基名」配对导致实况配对错乱、3,382 个视频被静默丢弃。修复：配对 key 改为「目录 + 基名」+ 增量扫描复用元数据仅修正 type/live_video。重扫后 11,009 → 12,591 资产（photo 1,982 / live 7,434 / video 3,175），与磁盘文件精确一致；与 iCloud 统计基本对齐（照片 9,416≈9,419，视频 3,175≈3,033）</td><td>全量重扫完成；实况配对跨目录 0、live 配对视频磁盘缺失 0、video 文件磁盘缺失 0；缩略图缓存孤儿 0</td><td><span class="tag green">✅ 已修复</span></td></tr>
-<tr><td><span class="tag blue">P2+-1 同步与热更新（已纳入计划）</span></td><td>一键拉取同步：前端按钮 → 后端 spawn <b>icloudpd 官方 exe</b>（<code>icloudpd-1.32.3-windows-amd64.exe</code>，14.4MB，<b>免 Python</b>，已核验官方 Release 提供；<b>已定 exe 方案</b>——exe 由首次启动脚本自动下载到 <code>iCloudTool\bin\</code>，gitignore 排除不入仓库，完全离线可用）。<br>目录热监听：chokidar 监听 <code>iCloudPhoto/</code> 增删 → 增量入库/出库 + 新缩略图入队。<br>删除同步：scanner 增加「目录文件集合 vs DB 集合」对比（当前<b>只增不删</b>，本地删文件后 DB 记录残留会 404）。<br>冷启动增量：启动时对比「目录文件数 vs 库记录数」，不一致自动增量扫描 → 手动拷入的文件开机即被发现</td><td>点按钮自动拉取→增量入库→缩略图生成；手动拷文件重启即同步；删文件后列表消失</td><td><span class="tag orange">待开发</span><br><span class="muted">前置：实现「同步完成 → 前端失效 KeepAlive 照片墙缓存」（见 §4.7）</span></td></tr>
+<tr><td><span class="tag blue">P2+-1 同步与热更新（2026-09-17 部分落地）</span></td><td>目录热监听（chokidar 防抖合并 + 扫描互斥 + 忽略初始事件）✅<br>删除对账（磁盘 vs DB，删资产+FTS+缩略图缓存+孤儿清理）✅<br>启动同步（启动即后台 runScan）✅<br>一键拉取：前端按钮 → 后端 spawn <b>icloudpd 官方 exe</b>（<code>icloudpd-1.32.3-windows-amd64.exe</code>，14.4MB，<b>免 Python</b>，已核验官方 Release 提供；exe 由首次启动脚本自动下载到 <code>iCloudTool\bin\</code>，gitignore 排除）——<b>待开发</b></td><td>手动拷文件自动入库；手动删文件自动清资产+缓存；点按钮拉取 iCloud → 增量入库</td><td><span class="tag green">✅ 热监听/对账/启动同步已合并</span><br><span class="tag orange">一键拉取待开发</span><br><span class="muted">缺口：同步完成后前端 KeepAlive 缓存失效（需刷新页面，见 §4.9）</span></td></tr>
 <tr><td><span class="tag blue">P2+-2 冷启动体验（已纳入计划）</span></td><td>顶部状态栏轮询 <code>/api/stats</code>：扫描中显示「正在准备照片库：已扫描 x/20025 · 已找到 y 个资产」进度；缩略图预热显示「生成中 N（可先浏览，未生成的现场补）」；扫描是分批写库，前端轮询到新数据即刷新 → 照片墙<b>边扫边出现</b>，不用干等</td><td>首次启动不再白屏等待：进度可见、部分可浏览</td><td><span class="tag orange">待开发</span></td></tr>
 <tr><td><span class="tag gray">P2+-3 语义搜索（已评估，暂缓）</span></td><td>语义搜索（人物/地点/场景任意组合，如「邓州 2023 年 陈咏新」）：<b>不连大模型</b>——face-api.js + tfjs-node 本地人脸检测/embedding → 特征聚类成 person → 一次性命名；地点/场景由 EXIF GPS（逆地理作为语义搜索的组成部分）+ 标签表补充；查询解析器把「时间/地点/人物」分词组合检索。视频抽帧入人脸库。语义标签写入独立 asset_tags 表（<b>不写文件元数据</b>，避免污染原片）</td><td>搜索"陈咏新" / "1岁的陈咏新" / "邓州2023年陈咏新" 命中正确子集</td><td><span class="tag gray">⏸ 用户已确认暂缓</span></td></tr>
 <tr><td><span class="tag gray">P2+-4 详情缓存治理（可选项，已列入）</span></td><td>detail 档大图（~250KB/张，全浏览约 2.7GB）是永久缓存无自动清理。两个可选治理：<b>① 保留最近 N 个月浏览过的 detail 图</b>——按 detail 档的最近访问时间（新增字段或 mtime）定期清理更旧的缓存；<b>② 一键清空 detail 缓存</b>——前端按钮/脚本删 <code>server/cache/thumbs/detail/</code>，下次浏览按需重新生成。grid/blur 档体积小（~0.3GB）不在治理范围</td><td>detail 缓存体积可控；清空后浏览正常（懒生成自动重建）</td><td><span class="tag orange">已列入，待排期</span></td></tr>
+<tr><td><span class="tag blue">2026-09-17 代码审查 + 稳健性修复</span></td><td>全项目审查（后端 6 路由 + 扫描/流水线/热监听 + 前端全部组件）→ 修复：<b>B1</b> 删除后页缓存错位（清空删除点之后的页，防滚动错位）；<b>B2</b> 实况照片宽高兜底缺失（ensureSize 条件 photo→非 video）；<b>B3</b> 首屏主题异常分支默认深色→浅色（应用默认白色）；<b>B4</b> CORS 补 DELETE；<b>B5</b> 五处补丁残留代码排版整理（纯格式）。另修复「同步完成后前端缓存失效」缺口前，手动拷文件需刷新页面</td><td>vue-tsc 通过；删除后滚动无错位；实况宽高兜底；默认浅色首屏不闪深</td><td><span class="tag green">✅ 分支已建</span><br><span class="muted">待用户确认后合并</span></td></tr>
 </table>
 
 <div class="note"><b>待办 / 已知小坑</b>：
 <ul>
-<li>缩略图生成失败留 0 字节 WebP：<code>generate()</code> 的 catch 分支补 <code>fs.rmSync(outPath, { force: true })</code>——异常中断（进程被杀）可能留下 0 字节/半成品文件，而 <code>ensureThumbnail</code> 的 existsSync 会把"存在"的坏文件永远返回。当前未触发，防御性修复。</li>
+<li><del>缩略图生成失败留 0 字节 WebP：generate() 的 catch 分支补 fs.rmSync(outPath, { force: true })</del> —— <b>✅ 已完成</b>（审查 #7 已落地：catch 分支删半成品 + 置 thumb_status=error，坏文件不再被 existsSync 当有效返回）。</li>
+<li>⚠ <b>同步完成后前端缓存失效</b>（P2+-1 已知缺口，见 §4.9）：热监听/删除对账已落地，但 KeepAlive 照片墙不感知后端数据变化——手动拷入/删除文件后需刷新页面才可见。规划机制：同步完成 → 前端失效照片墙缓存并刷新（store reload 标志 / GridView onActivated 检查 / 整页刷新路由）。</li>
 <li>P1 遗留：内存 LRU 缩略图缓存淘汰（本地场景收益低，后置）。</li>
 <li>待用户决定：<code>server\vendor\ffmpeg-full.zip</code>（163MB 安装包）保留或删除；toolbar 调试信息（items/rows/virt）保留与否。</li>
 </ul></div>
@@ -392,8 +428,8 @@ F:\iPhone\icloud-app\
 <tr><td>sharp 官方预编译缺 HEVC-HEIC 解码插件</td><td>HEIC 缩略图生成失败（<b>已触发并解决</b>）</td><td>BtbN ffmpeg full 版（libheif）解码 → sharp 缩放；脚本固化进 postinstall（见 §9）</td></tr>
 <tr><td>1.3 万项首次全量生成时间长</td><td>浏览初期缩略图缺失</td><td>懒生成 + 后台队列（并发 8）+ in-flight 去重；冷生成 0.68s 现场兜底，热缓存 25ms</td></tr>
 <tr><td>浏览器 blob 对象堆积</td><td>内存涨、卡顿</td><td>LRU 上限 + 卸载视口外 blob（revokeObjectURL）；本地直接用 img + HTTP 缓存，blob 场景少</td></tr>
-<tr><td>目录变更（新增/删除照片）</td><td>数据过期</td><td>启动扫描 + 手动重扫按钮（POST /api/scan）；可选 chokidar 热监听</td></tr>
-<tr><td>原片误删</td><td>数据丢失</td><td>后端对原文件目录只读；删除操作仅移动至「最近删除」</td></tr>
+<tr><td>目录变更（新增/删除照片）</td><td>数据过期</td><td>chokidar 热监听（防抖 1.5s 自动同步）✅ + 启动全量同步 ✅ + 删除对账（磁盘 vs DB）✅ + 手动重扫（POST /api/scan）；缺口：前端 KeepAlive 缓存需刷新才感知（见 §4.9）</td></tr>
+<tr><td>原片误删</td><td>数据丢失</td><td>删除为<b>直接删源文件（不可逆，用户已确认）</b>：确认弹框 + 文案「永久删除、无法恢复」；仅本地应用，无「最近删除」回收站</td></tr>
 </table>
 
 <h2>9. 踩坑记录（P0 实测，学习价值高）</h2>

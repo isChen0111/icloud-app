@@ -107,10 +107,8 @@ async function openInfo(): Promise<void> {
   }
 }
 
-/** 关闭信息面板（Esc / 遮罩 / × 共用） */
-
-  /** 详情页删除：确认 → API → store 同步 → 导航到相邻资产（先下一张，再上一张） */
-  async function onConfirmDelete(): Promise<void> {
+/** 详情页删除：确认 → API → store 同步 → 导航到相邻资产（先下一张，再上一张） */
+async function onConfirmDelete(): Promise<void> {
     const id = currentId.value
     const d = detail.value
     if (!d) return

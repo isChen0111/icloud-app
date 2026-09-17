@@ -47,7 +47,10 @@ export async function registerThumbRoutes(app: FastifyInstance): Promise<void> {
     // 修复（审查 P1-②）：必须读「原文件」而非缩略图——旧实现用 sharp 读
     // 刚生成的缩略图 metadata，把 320/1600/32 等缩略图尺寸写进了原图宽高，
     // 导致竖图被当横图、宽高比占位全错。ensureSize 内部已对 HEIC 用 ffprobe 兜底。
-    if (!row.width && !row.height && row.type === 'photo') {
+    // 修复（审查 B2）：条件改为非 video——实况照片（HEIC）同样可能读不出
+    // 像素尺寸（如 IMG_0137 width/height 为 null），漏掉 live 则宽高永远为空，
+    // 影响前端宽高比占位与原比例显示的预留扩展点。
+    if (!row.width && !row.height && row.type !== 'video') {
       await ensureSize(assetId)
     }
 

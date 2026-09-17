@@ -84,10 +84,8 @@ watch(query, (q) => {
   debounceTimer = window.setTimeout(() => void runSearch(t), 300)
 })
 
-/** 退出搜索：清空输入与结果，恢复照片墙 */
-
-  /** 删除确认 → API → store 同步 → 通知 App 刷新顶栏统计 */
-  async function onConfirmDelete(): Promise<void> {
+/** 删除确认 → API → store 同步 → 通知 App 刷新顶栏统计 */
+async function onConfirmDelete(): Promise<void> {
     const ids = [...assetStore.selectedIds]
     if (ids.length === 0) return
     deleting.value = true

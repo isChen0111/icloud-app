@@ -315,16 +315,16 @@ function observeWidth(): void {
 }
 
 /** 滚动：持续记录位置（KeepAlive 恢复时写回）；加载由可视行 watch 驱动 */
-
-  /** 清空选中：点击空白区域（GridItem 的 click 已 stopPropagation，
-   *  这里收到的 click 必然不是缩略图本身） */
-  function onScrollAreaClick(): void {
-    store.clearSelection()
-  }
 function onScroll(): void {
   const el = scrollEl.value
   if (!el) return
   savedScrollTop = el.scrollTop
+}
+
+/** 清空选中：点击空白区域（GridItem 的 click 已 stopPropagation，
+ *  这里收到的 click 必然不是缩略图本身） */
+function onScrollAreaClick(): void {
+  store.clearSelection()
 }
 
 /**
@@ -335,11 +335,11 @@ function onScroll(): void {
  */
 let savedScrollTop = 0
 
-  /** Esc 清空选中（KeepAlive 下用 activated/deactivated 管理，避免详情页残留监听） */
-  function onKeydown(e: KeyboardEvent): void {
-    if (e.key === 'Escape') store.clearSelection()
-  }
-  onDeactivated(() => window.removeEventListener('keydown', onKeydown))
+/** Esc 清空选中（KeepAlive 下用 activated/deactivated 管理，避免详情页残留监听） */
+function onKeydown(e: KeyboardEvent): void {
+  if (e.key === 'Escape') store.clearSelection()
+}
+onDeactivated(() => window.removeEventListener('keydown', onKeydown))
 onActivated(() => {
   window.addEventListener('keydown', onKeydown)
   const el = scrollEl.value
