@@ -16,6 +16,9 @@ import { computed, onBeforeUnmount, ref, watch } from 'vue'
 /** 组件名：供 KeepAlive include 匹配（见 App.vue），缓存后返回详情页不重建照片墙 */
 defineOptions({ name: 'GridView' })
 import { searchAssets } from '../api/client'
+import { deleteAssets } from '../api/client'
+import { useAssetStore } from '../stores/assets'
+import DeleteConfirm from '../components/DeleteConfirm.vue'
 import GridScroller from '../components/GridScroller.vue'
 import GridItem from '../components/GridItem.vue'
 import type { AssetDto } from '../types'
@@ -24,6 +27,11 @@ import type { AssetDto } from '../types'
 const query = ref('')
 /** 搜索结果（空数组 = 搜索过但无结果；null = 尚未搜索） */
 const results = ref<AssetDto[] | null>(null)
+const assetStore = useAssetStore()
+/** 删除确认弹框 + 删除请求进行中 */
+const confirmDeleteOpen = ref(false)
+const deleting = ref(false)
+const emit = defineEmits<{ deleted: [] }>()
 /** 防抖计时器句柄 */
 let debounceTimer: number | undefined
 /** 搜索请求序号守卫：输入/退出时递增，让在途响应作废（修复审查 P1-F5 竞态） */
@@ -77,6 +85,24 @@ watch(query, (q) => {
 })
 
 /** 退出搜索：清空输入与结果，恢复照片墙 */
+
+  /** 删除确认 → API → store 同步 → 通知 App 刷新顶栏统计 */
+  async function onConfirmDelete(): Promise<void> {
+    const ids = [...assetStore.selectedIds]
+    if (ids.length === 0) return
+    deleting.value = true
+    try {
+      await deleteAssets(ids)
+      assetStore.removeAssets(ids)
+      confirmDeleteOpen.value = false
+      emit('deleted')
+    } catch {
+      alert('删除失败，请检查后端服务')
+    } finally {
+      deleting.value = false
+    }
+  }
+
 function clearSearch(): void {
   query.value = ''
   results.value = null
@@ -116,6 +142,20 @@ onBeforeUnmount(() => window.clearTimeout(debounceTimer))
         spellcheck="false"
       />
       <button v-if="searchActive" class="search-clear" title="清除并退出搜索" @click="clearSearch">✕</button>
+      <!-- 删除按钮（仅照片墙态显示）：无选中灰禁，选中亮蓝；位置=搜索栏一行 -->
+      <span v-if="!searchActive && assetStore.selectedCount > 0" class="sel-count">已选 {{ assetStore.selectedCount }} 项</span>
+      <button
+        v-if="!searchActive"
+        class="del-btn"
+        :disabled="assetStore.selectedCount === 0 || deleting"
+        :title="assetStore.selectedCount > 0 ? `删除选中的 ${assetStore.selectedCount} 个项目` : '未选中项目'"
+        @click="confirmDeleteOpen = true"
+      >
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <path d="M3 6h18M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2m3 0v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+          <path d="M10 11v6M14 11v6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+        </svg>
+      </button>
     </div>
 
     <!-- 默认态：虚拟滚动照片墙 -->
@@ -134,6 +174,15 @@ onBeforeUnmount(() => window.clearTimeout(debounceTimer))
         <GridItem v-for="a in results" :key="a.id" :asset="a" :width="itemWidth" :selected="false" />
       </div>
     </div>
+
+    <!-- 删除确认弹框（照片墙多选删除） -->
+    <DeleteConfirm
+      v-if="confirmDeleteOpen"
+      :count="assetStore.selectedCount"
+      :deleting="deleting"
+      @confirm="onConfirmDelete"
+      @cancel="confirmDeleteOpen = false"
+    />
   </div>
 </template>
 
@@ -209,5 +258,31 @@ onBeforeUnmount(() => window.clearTimeout(debounceTimer))
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+}
+
+/* 删除按钮（搜索栏行右侧）：无选中灰禁，选中后图标+底亮蓝（iCloud 风格） */
+.del-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-2);
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, transform 0.15s;
+  margin-left: auto;
+}
+.del-btn:hover:not(:disabled) { background: var(--bg-field-hover); }
+.del-btn:not(:disabled) { color: #0a84ff; background: rgba(10, 132, 255, 0.12); }
+.del-btn:disabled { opacity: 0.35; cursor: default; }
+.sel-count {
+  font-size: 12px;
+  font-weight: 600;
+  color: #0a84ff;
+  margin-left: auto;
+  white-space: nowrap;
 }
 </style>

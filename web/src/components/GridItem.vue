@@ -31,10 +31,11 @@ const placeholderBg = computed(() => {
 })
 
 
-  /** 单击 = 选中（多选切换；stop 冒泡防止触发照片墙空白清空） */
+  /** 单击 = 单选；Ctrl/⌘+单击 = 追加多选（stop 冒泡防触发空白清空） */
   function onSelect(e: MouseEvent): void {
     e.stopPropagation()
-    store.toggleSelect(props.asset.id)
+    if (e.ctrlKey || e.metaKey) store.toggleSelect(props.asset.id)
+    else store.selectOnly(props.asset.id)
   }
 
   /** 双击 = 进详情（先清空选中，避免返回后误删） */
@@ -66,7 +67,6 @@ const placeholderBg = computed(() => {
       <span class="check-badge">✓</span>
     </div>
     <!-- hover 提示可选中（虚线圆圈，iCloud 桌面端风格） -->
-    <span v-if="!selected" class="hover-check" aria-hidden="true" />
     <!-- 类型徽标：实况 LIVE（右上）/ 视频时长胶囊（右下，对齐 iCloud 缩略图视频时长条） -->
     <span v-if="asset.type === 'live'" class="badge live">LIVE</span>
     <span v-else-if="asset.type === 'video'" class="badge duration">
@@ -153,20 +153,4 @@ const placeholderBg = computed(() => {
   align-items: center;
   justify-content: center;
 }
-/* hover 提示圈：白虚线 + 细黑描边（深浅缩略图上都可见） */
-.hover-check {
-  position: absolute;
-  top: 6px;
-  left: 6px;
-  width: 15px;
-  height: 15px;
-  border-radius: 50%;
-  border: 1.5px dashed rgba(255, 255, 255, 0.9);
-  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.25);
-  opacity: 0;
-  transition: opacity 0.15s;
-  z-index: 3;
-  pointer-events: none;
-}
-.grid-item:hover .hover-check { opacity: 0.7; }
 </style>

@@ -36,7 +36,7 @@ const props = defineProps<{ id: number }>()
   align-items: center;
   justify-content: center;
   /* video 透明后留边黑底由舞台承担（poster 未加载时占位图可见） */
-  background: #000;
+  background: var(--detail-bg); /* 主题化：与照片详情页同底（原硬编码黑底） */
 }
 .poster-placeholder {
   position: absolute;

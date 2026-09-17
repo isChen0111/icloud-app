@@ -98,6 +98,13 @@ export const useAssetStore = defineStore('assets', () => {
 
 
   /** 单选/多选切换（Ctrl+单击追加多选，普通单击切换单选） */
+  /** 单选：普通单击 = 只选中这一个（替换当前集合；已是唯一选中则保持） */
+  function selectOnly(id: number): void {
+    const s = selectedIds.value
+    if (s.size === 1 && s.has(id)) return
+    selectedIds.value = new Set([id])
+  }
+
   function toggleSelect(id: number): void {
     const s = new Set(selectedIds.value)
     if (s.has(id)) s.delete(id)
@@ -158,6 +165,7 @@ export const useAssetStore = defineStore('assets', () => {
     ensureRange,
     selectedIds,
     selectedCount,
+    selectOnly,
     toggleSelect,
     clearSelection,
     removeAssets,

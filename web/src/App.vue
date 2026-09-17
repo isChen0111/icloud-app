@@ -8,20 +8,14 @@
  * - 启动时拉一次统计并自动开始首页加载
  */
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { fetchStats, deleteAssets } from './api/client'
+import { fetchStats } from './api/client'
 import { useThemeStore } from './stores/theme'
 import type { Stats } from './types'
 import { useRoute } from 'vue-router'
-import { useAssetStore } from './stores/assets'
-import DeleteConfirm from './components/DeleteConfirm.vue'
 
 const stats = ref<Stats | null>(null)
 const route = useRoute()
-const assetStore = useAssetStore()
 
-/** 删除确认弹框开关 + 删除请求进行中状态 */
-const confirmDeleteOpen = ref(false)
-const deleting = ref(false)
 const backendReady = ref(false)
 
 /** 主题：切换深浅（localStorage 持久化，见 stores/theme.ts） */
@@ -54,23 +48,6 @@ async function pollStats(): Promise<void> {
 }
 
 
-  /** 删除确认 → 调 API → 本地状态同步 → 刷新顶栏统计 */
-  async function onConfirmDelete(): Promise<void> {
-    const ids = [...assetStore.selectedIds]
-    if (ids.length === 0) return
-    deleting.value = true
-    try {
-      await deleteAssets(ids)
-      assetStore.removeAssets(ids)
-      confirmDeleteOpen.value = false
-      void pollStats() // 顶栏照片/视频计数刷新
-    } catch {
-      alert('删除失败，请检查后端服务')
-    } finally {
-      deleting.value = false
-    }
-  }
-
   /** 回到照片墙时刷新统计（详情页删除后返回，顶栏计数保持准确） */
   watch(
     () => route.name,
@@ -97,20 +74,6 @@ onBeforeUnmount(() => window.clearTimeout(retryTimer))
 
       <span class="spacer" />
 
-      <!-- 删除按钮（客户端删除）：无选中灰色禁用，选中后亮起 -->
-      <span v-if="assetStore.selectedCount > 0" class="sel-count">已选 {{ assetStore.selectedCount }} 项</span>
-      <button
-        class="del-btn"
-        :disabled="assetStore.selectedCount === 0 || deleting"
-        :title="assetStore.selectedCount > 0 ? `删除选中的 ${assetStore.selectedCount} 个项目` : '未选中项目'"
-        @click="confirmDeleteOpen = true"
-      >
-        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-          <path d="M3 6h18M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2m3 0v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
-          <path d="M10 11v6M14 11v6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
-        </svg>
-      </button>
-
       <!-- 主题切换：深色显示太阳（点→浅色），浅色显示月亮（点→深色） -->
       <button
         class="theme-btn"
@@ -132,19 +95,11 @@ onBeforeUnmount(() => window.clearTimeout(retryTimer))
     <main class="view-host">
       <RouterView v-slot="{ Component }">
         <KeepAlive :include="['GridView']">
-          <component :is="Component" />
+          <component :is="Component" @deleted="pollStats" />
         </KeepAlive>
       </RouterView>
     </main>
 
-    <!-- 删除确认弹框（照片墙多选删除共用） -->
-    <DeleteConfirm
-      v-if="confirmDeleteOpen"
-      :count="assetStore.selectedCount"
-      :deleting="deleting"
-      @confirm="onConfirmDelete"
-      @cancel="confirmDeleteOpen = false"
-    />
   </div>
 </template>
 
@@ -202,30 +157,5 @@ onBeforeUnmount(() => window.clearTimeout(retryTimer))
   flex: 1;
   min-height: 0;
   position: relative;
-}
-
-/* 删除按钮（顶栏，主题按钮左侧） */
-.del-btn {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 30px;
-  height: 30px;
-  border: none;
-  border-radius: 8px;
-  background: var(--bg-field);
-  color: var(--text-1);
-  cursor: pointer;
-  transition: background 0.15s, transform 0.15s;
-}
-.del-btn:hover:not(:disabled) {
-  background: var(--bg-field-hover);
-  transform: scale(1.05);
-}
-.del-btn:disabled { opacity: 0.35; cursor: default; }
-.sel-count {
-  font-size: 12px;
-  font-weight: 600;
-  color: #0a84ff;
 }
 </style>

@@ -310,15 +310,16 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
   border-radius: 50%;
   border: 1px solid var(--detail-border);
   background: none;
-  color: var(--detail-text-1);
+  color: #0a84ff; /* 统一蓝色（与删除按钮一致） */
   font-size: 17px;
   font-style: italic;
   font-family: Georgia, serif;
   line-height: 1;
   cursor: pointer;
+  transition: background 0.15s, color 0.15s;
 }
-.info-btn:hover { background: var(--bg-hover); }
-.info-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+.info-btn:hover { background: var(--bg-hover); color: #0a84ff; }
+.info-btn.active { background: #0a84ff; color: #fff; border-color: #0a84ff; }
 .stage {
   flex: 1;
   min-height: 0;
@@ -387,20 +388,20 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
 .nav.prev { left: 14px; }
 .nav.next { right: 14px; }
 
-/* 删除按钮（信息按钮旁边，同款方形图标钮） */
+/* 删除按钮（信息按钮旁）：同款圆形描边，垃圾桶图标蓝色（与信息按钮统一） */
 .del-btn {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 30px;
-  height: 30px;
-  border: none;
-  border-radius: 8px;
-  background: transparent;
-  color: var(--detail-text-1);
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  border: 1px solid var(--detail-border);
+  background: none;
+  color: #0a84ff;
   cursor: pointer;
-  transition: background 0.15s;
+  transition: background 0.15s, color 0.15s;
 }
-.del-btn:hover:not(:disabled) { background: var(--bg-field-hover); }
+.del-btn:hover:not(:disabled) { background: var(--bg-hover); }
 .del-btn:disabled { opacity: 0.4; cursor: default; }
 </style>
