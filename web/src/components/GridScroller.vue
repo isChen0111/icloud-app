@@ -24,7 +24,7 @@
  *   总行数      = Σ(1 + ceil(月资产数 / 列数))   ← 精确（月份分组已知）
  *   总高度      = Σ(头行 34 + 资产行行高)         ← 精确 → 滚动条真实覆盖全库
  */
-import { computed, onActivated, onMounted, ref, watch } from 'vue'
+import { computed, onActivated, onDeactivated, onMounted, ref, watch } from 'vue'
 import { useVirtualizer } from '@tanstack/vue-virtual'
 import { useAssetStore } from '../stores/assets'
 import { fetchDates } from '../api/client'
@@ -315,6 +315,12 @@ function observeWidth(): void {
 }
 
 /** 滚动：持续记录位置（KeepAlive 恢复时写回）；加载由可视行 watch 驱动 */
+
+  /** 清空选中：点击空白区域（GridItem 的 click 已 stopPropagation，
+   *  这里收到的 click 必然不是缩略图本身） */
+  function onScrollAreaClick(): void {
+    store.clearSelection()
+  }
 function onScroll(): void {
   const el = scrollEl.value
   if (!el) return
@@ -328,7 +334,14 @@ function onScroll(): void {
  * 保存 = onScroll 持续记录最后滚动位置，任何时刻离开都有准确值。
  */
 let savedScrollTop = 0
+
+  /** Esc 清空选中（KeepAlive 下用 activated/deactivated 管理，避免详情页残留监听） */
+  function onKeydown(e: KeyboardEvent): void {
+    if (e.key === 'Escape') store.clearSelection()
+  }
+  onDeactivated(() => window.removeEventListener('keydown', onKeydown))
 onActivated(() => {
+  window.addEventListener('keydown', onKeydown)
   const el = scrollEl.value
   if (!el) return
   el.scrollTop = savedScrollTop
@@ -396,7 +409,7 @@ onMounted(async () => {
     </div>
 
     <!-- 滚动容器：唯一真正的滚动条载体（高度 = 全库骨架，双向自由滚动） -->
-    <div ref="scrollEl" class="grid-scroll" @scroll.passive="onScroll">
+    <div ref="scrollEl" class="grid-scroll" @scroll.passive="onScroll" @click="onScrollAreaClick">
       <!-- 撑高容器：height = 全库总高度（虚拟化的"纸"） -->
       <div
         class="grid-space"
@@ -428,6 +441,7 @@ onMounted(async () => {
                 :key="asset.id"
                 :asset="asset"
                 :width="itemWidth"
+                :selected="store.selectedIds.has(asset.id)"
               />
             </template>
             <template v-else>

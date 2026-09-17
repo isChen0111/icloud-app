@@ -18,6 +18,9 @@ import { formatTakenShort } from '../utils/format'
 import LivePhoto from '../components/detail/LivePhoto.vue'
 import VideoStage from '../components/detail/VideoStage.vue'
 import InfoPanel from '../components/detail/InfoPanel.vue'
+import { useAssetStore } from '../stores/assets'
+import { deleteAssets } from '../api/client'
+import DeleteConfirm from '../components/DeleteConfirm.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -32,6 +35,10 @@ const photoError = ref(false)
 let loadSeq = 0
 
 /** 信息面板状态：是否打开 / 拉取中 / 数据 */
+const assetStore = useAssetStore()
+/** 详情页删除：确认弹框 + 删除请求进行中 */
+const confirmDeleteOpen = ref(false)
+const deleting = ref(false)
 const infoOpen = ref(false)
 const infoLoading = ref(false)
 const info = ref<AssetInfo | null>(null)
@@ -101,6 +108,28 @@ async function openInfo(): Promise<void> {
 }
 
 /** 关闭信息面板（Esc / 遮罩 / × 共用） */
+
+  /** 详情页删除：确认 → API → store 同步 → 导航到相邻资产（先下一张，再上一张） */
+  async function onConfirmDelete(): Promise<void> {
+    const id = currentId.value
+    const d = detail.value
+    if (!d) return
+    const next = d.nextId
+    const prev = d.prevId
+    deleting.value = true
+    try {
+      await deleteAssets([id])
+      assetStore.removeAssets([id])
+      confirmDeleteOpen.value = false
+      if (next != null) void router.push({ name: 'detail', params: { id: String(next) } })
+      else if (prev != null) void router.push({ name: 'detail', params: { id: String(prev) } })
+      else void router.push({ name: 'grid' })
+    } catch {
+      alert('删除失败，请检查后端服务')
+    } finally {
+      deleting.value = false
+    }
+  }
 function closeInfo(): void {
   infoOpen.value = false
   info.value = null
@@ -154,6 +183,12 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
       </div>
 
       <div class="tb-right">
+        <button class="del-btn" :disabled="deleting" title="删除此项目" @click="confirmDeleteOpen = true">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <path d="M3 6h18M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2m3 0v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+            <path d="M10 11v6M14 11v6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+          </svg>
+        </button>
         <button class="info-btn" aria-label="信息" :class="{ active: infoOpen }" @click="infoOpen ? closeInfo() : openInfo()">
           i
         </button>
@@ -188,6 +223,14 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
     <button v-if="detail?.prevId != null" class="nav prev" @click="go(-1)">‹</button>
     <button v-if="detail?.nextId != null" class="nav next" @click="go(1)">›</button>
 
+    <!-- 删除确认弹框（详情页单张删除） -->
+    <DeleteConfirm
+      v-if="confirmDeleteOpen"
+      :count="1"
+      :deleting="deleting"
+      @confirm="onConfirmDelete"
+      @cancel="confirmDeleteOpen = false"
+    />
     <!-- 信息抽屉 -->
     <InfoPanel v-if="infoOpen" :info="info" :loading="infoLoading" @close="closeInfo" />
   </div>
@@ -343,4 +386,21 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
 .nav:hover { background: rgba(0, 0, 0, 0.7); }
 .nav.prev { left: 14px; }
 .nav.next { right: 14px; }
+
+/* 删除按钮（信息按钮旁边，同款方形图标钮） */
+.del-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--detail-text-1);
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.del-btn:hover:not(:disabled) { background: var(--bg-field-hover); }
+.del-btn:disabled { opacity: 0.4; cursor: default; }
 </style>

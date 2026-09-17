@@ -16,9 +16,11 @@ import { useRouter } from 'vue-router'
 import { blurUrl, useLazyImage } from '../composables/useLazyImage'
 import { formatDuration } from '../utils/format'
 import type { AssetDto } from '../types'
+import { useAssetStore } from '../stores/assets'
 
-const props = defineProps<{ asset: AssetDto; width: number }>()
+const props = defineProps<{ asset: AssetDto; width: number; selected: boolean }>()
 const router = useRouter()
+const store = useAssetStore()
 
 const { isVisible, src, rootRef } = useLazyImage(props.asset.id, 'grid')
 
@@ -28,11 +30,20 @@ const placeholderBg = computed(() => {
   return `hsl(${hue}, 12%, 22%)`
 })
 
-function openDetail(): void {
-  router.push({ name: 'detail', params: { id: String(props.asset.id) } })
-}
-</script>
 
+  /** 单击 = 选中（多选切换；stop 冒泡防止触发照片墙空白清空） */
+  function onSelect(e: MouseEvent): void {
+    e.stopPropagation()
+    store.toggleSelect(props.asset.id)
+  }
+
+  /** 双击 = 进详情（先清空选中，避免返回后误删） */
+  function openDetail(): void {
+    store.clearSelection()
+    router.push({ name: 'detail', params: { id: String(props.asset.id) } })
+  }
+
+</script>
 <template>
   <div
     class="grid-item"
@@ -41,7 +52,8 @@ function openDetail(): void {
       height: `${width}px`,
       background: placeholderBg,
     }"
-    @click="openDetail"
+    @click="onSelect"
+    @dblclick="openDetail"
   >
     <!-- 占位/懒加载锚点：进入视口后由 composable 注入真实图 -->
     <div ref="rootRef" class="thumb-layer">
@@ -49,6 +61,12 @@ function openDetail(): void {
       <img v-if="isVisible" :src="src" class="thumb real" alt="" decoding="async" loading="lazy" />
     </div>
 
+    <!-- 选中态叠加层：绝对定位在缩略图内部，不参与流布局（虚拟滚动行高零影响） -->
+    <div v-if="selected" class="select-overlay" aria-hidden="true">
+      <span class="check-badge">✓</span>
+    </div>
+    <!-- hover 提示可选中（虚线圆圈，iCloud 桌面端风格） -->
+    <span v-if="!selected" class="hover-check" aria-hidden="true" />
     <!-- 类型徽标：实况 LIVE（右上）/ 视频时长胶囊（右下，对齐 iCloud 缩略图视频时长条） -->
     <span v-if="asset.type === 'live'" class="badge live">LIVE</span>
     <span v-else-if="asset.type === 'video'" class="badge duration">
@@ -108,4 +126,47 @@ function openDetail(): void {
   padding: 2px 6px;
 }
 .badge.duration svg { flex-shrink: 0; }
+
+/* 选中态：蓝色边框 + 左上角对勾（画在缩略图内，不影响外部布局计算） */
+.select-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  border: 3px solid #0a84ff;
+  border-radius: 6px;
+  box-sizing: border-box;
+  background: rgba(10, 132, 255, 0.1);
+  pointer-events: none;
+}
+.check-badge {
+  position: absolute;
+  top: 6px;
+  left: 6px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #0a84ff;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+/* hover 提示圈：白虚线 + 细黑描边（深浅缩略图上都可见） */
+.hover-check {
+  position: absolute;
+  top: 6px;
+  left: 6px;
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  border: 1.5px dashed rgba(255, 255, 255, 0.9);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.25);
+  opacity: 0;
+  transition: opacity 0.15s;
+  z-index: 3;
+  pointer-events: none;
+}
+.grid-item:hover .hover-check { opacity: 0.7; }
 </style>

@@ -131,7 +131,7 @@ onBeforeUnmount(() => window.clearTimeout(debounceTimer))
       </div>
       <!-- 结果网格：flex-wrap，复用 GridItem（点击进详情同一套逻辑） -->
       <div v-if="results && results.length" class="results-grid">
-        <GridItem v-for="a in results" :key="a.id" :asset="a" :width="itemWidth" />
+        <GridItem v-for="a in results" :key="a.id" :asset="a" :width="itemWidth" :selected="false" />
       </div>
     </div>
   </div>
