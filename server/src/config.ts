@@ -21,10 +21,10 @@ export const config = {
   libraryRoot: process.env.PHOTO_LIBRARY ?? path.join(projectRoot, 'iCloudPhoto'),
 
   /** 缓存目录：缩略图 / 视频封面 / 转码产物都放这里（可随时删除重建） */
-  cacheDir: path.join(projectRoot, 'server', 'cache'),
+  cacheDir: process.env.CACHE_DIR ?? path.join(projectRoot, 'server', 'cache'),
 
-  /** SQLite 数据库文件位置 */
-  dbPath: path.join(projectRoot, 'server', 'cache', 'library.db'),
+  /** SQLite 数据库文件位置（支持环境变量覆盖，测试隔离/多实例部署用） */
+  dbPath: process.env.DB_PATH ?? path.join(projectRoot, 'server', 'cache', 'library.db'),
 
   /** 缩略图尺寸档位（对标 iCloud 的 derivativeMSL 分级思想） */
   thumbSizes: {

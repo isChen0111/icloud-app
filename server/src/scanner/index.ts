@@ -18,6 +18,7 @@ import { config } from '../config.js'
 import { getDb } from '../db/index.js'
 import { readImageMeta, readVideoMeta, normalizeDate, parseDateFromDir, baseName } from '../metadata/index.js'
 import { enqueueAsset } from '../pipeline/queue.js'
+import { thumbCachePath } from '../pipeline/thumbnails.js'
 
 /** 支持的媒体扩展名（小写） */
 const IMAGE_EXTS = new Set(['.heic', '.heif', '.jpg', '.jpeg', '.png', '.gif', '.tiff'])
@@ -26,6 +27,8 @@ const VIDEO_EXTS = new Set(['.mov', '.mp4', '.m4v', '.avi'])
 /** 扫描进度（内存态，简单够用） */
 export const scanProgress = {
   status: 'idle' as 'idle' | 'scanning' | 'done' | 'error',
+  /** 本次扫描触发来源：手动 / 热监听 / 启动 */
+  source: 'idle' as 'idle' | 'manual' | 'watcher' | 'startup',
   totalFiles: 0,
   scannedFiles: 0,
   assetsFound: 0,
@@ -84,7 +87,12 @@ function walkDir(dir: string): string[] {
  *  - 增量续跑：已入库的 file_path 直接跳过元数据提取（照片库是 iCloudPD
  *    只读快照，文件内容不变），中断后重跑只补新文件，无需全量重来。
  */
-export async function runScan(): Promise<void> {
+/**
+ * 全量同步入口：遍历 + 配对 + 入库 + 删除对账。可重复调用（增量幂等）。
+ * @param source 触发来源：manual（手动/API）/ watcher（热监听）/ startup（启动对账）
+ */
+export async function runScan(source: 'manual' | 'watcher' | 'startup' = 'manual'): Promise<void> {
+  scanProgress.source = source
   const db = getDb()
   scanProgress.status = 'scanning'
   scanProgress.message = '正在遍历目录…'
@@ -325,6 +333,34 @@ export async function runScan(): Promise<void> {
     enqueueAsset({ id: r.id, relPath: r.file_path, type: r.type as 'photo' | 'video' | 'live', liveVideo: r.live_video })
   }
 
+  // ⑥ 删除对账（P2+-1）：磁盘文件集合 vs DB 资产集合
+  //    磁盘上已消失的文件 → 删资产记录 + FTS 索引 + 缩略图缓存，
+  //    保证手动删文件/移动目录后照片墙不再显示"已不存在的图"。
+  //    ⚠ 只删"遍历明确缺失"的文件：stat 瞬时失败的文件在 walkDir 阶段会被跳过，
+  //    不会因 IO 抖动误删；实况视频缺失但主图还在的行不删（配对阶段已降级为 photo）。
+  const diskPaths = new Set(files.map((f) => f.relPath))
+  const dbRows = db.prepare(`SELECT id, file_path FROM assets`).all() as { id: number; file_path: string }[]
+  const orphanIds: number[] = []
+  const orphanSet = new Set<number>()
+  for (const r of dbRows) {
+    if (!diskPaths.has(r.file_path)) {
+      orphanIds.push(r.id)
+      orphanSet.add(r.id)
+    }
+  }
+  if (orphanIds.length > 0) {
+    const delTx = db.transaction((ids: number[]) => {
+      for (const id of ids) deleteAssetById(id)
+    })
+    delTx(orphanIds)
+    console.log(`[scan] 删除对账：清理 ${orphanIds.length} 个已不存在于磁盘的资产`)
+  }
+
+  // ⑦ 清理孤儿缩略图：缓存目录里 id 已不属于任何资产的 .webp（含 in-flight 竞态遗留）
+  const validIds = new Set<number>()
+  for (const r of dbRows) if (!orphanSet.has(r.id)) validIds.add(r.id)
+  cleanOrphanThumbs(validIds)
+
   scanProgress.status = 'done'
   scanProgress.message = `扫描完成：共 ${scanProgress.assetsFound} 个媒体资产，${livePairs} 个实况照片`
   console.log(scanProgress.message)
@@ -334,5 +370,45 @@ export async function runScan(): Promise<void> {
     scanProgress.message = `扫描失败：${(err as Error).message}`
     console.error('[scan] failed:', err)
     throw err
+  }
+}
+
+
+/**
+ * 删除一个资产：DB 行 + FTS 索引 + 缩略图缓存（grid/detail/blur 三档）。
+ * 供删除对账与后续客户端删除 API 复用。
+ * 注意：缩略图队列 in-flight 恰好写出的文件会留一个孤儿 webp，
+ * 由下次对账的 cleanOrphanThumbs 兜底清理。
+ */
+export function deleteAssetById(id: number): void {
+  const db = getDb()
+  for (const size of ['grid', 'detail', 'blur'] as const) {
+    fs.rmSync(thumbCachePath(size, id), { force: true })
+  }
+  db.prepare(`DELETE FROM assets_fts WHERE rowid = ?`).run(id)
+  db.prepare(`DELETE FROM assets WHERE id = ?`).run(id)
+}
+
+/**
+ * 清理孤儿缩略图：cache/thumbs/<size>/ 下 id 已不存在于资产表的 .webp 文件。
+ * 目录不存在（从未生成过该档）时静默跳过。
+ */
+function cleanOrphanThumbs(validIds: Set<number>): void {
+  for (const size of ['grid', 'detail', 'blur'] as const) {
+    const dir = path.join(config.cacheDir, 'thumbs', size)
+    let names: string[] = []
+    try {
+      names = fs.readdirSync(dir)
+    } catch {
+      continue // 目录不存在：还没生成过该档
+    }
+    for (const name of names) {
+      if (!name.endsWith('.webp')) continue
+      const id = Number(name.slice(0, -'.webp'.length))
+      if (!Number.isInteger(id) || !validIds.has(id)) {
+        fs.rmSync(path.join(dir, name), { force: true })
+        console.log(`[scan] 清理孤儿缩略图: ${size}/${name}`)
+      }
+    }
   }
 }
