@@ -45,7 +45,6 @@ const props = defineProps<{ id: number }>()
   height: 100%;
   object-fit: contain;
   filter: blur(16px);
-  transform: scale(1.02);
   opacity: 0.9;
   pointer-events: none;
 }

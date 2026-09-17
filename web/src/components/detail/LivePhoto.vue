@@ -135,7 +135,14 @@ function onVideoEnded(video: HTMLVideoElement): void {
 
     <!-- 顶部徽标（按住才高亮，对标 iCloud 的实况徽标反馈） -->
     <span class="live-badge" :class="{ active: playing, loading: videoLoading }">LIVE<span v-if="videoLoading" class="spinner" /></span>
-    <span class="hint">按住播放</span>
+    <span class="hint">
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M8 13V5.5a1.5 1.5 0 0 1 3 0V11"/>
+        <path d="M11 11V4.5a1.5 1.5 0 0 1 3 0V11"/>
+        <path d="M14 11.5V7a1.5 1.5 0 0 1 3 0v5.5a5.5 5.5 0 0 1-5.5 5.5H11a5.5 5.5 0 0 1-4.3-2.1L4 12.6a1.4 1.4 0 0 1 2.2-1.7L8 13"/>
+      </svg>
+      按住播放
+    </span>
   </div>
 </template>
 
@@ -145,7 +152,6 @@ function onVideoEnded(video: HTMLVideoElement): void {
      用 absolute inset:0 撑满定位父（.stage 是 position:relative） */
   position: absolute;
   inset: 0;
-  cursor: grab;
   user-select: none;
   -webkit-user-select: none;
   touch-action: none;
@@ -169,7 +175,6 @@ function onVideoEnded(video: HTMLVideoElement): void {
 .still-placeholder {
   z-index: 0;
   filter: blur(16px);
-  transform: scale(1.02);
   opacity: 0.9;
 }
 .motion {
@@ -209,13 +214,28 @@ function onVideoEnded(video: HTMLVideoElement): void {
 .live-badge.active { background: #ffd60a; color: #1d1d1f; }
 .hint {
   position: absolute;
-  bottom: 18px;
+  bottom: 20px;
   left: 50%;
   transform: translateX(-50%);
   z-index: 3;
-  font-size: 11px;
-  /* 主题化：浅色主题下为深色提示（原硬编码白字在浅底上不可见） */
-  color: var(--detail-text-2);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 14px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.4px;
+  white-space: nowrap;
+  color: rgba(255, 255, 255, 0.92);
+  background: rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.12);
   pointer-events: none;
+  opacity: 0.85;
+  transition: opacity 0.25s ease;
 }
+/* 按住播放中：提示淡出（正在播放不再需要提示），松开后淡回 */
+.live-photo:active .hint { opacity: 0; }
 </style>
