@@ -17,6 +17,9 @@
 import type { FastifyInstance } from 'fastify'
 import { getDb } from '../db/index.js'
 import { config } from '../config.js'
+import fs from 'node:fs'
+import path from 'node:path'
+import { deleteAssetById } from '../scanner/index.js'
 
 /** 输出给前端的资产结构（不含内部状态字段） */
 export interface AssetDto {
@@ -168,4 +171,49 @@ export async function registerAssetRoutes(app: FastifyInstance): Promise<void> {
       total,
     })
   })
+
+  /**
+   * DELETE /api/assets —— 批量删除资产（客户端删除功能，不可逆）
+   * body: { ids: number[] }
+   * 流程：
+   *   ① 查 DB 拿 file_path / live_video（磁盘源文件位置）
+   *   ② 删磁盘源文件（主文件 + 实况视频）——失败只记计数不中断（文件没了 DB 也该删）
+   *   ③ 事务删 DB 行 + FTS 索引 + 缩略图缓存（deleteAssetById）
+   * 联动：磁盘 unlink 会触发热监听 → 自动对账（幂等空转，秒级无害）
+   */
+  app.delete('/api/assets', async (req, reply) => {
+    const body = req.body as { ids?: unknown } | null
+    const ids = Array.isArray(body?.ids)
+      ? [...new Set(body.ids.map(Number).filter((n) => Number.isInteger(n) && n > 0))].slice(0, 1000)
+      : []
+    if (ids.length === 0) return reply.code(400).send({ error: 'ids required' })
+
+    // ① 查磁盘路径（IN 占位符防注入）
+    const placeholders = ids.map(() => '?').join(',')
+    const rows = db
+      .prepare(`SELECT id, file_path, live_video FROM assets WHERE id IN (${placeholders})`)
+      .all(...ids) as { id: number; file_path: string; live_video: string | null }[]
+
+    // ② 删磁盘源文件（事务外：文件删了，DB 行也必然要删）
+    let unlinkFail = 0
+    for (const r of rows) {
+      for (const rel of [r.file_path, r.live_video]) {
+        if (!rel) continue
+        try {
+          fs.unlinkSync(path.join(config.libraryRoot, rel))
+        } catch {
+          unlinkFail++
+        }
+      }
+    }
+
+    // ③ 事务删 DB + FTS + 缓存
+    const delTx = db.transaction((existIds: number[]) => {
+      for (const id of existIds) deleteAssetById(id)
+    })
+    delTx(rows.map((r) => r.id))
+
+    return reply.send({ deleted: rows.length, missing: ids.length - rows.length, unlinkFail })
+  })
 }
+

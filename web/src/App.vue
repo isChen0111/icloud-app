@@ -11,8 +11,11 @@ import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { fetchStats } from './api/client'
 import { useThemeStore } from './stores/theme'
 import type { Stats } from './types'
+import { useRoute } from 'vue-router'
 
 const stats = ref<Stats | null>(null)
+const route = useRoute()
+
 const backendReady = ref(false)
 
 /** 主题：切换深浅（localStorage 持久化，见 stores/theme.ts） */
@@ -44,6 +47,14 @@ async function pollStats(): Promise<void> {
   }
 }
 
+
+  /** 回到照片墙时刷新统计（详情页删除后返回，顶栏计数保持准确） */
+  watch(
+    () => route.name,
+    (n) => {
+      if (n === 'grid') void pollStats()
+    },
+  )
 onMounted(() => void pollStats())
 onBeforeUnmount(() => window.clearTimeout(retryTimer))
 </script>
@@ -84,10 +95,11 @@ onBeforeUnmount(() => window.clearTimeout(retryTimer))
     <main class="view-host">
       <RouterView v-slot="{ Component }">
         <KeepAlive :include="['GridView']">
-          <component :is="Component" />
+          <component :is="Component" @deleted="pollStats" />
         </KeepAlive>
       </RouterView>
     </main>
+
   </div>
 </template>
 

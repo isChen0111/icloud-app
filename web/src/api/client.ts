@@ -92,4 +92,18 @@ export function withCacheBust(url: string, t: number): string {
   return `${url}&_=${t}`
 }
 
+
+/** 批量删除资产（客户端删除：DB 行 + 缓存 + 磁盘源文件，不可逆）
+ * 详情页删除单张 = 传 [id]；照片墙多选删除 = 传选中集合 */
+export function deleteAssets(ids: number[]): Promise<{ deleted: number; missing: number }> {
+  return fetch(`${BASE}/assets`, {
+    method: 'DELETE',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ids }),
+  }).then(async (r) => {
+    if (!r.ok) throw new Error(`API /assets DELETE → ${r.status}`)
+    return r.json() as Promise<{ deleted: number; missing: number }>
+  })
+}
+
 export type { AssetDto }

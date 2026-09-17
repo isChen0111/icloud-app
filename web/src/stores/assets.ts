@@ -35,6 +35,13 @@ export const useAssetStore = defineStore('assets', () => {
   /** 失败页起点集合（请求失败后静默，滚动离开再回来会重试） */
   const failed = reactive(new Set<number>())
 
+  /** 选中集合（客户端删除功能）：asset id 集合。
+   * 放 store 而非组件：虚拟滚动销毁/重建 DOM 不影响选中记忆，
+   * 滚动走远再回来，GridItem 查 selectedIds.has(id) 恢复选框。 */
+  const selectedIds = ref(new Set<number>())
+  /** 已选数量（删除按钮可用态 + 顶栏计数） */
+  const selectedCount = computed(() => selectedIds.value.size)
+
   /** 当前已加载资产数（调试信息） */
   const loadedCount = computed(() => {
     let n = 0
@@ -89,6 +96,64 @@ export const useAssetStore = defineStore('assets', () => {
     ensureRange(0, PAGE)
   }
 
+
+  /** 单选/多选切换（Ctrl+单击追加多选，普通单击切换单选） */
+  /** 单选：普通单击 = 只选中这一个（替换当前集合；已是唯一选中则保持） */
+  function selectOnly(id: number): void {
+    const s = selectedIds.value
+    if (s.size === 1 && s.has(id)) return
+    selectedIds.value = new Set([id])
+  }
+
+  function toggleSelect(id: number): void {
+    const s = new Set(selectedIds.value)
+    if (s.has(id)) s.delete(id)
+    else s.add(id)
+    selectedIds.value = s
+  }
+
+  /** 清空全部选中（点空白 / Esc / 进详情 / 删除成功） */
+  function clearSelection(): void {
+    if (selectedIds.value.size === 0) return
+    selectedIds.value = new Set()
+  }
+
+  /** 删除成功后同步本地状态：
+   *  ① 已加载页缓存移除被删资产
+   *  ② 月份分组 count 减 + offset 重算（骨架行数/总高度自动变化）
+   *  ③ 清空选中
+   *  调用方负责调 API；这里只做前端一致性。 */
+  function removeAssets(ids: number[]): void {
+    const idSet = new Set(ids)
+    if (idSet.size === 0) return
+
+    // ① 页缓存移除
+    for (const [p, arr] of [...pages]) {
+      const next = arr.filter((a) => !idSet.has(a.id))
+      if (next.length !== arr.length) pages.set(p, next)
+    }
+
+    // ② 统计被删资产所属月份（从已加载页收集）→ 月份 count 减 + offset 重算
+    const ymDelta = new Map<string, number>()
+    for (const arr of pages.values()) {
+      for (const a of arr) {
+        if (idSet.has(a.id)) {
+          const ym = a.dateTaken.slice(0, 7)
+          ymDelta.set(ym, (ymDelta.get(ym) ?? 0) + 1)
+        }
+      }
+    }
+    if (ymDelta.size > 0) {
+      let acc = 0
+      months.value = months.value
+        .map((m) => ({ ...m, count: m.count - (ymDelta.get(m.ym) ?? 0) }))
+        .filter((m) => m.count > 0) // 整月删光 → 移除该月（不再产生空头行）
+        .map((m) => ({ ...m, offset: (acc += m.count) - m.count }))
+    }
+
+    // ③ 清空选中
+    clearSelection()
+  }
   return {
     months,
     totalCount,
@@ -98,6 +163,12 @@ export const useAssetStore = defineStore('assets', () => {
     initMonths,
     getRange,
     ensureRange,
+    selectedIds,
+    selectedCount,
+    selectOnly,
+    toggleSelect,
+    clearSelection,
+    removeAssets,
     loadFirstPage,
   }
 })
