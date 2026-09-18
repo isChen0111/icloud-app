@@ -34,6 +34,10 @@ export const useAssetStore = defineStore('assets', () => {
   const loading = ref(false)
   /** 失败页起点集合（请求失败后静默，滚动离开再回来会重试） */
   const failed = reactive(new Set<number>())
+  /** 删除等数据变更后，使变更前发出的分页响应失效，避免旧数据回写缓存 */
+  let dataVersion = 0
+  let requestSequence = 0
+  const activeRequests = new Map<number, number>()
 
   /** 选中集合（客户端删除功能）：asset id 集合。
    * 放 store 而非组件：虚拟滚动销毁/重建 DOM 不影响选中记忆，
@@ -77,13 +81,23 @@ export const useAssetStore = defineStore('assets', () => {
     loading.value = true
     for (const p of need) {
       pageLoading.add(p)
+      const requestVersion = dataVersion
+      const requestId = ++requestSequence
+      activeRequests.set(p, requestId)
       fetchAssets({ offset: p, limit: PAGE })
         .then((res) => {
+          if (requestVersion !== dataVersion || activeRequests.get(p) !== requestId) return
           pages.set(p, res.items)
           failed.delete(p)
         })
-        .catch(() => failed.add(p))
+        .catch(() => {
+          if (requestVersion === dataVersion && activeRequests.get(p) === requestId) {
+            failed.add(p)
+          }
+        })
         .finally(() => {
+          if (activeRequests.get(p) !== requestId) return
+          activeRequests.delete(p)
           pageLoading.delete(p)
           if (pageLoading.size === 0) loading.value = false
         })
@@ -126,6 +140,13 @@ export const useAssetStore = defineStore('assets', () => {
   function removeAssets(ids: number[]): void {
     const idSet = new Set(ids)
     if (idSet.size === 0) return
+    dataVersion++
+    const retryPages = [...activeRequests.keys()]
+    for (const p of retryPages) {
+      activeRequests.delete(p)
+      pageLoading.delete(p)
+    }
+    loading.value = pageLoading.size > 0
 
     // ① 月份统计必须在页清理之前：页清理会把被删 id 从 pages 移除，
     //    之后再遍历就永远匹配不到（B1 修复曾先清理后统计，导致月份 count 不更新）
@@ -170,6 +191,8 @@ export const useAssetStore = defineStore('assets', () => {
         if (p > minPage) pages.delete(p)
       }
     }
+
+    for (const p of retryPages) ensureRange(p, p + PAGE)
 
     // ③ 清空选中
     clearSelection()

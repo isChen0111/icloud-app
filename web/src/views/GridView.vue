@@ -11,7 +11,7 @@
  *  - 防抖 300ms：避免每个按键都请求后端。
  *  - 结果用 flex-wrap 网格（最多 100 条，DOM 量小无需虚拟化），点击条目走同一详情路由。
  */
-import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 
 /** 组件名：供 KeepAlive include 匹配（见 App.vue），缓存后返回详情页不重建照片墙 */
 defineOptions({ name: 'GridView' })
@@ -40,6 +40,7 @@ let searchSeq = 0
 const resultsEl = ref<HTMLElement | null>(null)
 /** 结果区宽度（ResizeObserver 维护） */
 const resultsWidth = ref(0)
+let resultsResizeObserver: ResizeObserver | undefined
 
 /** 是否处于搜索态：有输入或有结果 */
 const searchActive = computed(() => query.value.trim().length > 0 || results.value !== null)
@@ -86,20 +87,20 @@ watch(query, (q) => {
 
 /** 删除确认 → API → store 同步 → 通知 App 刷新顶栏统计 */
 async function onConfirmDelete(): Promise<void> {
-    const ids = [...assetStore.selectedIds]
-    if (ids.length === 0) return
-    deleting.value = true
-    try {
-      await deleteAssets(ids)
-      assetStore.removeAssets(ids)
-      confirmDeleteOpen.value = false
-      emit('deleted')
-    } catch {
-      alert('删除失败，请检查后端服务')
-    } finally {
-      deleting.value = false
-    }
+  const ids = [...assetStore.selectedIds]
+  if (ids.length === 0) return
+  deleting.value = true
+  try {
+    await deleteAssets(ids)
+    assetStore.removeAssets(ids)
+    confirmDeleteOpen.value = false
+    emit('deleted')
+  } catch {
+    alert('删除失败，请检查后端服务')
+  } finally {
+    deleting.value = false
   }
+}
 
 function clearSearch(): void {
   query.value = ''
@@ -117,14 +118,26 @@ function onKeydown(e: KeyboardEvent): void {
 /** 结果区宽度监听（复用 GridScroller 的做法） */
 function observeResultsWidth(): void {
   if (!resultsEl.value) return
-  const ro = new ResizeObserver(() => {
+  resultsResizeObserver?.disconnect()
+  resultsResizeObserver = new ResizeObserver(() => {
     resultsWidth.value = resultsEl.value?.clientWidth ?? 0
   })
-  ro.observe(resultsEl.value)
+  resultsResizeObserver.observe(resultsEl.value)
   resultsWidth.value = resultsEl.value.clientWidth
 }
 
-onBeforeUnmount(() => window.clearTimeout(debounceTimer))
+watch(searchActive, async (active) => {
+  resultsResizeObserver?.disconnect()
+  resultsResizeObserver = undefined
+  if (!active) return
+  await nextTick()
+  observeResultsWidth()
+})
+
+onBeforeUnmount(() => {
+  window.clearTimeout(debounceTimer)
+  resultsResizeObserver?.disconnect()
+})
 </script>
 
 <template>
