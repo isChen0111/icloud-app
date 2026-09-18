@@ -14,7 +14,7 @@
  */
 import { defineStore } from 'pinia'
 import { computed, reactive, ref } from 'vue'
-import { fetchAssets } from '../api/client'
+import { fetchAssets, fetchDates } from '../api/client'
 import type { AssetDto, MonthGroup } from '../types'
 
 /** 缓存页大小（条）。越大越省请求但首屏越重；120 与旧分页一致 */
@@ -108,6 +108,19 @@ export const useAssetStore = defineStore('assets', () => {
   async function loadFirstPage(): Promise<void> {
     if (pages.has(0) || pageLoading.has(0)) return
     ensureRange(0, PAGE)
+  }
+
+  /** 初始化：拉月份分组（全量骨架数据源，决定滚动条长度）→ 首屏数据。
+   * 由 GridScroller onMounted / 数据源切换时调用；幂等（已加载页跳过）。
+   * 照片墙与搜索结果共用同一入口（各自 store 实现同一接口）。 */
+  async function init(): Promise<void> {
+    try {
+      const res = await fetchDates()
+      initMonths(res.items)
+    } catch {
+      initMonths([])
+    }
+    await loadFirstPage()
   }
 
 
@@ -213,5 +226,6 @@ export const useAssetStore = defineStore('assets', () => {
     clearSelection,
     removeAssets,
     loadFirstPage,
+    init,
   }
 })

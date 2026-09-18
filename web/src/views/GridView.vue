@@ -2,87 +2,63 @@
 /**
  * GridView —— 照片墙视图（路由 '/'）
  *
- * 两个状态：
- *  ① 默认：挂载 GridScroller（虚拟滚动照片墙，见组件内部）
- *  ② 搜索：顶部搜索框防抖输入 → FTS5 搜索 → 结果以普通网格渲染（复用 GridItem）
+ * 两个状态（数据源切换，组件不销毁）：
+ *  ① 默认：GridScroller + assets store（全库虚拟滚动照片墙）
+ *  ② 搜索：GridScroller + search store（搜索结果照片墙：匹配集虚拟滚动 +
+ *     月份分组 + 吸顶日期，与照片墙同一套渲染模型，见 search store 注释）
  *
  * 设计要点：
  *  - 搜索框常驻顶部，聚焦即进入搜索态；Esc / 清除按钮退出并恢复照片墙。
  *  - 防抖 300ms：避免每个按键都请求后端。
- *  - 结果用 flex-wrap 网格（最多 100 条，DOM 量小无需虚拟化），点击条目走同一详情路由。
+ *  - 搜索结果不再固定 100 条截断：后端分页（offset）+ total，搜索 store
+ *    按页拉取全量匹配流，虚拟滚动浏览（搜「2025」几千条也流畅）。
+ *  - 删除仅照片墙态（搜索态无删除，search store 选中集恒空）。
  */
-import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
+import { deleteAssets } from '../api/client'
+import { useAssetStore } from '../stores/assets'
+import { useSearchStore } from '../stores/search'
+import DeleteConfirm from '../components/DeleteConfirm.vue'
+import GridScroller from '../components/GridScroller.vue'
 
 /** 组件名：供 KeepAlive include 匹配（见 App.vue），缓存后返回详情页不重建照片墙 */
 defineOptions({ name: 'GridView' })
-import { searchAssets } from '../api/client'
-import { deleteAssets } from '../api/client'
-import { useAssetStore } from '../stores/assets'
-import DeleteConfirm from '../components/DeleteConfirm.vue'
-import GridScroller from '../components/GridScroller.vue'
-import GridItem from '../components/GridItem.vue'
-import type { AssetDto } from '../types'
+
+const assetStore = useAssetStore()
+const searchStore = useSearchStore()
 
 /** 搜索关键词（输入框 v-model） */
 const query = ref('')
-/** 搜索结果（空数组 = 搜索过但无结果；null = 尚未搜索） */
-const results = ref<AssetDto[] | null>(null)
-const assetStore = useAssetStore()
+/** 是否已执行过搜索（区分「未搜索」与「搜索无结果」，避免初始态误报无结果） */
+const hasSearched = ref(false)
 /** 删除确认弹框 + 删除请求进行中 */
 const confirmDeleteOpen = ref(false)
 const deleting = ref(false)
 const emit = defineEmits<{ deleted: [] }>()
 /** 防抖计时器句柄 */
 let debounceTimer: number | undefined
-/** 搜索请求序号守卫：输入/退出时递增，让在途响应作废（修复审查 P1-F5 竞态） */
-let searchSeq = 0
-/** 结果区容器引用（计算格子宽度） */
-const resultsEl = ref<HTMLElement | null>(null)
-/** 结果区宽度（ResizeObserver 维护） */
-const resultsWidth = ref(0)
-let resultsResizeObserver: ResizeObserver | undefined
 
-/** 是否处于搜索态：有输入或有结果 */
-const searchActive = computed(() => query.value.trim().length > 0 || results.value !== null)
+/** 是否处于搜索态：有输入或有搜索结果（输入即切换视图） */
+const searchActive = computed(() => query.value.trim().length > 0 || hasSearched.value)
 
 /** 搜索词是否过短（trigram 需要至少 3 字符） */
 const tooShort = computed(() => query.value.trim().length > 0 && query.value.trim().length < 3)
 
-/** 搜索无结果 */
-const noResult = computed(() => results.value !== null && results.value.length === 0)
-
-/** 结果网格列宽：容器宽均分 5 列（结果最多 100 条，固定 5 列足够） */
-const itemWidth = computed(() => {
-  const w = resultsWidth.value
-  if (w <= 0) return 160
-  return Math.max(80, Math.floor((w - 4 * 8) / 5))
-})
-
-/** 防抖执行搜索：清空旧结果 → 请求 → 写回（过期响应被 seq 守卫丢弃） */
-async function runSearch(q: string): Promise<void> {
-  const seq = ++searchSeq
-  results.value = null // 先清空：避免旧结果残留误导
-  if (q.length < 3) return // 后端也会拦截，这里提前短路
-  try {
-    const res = await searchAssets(q, 100)
-    if (seq !== searchSeq) return // 已被新搜索/退出取代 → 丢弃过期结果
-    results.value = res.items
-  } catch {
-    if (seq !== searchSeq) return
-    results.value = []
-  }
-}
-
 /** 输入监听：防抖 300ms 后执行（对标搜索框"边输边出"体验） */
 watch(query, (q) => {
   window.clearTimeout(debounceTimer)
-  searchSeq++ // 使一切在途响应作废（含 Esc 退出场景：旧请求晚返回也不能覆写搜索态）
   const t = q.trim()
   if (t.length === 0) {
-    results.value = null // 清空输入 → 立即退出搜索态
+    // 清空输入 → 立即退出搜索态（数据源切回照片墙，search store 保留待下次）
+    hasSearched.value = false
+    searchStore.setQuery('')
     return
   }
-  debounceTimer = window.setTimeout(() => void runSearch(t), 300)
+  debounceTimer = window.setTimeout(() => {
+    hasSearched.value = true
+    searchStore.setQuery(t)
+    void searchStore.init() // 重置缓存 + 拉第一页（响应带回 total/months）
+  }, 300)
 })
 
 /** 删除确认 → API → store 同步 → 通知 App 刷新顶栏统计 */
@@ -102,9 +78,12 @@ async function onConfirmDelete(): Promise<void> {
   }
 }
 
+/** 清除搜索并退出（Esc / ✕ 按钮） */
 function clearSearch(): void {
+  window.clearTimeout(debounceTimer)
   query.value = ''
-  results.value = null
+  hasSearched.value = false
+  searchStore.setQuery('')
 }
 
 /** Esc 退出搜索 */
@@ -114,30 +93,6 @@ function onKeydown(e: KeyboardEvent): void {
     ;(e.target as HTMLInputElement)?.blur?.()
   }
 }
-
-/** 结果区宽度监听（复用 GridScroller 的做法） */
-function observeResultsWidth(): void {
-  if (!resultsEl.value) return
-  resultsResizeObserver?.disconnect()
-  resultsResizeObserver = new ResizeObserver(() => {
-    resultsWidth.value = resultsEl.value?.clientWidth ?? 0
-  })
-  resultsResizeObserver.observe(resultsEl.value)
-  resultsWidth.value = resultsEl.value.clientWidth
-}
-
-watch(searchActive, async (active) => {
-  resultsResizeObserver?.disconnect()
-  resultsResizeObserver = undefined
-  if (!active) return
-  await nextTick()
-  observeResultsWidth()
-})
-
-onBeforeUnmount(() => {
-  window.clearTimeout(debounceTimer)
-  resultsResizeObserver?.disconnect()
-})
 </script>
 
 <template>
@@ -169,22 +124,16 @@ onBeforeUnmount(() => {
       </button>
     </div>
 
-    <!-- 默认态：虚拟滚动照片墙 -->
-    <GridScroller v-if="!searchActive" class="scroller" />
-
-    <!-- 搜索态：结果统计 + 普通网格 -->
-    <div v-else class="search-results" ref="resultsEl">
-      <div class="results-meta">
-        <span v-if="tooShort" class="dim">请至少输入 3 个字符</span>
-        <span v-else-if="noResult" class="dim">没有找到匹配「{{ query }}」的内容</span>
-        <span v-else-if="results" class="dim">搜索「{{ query }}」· 共 {{ results.length }} 项</span>
-        <span v-else class="dim">搜索中…</span>
-      </div>
-      <!-- 结果网格：flex-wrap，复用 GridItem（点击进详情同一套逻辑） -->
-      <div v-if="results && results.length" class="results-grid">
-        <GridItem v-for="a in results" :key="a.id" :asset="a" :width="itemWidth" :selected="false" />
-      </div>
+    <!-- 搜索态提示条：搜索中 / 无结果 / 结果计数（照片墙态隐藏） -->
+    <div v-if="searchActive" class="search-meta">
+      <span v-if="tooShort" class="dim">请至少输入 3 个字符</span>
+      <span v-else-if="!hasSearched || searchStore.loading" class="dim">搜索中…</span>
+      <span v-else-if="searchStore.totalCount === 0" class="dim">没有找到匹配「{{ query }}」的内容</span>
+      <span v-else class="dim">搜索「{{ query }}」· 共 {{ searchStore.totalCount }} 项</span>
     </div>
+
+    <!-- 照片墙 / 搜索结果：同一 GridScroller，数据源切换（组件不销毁，照片墙状态保留） -->
+    <GridScroller :data-source="searchActive ? searchStore : assetStore" class="scroller" />
 
     <!-- 删除确认弹框（照片墙多选删除） -->
     <DeleteConfirm
@@ -249,27 +198,17 @@ onBeforeUnmount(() => {
 }
 .search-clear:hover { background: var(--bg-hover-strong); }
 
-.scroller { flex: 1; min-height: 0; }
-
-/* 搜索结果区 */
-.search-results {
-  flex: 1;
-  min-height: 0;
-  overflow-y: auto;
-  padding: 8px 16px 24px;
-  scrollbar-width: thin;
-  scrollbar-color: var(--text-2) transparent;
-}
-.results-meta {
-  padding: 6px 2px 12px;
+/* 搜索态提示条（吸顶日期上方，轻量信息） */
+.search-meta {
+  flex-shrink: 0;
+  padding: 6px 16px;
   font-size: 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg);
 }
 .dim { color: var(--text-2); }
-.results-grid {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-}
+
+.scroller { flex: 1; min-height: 0; }
 
 /* 删除按钮（搜索栏行右侧）：无选中灰禁，选中后图标+底亮蓝（iCloud 风格） */
 .del-btn {

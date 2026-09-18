@@ -4,7 +4,7 @@
  * 所有后端请求集中在这里，页面组件只调用这些函数。
  * 返回类型统一用 Promise<T>，失败抛错由调用方处理。
  */
-import type { AssetDetail, AssetDto, AssetInfo, MonthGroup, PageResult, Stats, ThumbSize } from '../types'
+import type { AssetDetail, AssetDto, AssetInfo, MonthGroup, PageResult, SearchResult, Stats, ThumbSize } from '../types'
 
 const BASE = '/api'
 
@@ -43,9 +43,12 @@ export function fetchDates(): Promise<{ unit: string; items: MonthGroup[] }> {
   return get('/dates')
 }
 
-/** FTS5 搜索（文件名 / 日期子串，至少 3 字符） */
-export function searchAssets(q: string, limit = 100): Promise<{ query: string; items: AssetDto[] }> {
-  return get(`/search?q=${encodeURIComponent(q)}&limit=${limit}`)
+/** FTS5 搜索（文件名 / 日期子串，至少 3 字符；offset 跳页 = 匹配流照片墙化分页） */
+export function searchAssets(q: string, opts: { offset?: number; limit?: number } = {}): Promise<SearchResult> {
+  const limit = opts.limit ?? 200
+  let path = `/search?q=${encodeURIComponent(q)}&limit=${limit}`
+  if (opts.offset != null && opts.offset > 0) path += `&offset=${opts.offset}`
+  return get<SearchResult>(path)
 }
 
 /** 触发扫描 */

@@ -99,5 +99,40 @@ export interface MonthGroup {
   thumbId?: number
 }
 
+/** 搜索结果（照片墙化分页）：匹配集视为一条倒序流，与 /api/assets?offset= 同构 */
+export interface SearchResult {
+  query: string
+  /** 真实匹配总数（COUNT *，滚动条长度 + 「共 N 项」数据源） */
+  total: number
+  /** 匹配集月份分组（照片墙骨架：月份头行 + 行数/高度 + 日期跳转） */
+  months: MonthGroup[]
+  /** 当前页（匹配流从 offset 起的切片） */
+  items: AssetDto[]
+  offset: number
+}
+
+/** GridScroller 数据源接口：照片墙（assets store）与搜索结果（search store）共用。
+ * 两个 store 均实现此接口，GridScroller 只依赖接口不依赖具体 store。 */
+export interface GridDataSource {
+  /** 月份分组（倒序；骨架/月份头行/日期跳转数据源） */
+  months: MonthGroup[]
+  /** 总资产数（滚动条长度 + 「共 N 项」） */
+  totalCount: number
+  /** 已加载资产数（调试信息） */
+  loadedCount: number
+  /** 是否有请求进行中（工具栏提示） */
+  loading: boolean
+  /** 选中集合（照片墙多选删除；搜索态恒空） */
+  selectedIds: Set<number>
+  /** 取 [start, end) 区间资产；缺页返回 null（渲染占位） */
+  getRange(start: number, end: number): AssetDto[] | null
+  /** 确保 [start, end) 已加载（幂等 + 并发去重） */
+  ensureRange(start: number, end: number): void
+  /** 清空选中（点击空白 / Esc） */
+  clearSelection(): void
+  /** 初始化：拉月份骨架 + 首屏数据（幂等） */
+  init(): Promise<void>
+}
+
 /** 缩略图档位 */
 export type ThumbSize = 'grid' | 'detail' | 'blur'

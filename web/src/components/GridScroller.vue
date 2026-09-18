@@ -2,15 +2,21 @@
 /**
  * GridScroller —— 虚拟滚动照片墙（核心组件，C 方案：全量骨架 + 区间懒加载）
  *
+ * 数据源抽象（搜索照片墙化）：
+ *   组件只依赖 GridDataSource 接口（months/totalCount/getRange/ensureRange/init…），
+ *   照片墙传 assets store、搜索结果传 search store —— 两个 store 实现同一接口。
+ *   数据源切换 = watch(props.dataSource) → 重置骨架 + 滚动归零 + init 重新拉取；
+ *   组件实例不销毁（KeepAlive 缓存照片墙滚动位置/虚拟器状态不受搜索影响）。
+ *
  * 设计对标 iCloud 网页端的实测结论：
  *   滚动容器 scrollHeight 高达 157 万 px，但 DOM 中常驻只有 ~168 个节点。
  *   它的秘密就是"按行虚拟化"：只渲染视口附近的若干行，其余行用占位高度撑起滚动条。
  *
  * 本实现分层（C 方案重构要点）：
- *   ① 列数控制（顶部滑块 3~9 列，对标 iCloud 的 ToolbarSlider）
+ *   ① 列数控制（顶部滑块 4~12 列；值存 theme store，照片墙与搜索共享）
  *   ② 全量行骨架：总行数/总高度由「月份分组 + 列数」精确预计算，
  *      滚动条 = 全库高度 → 日期跳转后上下双向自由滚动（不再有"单向流"死角）
- *   ③ 区间懒加载：store 按页缓存全局位置区间；可视行未命中时渲染
+ *   ③ 区间懒加载：数据源按页缓存全局位置区间；可视行未命中时渲染
  *      占位骨架并自动请求（滚动风暴由 store 幂等/去重兜底）
  *   ④ 图片懒加载（GridItem 内部 IntersectionObserver，进视口才请求）
  *   ⑤ 日期分组定位：头行插在"行首月份跳变处"（跨行切片，组尾行可能混入
@@ -26,24 +32,26 @@
  */
 import { computed, onActivated, onDeactivated, onMounted, ref, watch } from 'vue'
 import { useVirtualizer } from '@tanstack/vue-virtual'
-import { useAssetStore } from '../stores/assets'
-import { fetchDates } from '../api/client'
+import { useThemeStore } from '../stores/theme'
 import { formatDateRange, formatMonthRange } from '../utils/format'
-import type { AssetDto, MonthGroup } from '../types'
+import type { AssetDto, GridDataSource, MonthGroup } from '../types'
 import GridItem from './GridItem.vue'
 import DateNavPanel from './DateNavPanel.vue'
 
-const store = useAssetStore()
+/** 数据源：照片墙 assets store 或 搜索结果 search store（实现 GridDataSource 接口） */
+const props = defineProps<{ dataSource: GridDataSource }>()
+
+const themeStore = useThemeStore()
 
 /** 滚动容器 DOM 引用 */
 const scrollEl = ref<HTMLElement | null>(null)
 /** 容器当前宽度（ResizeObserver 维护） */
 const viewportWidth = ref(0)
 
-/** 列数档位（3~9，对标 iCloud 实测的 columnCountMin=3 / Max=9 / 默认8） */
-const colCount = ref(8)
+/** 列数档位（4~12；值存 theme store，照片墙/搜索共享，持久化） */
 const MIN_COLS = 4
 const MAX_COLS = 12
+const colCount = computed(() => themeStore.thumbnailCols)
 
 /** 网格间距（px） */
 const GAP = 8
@@ -90,18 +98,19 @@ function getRowHeight(row: GridRow): number {
 
 /**
  * 全量行骨架（C 方案核心）：
- * 基于「月份分组 + 列数」精确生成全库行序列，与已加载数据无关——
+ * 基于「月份分组 + 列数」精确生成全量行序列，与已加载数据无关——
  *   行 = 全局倒序流按列数连续切片（跨行切片，与旧实现视觉一致）
  *   头行插在「行首月份跳变处」（该月第一个行首前）
  *   头行标签 = 该组真实月份区间：组尾行可能混入相邻月资源，
  *              因此用 [头行位置, 下一头行位置) 的首末月份生成「4月-3月」式标签
  * 总行数/总高度精确 → 滚动条真实覆盖全库。
+ * （搜索态：dataSource.months 为匹配集月份分组，骨架即「搜索结果照片墙」）
  */
 const rows = computed<GridRow[]>(() => {
   const cols = colCount.value
-  const ms = store.months
+  const ms = props.dataSource.months
   const out: GridRow[] = []
-  const total = store.totalCount
+  const total = props.dataSource.totalCount
   if (ms.length === 0 || total === 0) return out
 
   // 位置 pos 的资产所属月份（ms 倒序且 offset 单调递增 → 二分）
@@ -184,7 +193,7 @@ const rowVirtualizer = useVirtualizer({
 function rowAssets(index: number): AssetDto[] | null {
   const r = rows.value[index]
   if (!r || r.type !== 'asset') return null
-  return store.getRange(r.start, r.end)
+  return props.dataSource.getRange(r.start, r.end)
 }
 
 /**
@@ -200,7 +209,7 @@ watch(
   () => {
     for (const v of rowVirtualizer.value?.getVirtualItems() ?? []) {
       const r = rows.value[v.index]
-      if (r && r.type === 'asset') store.ensureRange(r.start, r.end)
+      if (r && r.type === 'asset') props.dataSource.ensureRange(r.start, r.end)
     }
   },
   { flush: 'post' },
@@ -231,8 +240,8 @@ const viewDateRange = computed(() => {
   const fRow = rows.value[first.index]
   const lRow = rows.value[last.index]
   if (!fRow || !lRow) return currentMonthLabel.value
-  const fAssets = store.getRange(fRow.start, fRow.end)
-  const lAssets = store.getRange(lRow.start, lRow.end)
+  const fAssets = props.dataSource.getRange(fRow.start, fRow.end)
+  const lAssets = props.dataSource.getRange(lRow.start, lRow.end)
   const startIso = fAssets?.[0]?.dateTaken
   const endIso = lAssets?.[lAssets.length - 1]?.dateTaken
   if (!startIso || !endIso) return currentMonthLabel.value
@@ -255,8 +264,8 @@ const currentMonthLabel = computed(() => {
   return fmtMonth(r.month)
 })
 
-/** 日期导航面板数据（一次拉全，~100 个月份） */
-const months = ref<MonthGroup[]>([])
+/** 日期导航面板数据源（照片墙 = 全库月份；搜索 = 匹配集月份） */
+const months = computed<MonthGroup[]>(() => props.dataSource.months)
 /** 当前可视月份（面板当前月高亮） */
 const currentYm = computed(() => {
   const vs = rowVirtualizer.value?.getVirtualItems() ?? []
@@ -280,7 +289,7 @@ function onNavSelect(offset: number): void {
 
 /**
  * 跳转到全局 offset（目标月首资产位置）：
- * 滚动条 = 全库骨架 → 直接滚动到「包含 offset 的行」顶部即可，
+ * 滚动条 = 全量骨架 → 直接滚动到「包含 offset 的行」顶部即可，
  * 目标行未加载时可视行 watch 会自动拉取（占位 → 图片）。
  * offset 为列数整数倍时该行正好从目标月头行开始；否则该行行首为上一月
  * 尾行（跨行切片），目标月资产在行尾，吸顶跨度如实显示混行区间。
@@ -324,7 +333,7 @@ function onScroll(): void {
 /** 清空选中：点击空白区域（GridItem 的 click 已 stopPropagation，
  *  这里收到的 click 必然不是缩略图本身） */
 function onScrollAreaClick(): void {
-  store.clearSelection()
+  props.dataSource.clearSelection()
 }
 
 /**
@@ -337,7 +346,7 @@ let savedScrollTop = 0
 
 /** Esc 清空选中（KeepAlive 下用 activated/deactivated 管理，避免详情页残留监听） */
 function onKeydown(e: KeyboardEvent): void {
-  if (e.key === 'Escape') store.clearSelection()
+  if (e.key === 'Escape') props.dataSource.clearSelection()
 }
 onDeactivated(() => window.removeEventListener('keydown', onKeydown))
 onActivated(() => {
@@ -354,18 +363,29 @@ onActivated(() => {
   })
 })
 
+/**
+ * 数据源切换（照片墙 ↔ 搜索）：组件实例不销毁，只换数据 + 重置视图。
+ *  - 骨架/吸顶缓存清零，滚动归零（搜索从顶部开始）
+ *  - init() 重新拉取骨架 + 首屏；完成后 measure + 派发 scroll 驱动加载
+ */
+watch(
+  () => props.dataSource,
+  () => {
+    lastRange.value = ''
+    savedScrollTop = 0
+    dateNavOpen.value = false
+    if (scrollEl.value) scrollEl.value.scrollTop = 0
+    void props.dataSource.init().then(() => {
+      rowVirtualizer.value?.measure()
+      scrollEl.value?.dispatchEvent(new Event('scroll'))
+    })
+  },
+)
+
 onMounted(async () => {
   observeWidth()
-  // 先拉月份分组（全量骨架数据源，决定滚动条长度）；失败则空库视图
-  try {
-    const res = await fetchDates()
-    months.value = res.items // 日期导航面板
-    store.initMonths(res.items) // 全量骨架
-  } catch {
-    months.value = []
-    store.initMonths([])
-  }
-  await store.loadFirstPage()
+  // 数据源初始化（照片墙：/api/dates + 首屏；搜索：匹配集骨架 + 首屏）
+  await props.dataSource.init()
   // 关键：虚拟器在 setup 时初始化，当时滚动容器还没挂载（getScrollElement 返回 null），
   // 必须在元素就绪 + 数据就绪后手动 measure 一次，虚拟行才会填充
   rowVirtualizer.value.measure()
@@ -387,7 +407,8 @@ onMounted(async () => {
 
       <span class="label">缩略图尺寸</span>
       <input
-        v-model.number="colCount"
+        :value="colCount"
+        @input="themeStore.thumbnailCols = Number(($event.target as HTMLInputElement).value)"
         type="range"
         :min="MIN_COLS"
         :max="MAX_COLS"
@@ -397,20 +418,20 @@ onMounted(async () => {
       <span class="label dim">{{ colCount }} 列 · {{ itemWidth }}px</span>
       <span class="spacer" />
       <span class="label dim"
-        >items={{ store.loadedCount }} rows={{ rows.length }} virt={{ rowVirtualizer.getVirtualItems().length }}</span
+        >items={{ dataSource.loadedCount }} rows={{ rows.length }} virt={{ rowVirtualizer.getVirtualItems().length }}</span
       >
-      <span v-if="store.loading" class="label dim">加载中…</span>
+      <span v-if="dataSource.loading" class="label dim">加载中…</span>
     </div>
 
     <!-- 吸顶日期跨度指示器：随滚动实时更新（对标 iCloud GridHeader 的日期范围） -->
     <div v-show="viewDateRange" class="month-sticky">
       <span class="month-dot" />{{ viewDateRange }}
-      <span class="dim" style="margin-left: 8px; font-weight: 400">共 {{ store.totalCount }} 项</span>
+      <span class="dim" style="margin-left: 8px; font-weight: 400">共 {{ dataSource.totalCount }} 项</span>
     </div>
 
-    <!-- 滚动容器：唯一真正的滚动条载体（高度 = 全库骨架，双向自由滚动） -->
+    <!-- 滚动容器：唯一真正的滚动条载体（高度 = 全量骨架，双向自由滚动） -->
     <div ref="scrollEl" class="grid-scroll" @scroll.passive="onScroll" @click="onScrollAreaClick">
-      <!-- 撑高容器：height = 全库总高度（虚拟化的"纸"） -->
+      <!-- 撑高容器：height = 全量总高度（虚拟化的"纸"） -->
       <div
         class="grid-space"
         :style="{ height: `${rowVirtualizer.getTotalSize()}px`, position: 'relative' }"
@@ -441,7 +462,7 @@ onMounted(async () => {
                 :key="asset.id"
                 :asset="asset"
                 :width="itemWidth"
-                :selected="store.selectedIds.has(asset.id)"
+                :selected="dataSource.selectedIds.has(asset.id)"
               />
             </template>
             <template v-else>
@@ -457,7 +478,7 @@ onMounted(async () => {
       </div>
     </div>
 
-    <!-- 日期导航面板（左年份 + 右月份缩略图） -->
+    <!-- 日期导航面板（左年份 + 右月份缩略图；搜索态显示匹配集月份） -->
     <DateNavPanel
       v-if="dateNavOpen"
       :months="months"
