@@ -195,7 +195,7 @@ GET /api/dates                              <span class="c"># 年月分组：{ym
 GET /api/thumb/:id?size=grid|detail|blur     <span class="c"># 缩略图（懒生成 + ETag 长缓存，前端 URL 带 rev 版本号）</span>
 GET /api/video/:id/stream                   <span class="c"># 视频流（HTTP Range 206）；variant=h264 转码版为规划未实现</span>
 GET /api/video/:id/poster?size=grid|detail   <span class="c"># 视频封面帧（懒生成 + ETag 长缓存）</span>
-GET /api/search?q=&amp;limit=20                <span class="c"># FTS5 trigram 搜索（文件名/日期子串，≥3 字符）</span>
+GET /api/search?q=&amp;limit=&amp;offset=         <span class="c"># FTS5 trigram 搜索（文件名/日期子串，≥3 字符；offset 匹配流分页，返回 total/months）</span>
 GET /api/stats                               <span class="c"># 库统计 + 扫描进度（异步体积统计 + 落盘缓存）</span>
 POST /api/scan                               <span class="c"># 触发增量扫描（Content-Type: application/json，body {}）</span>
 </pre>
@@ -323,7 +323,8 @@ CREATE VIRTUAL TABLE assets_fts USING fts5(filename, location_text);
 <ul>
 <li><b>索引</b>：<code>assets_fts</code> 是 trigram 分词器虚拟表（每次启动 DROP+CREATE，db/index.ts 校验行数不一致即全量回填，11k 行毫秒级）。三列：<code>search_text</code>（小写文件名）/ <code>date_taken</code>（原始 ISO，支持搜 "2024-09" 按年宽匹配）/ <code>date_compact</code>（去标点 "20240913T084028"，支持搜 "202409"）。</li>
 <li><b>查询清洗</b>：小写 + 非中英文数字统一转空格 + 丢弃 &lt;3 字符 token（trigram 最小 3 字符）——避免 FTS5 语法特殊字符（引号/括号/AND 等）破坏 MATCH、日期 "-" 被误读为列分隔符。</li>
-<li><b>路由</b>：GET /api/search?q=&amp;limit=（防抖 300ms，Esc/清除退出回照片墙，结果 flex-wrap 网格最多 100 条，复用 GridItem 进同一详情路由）。</li>
+<li><b>路由</b>：GET /api/search?q=&amp;limit=&amp;offset=（防抖 300ms，Esc/清除退出回照片墙，点结果进同一详情路由）。<b>搜索结果照片墙化</b>（2026-09-19）：匹配集 = 按拍摄时间倒序的资产流，响应返回 <code>total</code>（真实匹配计数）+ <code>months</code>（匹配集月份分组，与 /api/dates 同构）+ <code>offset</code> 跳页分页；前端 <code>search store</code> 实现与 assets store 同构的 <code>GridDataSource</code> 接口，GridScroller 抽象后照片墙与搜索共用同一虚拟滚动模型（月份头行 / 吸顶日期跨度 / 列数滑块共享，组件实例不销毁只切数据源）——搜索结果不再固定 100 条截断，几千条匹配集同样流畅滚动。</li>
+<li><b>⚠ trigram 精确性兜底</b>（2026-09-19）：FTS5 trigram 对多字符查询按「片段 AND」匹配（"2023" → "202"+"023"，带引号短语也无相邻约束，实测与 <code>"202" AND "023"</code> 结果一致）——日期时间串碰巧同时含两片段即误命中（搜「2023」曾混入 2018/2021/2025 年照片，如紧凑时间 <code>20181207T120239</code> 的 T1202→202 + 0239→023）。修复：FTS 只做粗筛（走索引超集），对每个查询 token 追加连续子串精筛 <code>instr(lower(filename), t) OR instr(date_taken, t) OR instr(replace(date_taken,'-',''), t)</code>，多 token 逐词 AND。实测 2131 → 2126 = 库中 2023 年资产数，误匹配归零，1ms。</li>
 </ul>
 
 <h3>4.9 P2+-1 目录热监听 + 删除对账 + 启动同步（已落地，一键拉取仍待开发）</h3>

@@ -1,11 +1,11 @@
 # 项目上下文快照（供会话压缩/新会话恢复用）
 
-> 生成日期：2026-09-08；最后同步：2026-09-17（P2+-1 热监听/删除对账/启动同步、客户端删除、2026-09-17 全项目审查 B1~B5 修复 + 文档三件套同步）。若本会话上下文被压缩或丢失，先读本文件 + 架构设计文档 + README，即可恢复全部关键信息。
+> 生成日期：2026-09-08；最后同步：2026-09-19（Claude 审查竞态修复合并、搜索照片墙化、FTS trigram 精确性修复、文档三件套同步）。若本会话上下文被压缩或丢失，先读本文件 + 架构设计文档 + README，即可恢复全部关键信息。
 
 ## 项目目标与现状
 - 用户已用 iCloudPD 把 iCloud 照片全部拉到本地（`F:\iPhone\icloud-app\iCloudPhoto\`，源文件：12,591 资产 = 照片 1,982 + 实况 7,434 + 视频 3,175，162.8GB，约 2 万媒体文件）。
 - 目标：本地网页应用，复刻 iCloud 网页端浏览体验。前端 Vue 3 系列，后端 Node.js。
-- **当前状态：P0/P1/P2 全部完成并通过验收；代码审查 12 项稳定化修复全部完成；扫描配对修复（跨目录同名，11,009→12,591）已合并；照片墙全量骨架（C 方案）已上线：滚动条=全库双向滚动 + 吸顶日期跨度 + 月份头区间标签 + 4~12 列 + 行高抽象；详情信息面板（/api/assets/:id/info）已上线；UI 徽标刷新与详情页三级渐进已上线；P2+-1 部分落地（目录热监听 + 删除对账 + 启动同步，一键拉取 exe 待开发）；客户端删除已上线（照片墙单选/Ctrl多选 + 详情页删除 + DELETE /api/assets + 确认弹框）；2026-09-17 全项目审查完成并修复 B1~B5（删除后页缓存错位 / 实况宽高兜底 / 首屏默认浅色 / CORS 补 DELETE / 排版整理）+ 文档三件套同步；Git 私有仓库 + GitHub 远程（isChen0111/icloud-app，SSH 推送）版本管理。**
+- **当前状态：P0/P1/P2 全部完成并通过验收；代码审查 12 项稳定化修复全部完成；扫描配对修复（跨目录同名，11,009→12,591）已合并；照片墙全量骨架（C 方案）已上线：滚动条=全库双向滚动 + 吸顶日期跨度 + 月份头区间标签 + 4~12 列 + 行高抽象；详情信息面板（/api/assets/:id/info）已上线；UI 徽标刷新与详情页三级渐进已上线；P2+-1 部分落地（目录热监听 + 删除对账 + 启动同步，一键拉取 exe 待开发）；客户端删除已上线（照片墙单选/Ctrl多选 + 详情页删除 + DELETE /api/assets + 确认弹框）；2026-09-17 全项目审查完成并修复 B1~B5（删除后页缓存错位 / 实况宽高兜底 / 首屏默认浅色 / CORS 补 DELETE / 排版整理）+ 文档三件套同步；2026-09-18 采纳 Claude 审查两处高信号修复（assets store 删除与分页请求竞态：dataVersion + requestSequence/activeRequests 双校验；GridView 搜索宽度 ResizeObserver 启动）已合并；**2026-09-19 搜索照片墙化 + FTS trigram 精确性修复已合并**（匹配集虚拟滚动/月份分组/列数共享；trigram 片段 AND 误命中 → FTS 粗筛 + instr 连续子串精筛）；Git 私有仓库 + GitHub 远程（isChen0111/icloud-app，SSH 推送）版本管理。**
 
 ## 已完成的工作
 1. **实测 iCloud 网页端机制**（浏览器操作 + 网络抓包 + JS bundle 源码分析）：
@@ -30,6 +30,8 @@
 13. **P2+-1 落地（2026-09-17）**：① 目录热监听（server/src/scanner/watcher.ts）——chokidar 监听 iCloudPhoto/，add/change/unlink/unlinkDir → 防抖 1.5s 合并 → runScan('watcher')，ignoreInitial + awaitWriteFinish 500ms + 忽略隐藏文件；扫描互斥（dirty 标志延后补扫）。② 删除对账——runScan 末尾「磁盘文件集合 vs DB 集合」对比，磁盘消失文件清理资产 + FTS + 三档缩略图缓存 + 孤儿缩略图清理；只删遍历明确缺失的文件，IO 抖动不误删。③ 启动同步——index.ts 启动即后台 runScan('startup')，手动拷入文件开机即发现。⚠ 已知缺口：KeepAlive 照片墙不感知 watcher 同步，手动拷/删文件后需刷新页面（机制已列待办）。
 14. **客户端删除（2026-09-17）**：照片墙单击单选 / Ctrl+单击多选（选中态画缩略图内，selectedIds 存 Pinia store，虚拟滚动销毁重建不丢）；删除按钮在搜索栏行（未选中灰禁、选中亮蓝 + 「已选 N 项」）；确认弹框（DeleteConfirm，文案「永久删除、无法恢复」）；详情页删除按钮与信息按钮统一 34px 蓝色圆形；后端 DELETE /api/assets（去重限 1000，unlink 源文件只计数，事务删 DB+FTS+缓存，触发热监听对账幂等空转）。
 15. **2026-09-17 全项目审查 + 修复**：B1 删除后页缓存错位（removeAssets 清空删除点之后的页，防滚动错位）；B2 实况宽高兜底（thumb.ts ensureSize 条件 photo→非 video）；B3 首屏主题异常分支默认深色→浅色（index.html，应用默认白色）；B4 CORS 补 DELETE；B5 五处补丁残留排版整理（App/GridScroller/DetailView/GridItem/GridView，纯格式）；文档三件套同步（README + 架构设计文档 + 本快照）。
+16. **2026-09-18 采纳 Claude 审查修复**：assets store 删除与分页请求竞态（dataVersion 版本号 + requestSequence/activeRequests 每页唯一 id 双校验，删除后旧分页响应不回写缓存、加载中页重拉）；GridView 搜索宽度 ResizeObserver 正确启动（监听 searchActive 进入搜索后绑定、卸载 disconnect）。已合并 main（91c8b71）。
+17. **2026-09-19 搜索照片墙化 + trigram 精确性**：① 搜索照片墙化——后端 /api/search 加 offset 跳页分页 + total 真实计数 + months 匹配集月份分组；GridScroller 抽象 GridDataSource 接口（照片墙 assets store / 搜索 search store 共用，组件实例不销毁只切数据源）；列数提升到 theme store（thumbnailCols 持久化 4~12，照片墙/搜索共享）；GridView 搜索态改用 GridScroller（删除旧固定 5 列网格 + 100 条截断）。② FTS trigram 精确性——根因：trigram 对多字符查询按「片段 AND」匹配（"2023"="202"+"023"，带引号短语也无相邻约束），日期时间串碰巧含两片段即误命中（搜 2023 混入 2018/2021/2025 照片）；修复：FTS 粗筛 + 每个 token `instr(文件名小写/ISO/紧凑时间去 -)` 连续子串精筛（多 token AND）。实测 2131→2126=库中 2023 年资产数，误匹配归零 1ms。已合并 main（1b6fdee）。遗留：search store 换词 finally 竞态（旧请求可能误删新请求 pageLoading → 偶发重复请求，数据幂等无错，待修）。
 
 ## 照片库实测数据（2026-09-08）
 - 结构：`YYYY/MM/DD/文件名`（iCloudPD 默认），实况配对基名归一（`_HEVC` 后缀），**无时间差校验**。⚠️ **配对必须限定同一目录**——跨目录同名文件（不同设备/编辑版本的同名，如 `2018/02/04/IMG_0040*` 与 `2021/07/27/IMG_0040*`，全库 2,363 个基名分布多目录）若只按基名配对会错配丢视频（见「已完成」第 9 条）。
@@ -69,6 +71,7 @@
 - ⚠ **KeepAlive 缓存失效（P2+-1 已知缺口，2026-09-17 更新）**：热监听/删除对账已落地，但照片墙被 KeepAlive 缓存后不感知后端数据变化——手动拷入/删除文件后需刷新页面才可见。规划机制：同步完成 → 前端失效照片墙缓存并刷新（store reload 标志 / GridView onActivated 检查 / 整页刷新路由；架构文档 §4.9 已注明）。
 - ✅ 2026-09-17 审查 B1~B5 修复完成（删除页缓存错位 / 实况宽高兜底 / 首屏默认浅色 / CORS DELETE / 排版整理）。
 - 🔜 P2+-1 一键拉取（exe 方案已定）与 P2+-2 冷启动进度交互待开发；P2+-3 语义搜索暂缓实现；**P2+-4 详情缓存治理已列入**（保留最近 N 月浏览的 detail 图 / 一键清空 detail 缓存，可选）。
+- 🔜 **search store 换词 finally 竞态**（2026-09-19 审查发现，待用户确认）：旧词请求 finally 无条件 `pageLoading.delete(p)` 可能误删新词请求的加载标记 → 偶发重复请求（数据幂等无错）。修复 = finally 加 `if (seq !== searchSeq) return`（一行）。
 
 ## 用户偏好（与本项目相关）
 - 技术/财经类内容偏好"深度解析 + 大白话 + 结构化清单"。
