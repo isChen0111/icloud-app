@@ -66,6 +66,7 @@ export const useSearchStore = defineStore('search', () => {
     failed.clear()
     totalCount.value = 0
     months.value = []
+    loading.value = false
     if (query.value.trim().length >= 3) ensureRange(0, PAGE)
   }
 
@@ -106,6 +107,7 @@ export const useSearchStore = defineStore('search', () => {
           if (seq === searchSeq) failed.add(p)
         })
         .finally(() => {
+          if (seq !== searchSeq) return // 换词后旧响应作废：不碰新请求的 pageLoading/loading
           pageLoading.delete(p)
           if (pageLoading.size === 0) loading.value = false
         })
