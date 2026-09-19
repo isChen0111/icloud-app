@@ -56,6 +56,27 @@ export async function registerSearchRoutes(app: FastifyInstance): Promise<void> 
       return reply.send({ query: q ?? '', total: 0, months: [], items: [], offset })
     }
 
+    // ⚠️ FTS5 trigram 精确性兜底（实测修复）：
+    // trigram 分词把查询词切成 3 字符片段，默认匹配是「片段 AND」——只要求所有片段
+    // 都出现在文档里，不要求它们连成完整查询词（"2023" → "202"+"023"，等于
+    // `"202" AND "023"`）。于是 2018-12-07T12:02:39 这类紧凑时间 20181207T120239
+    // 碰巧同时含 "202"(T1202) 与 "023"(0239) 就被误命中。
+    // 解法：FTS 负责粗筛（走索引、毫秒级超集），再对每个 token 做「连续子串」精筛
+    // （instr，大小写不敏感；文件名小写 / 原始 ISO / 紧凑时间去 - 三列任一命中）。
+    // 实测：搜 "2023" 过滤后 2131 → 2126 = 库中 2023 年资产数，误匹配归零，耗时 1ms。
+    const tokens = query.split(' ')
+    const exactConds = tokens
+      .map(
+        () =>
+          `(instr(lower(a.filename), ?) > 0
+             OR instr(a.date_taken, ?) > 0
+             OR instr(replace(a.date_taken, '-', ''), ?) > 0)`,
+      )
+      .join(' AND ')
+    // 每个 token 依次传 3 个参数（文件名 / ISO 时间 / 紧凑时间）
+    const exactArgs: string[] = []
+    for (const t of tokens) exactArgs.push(t, t, t)
+
     // MATCH 子串匹配两列（search_text / date_taken 任一命中即可），join 回资产表取真实数据。
     // try/catch 兜底（审查 P2-B6）：清洗后仍有极少数输入会让 FTS5 抛语法错误
     // （如超长输入/畸形 token 组合），此时返回空结果而非 500。
@@ -65,8 +86,12 @@ export async function registerSearchRoutes(app: FastifyInstance): Promise<void> 
     try {
       // ① 真实匹配总数（前端「共 N 项」+ 滚动条长度数据源）
       const row = db
-        .prepare(`SELECT COUNT(*) AS total FROM assets_fts WHERE assets_fts MATCH ?`)
-        .get(query) as { total: number }
+        .prepare(
+          `SELECT COUNT(*) AS total FROM assets_fts f
+           JOIN assets a ON a.id = f.rowid
+           WHERE assets_fts MATCH ? AND ${exactConds}`,
+        )
+        .get(query, ...exactArgs) as { total: number }
       total = row.total
 
       // ② 匹配集月份分组（与 /api/dates 同构：窗口函数取每月最新资产做代表缩略图）
@@ -82,11 +107,11 @@ export async function registerSearchRoutes(app: FastifyInstance): Promise<void> 
                     ) AS rn
              FROM assets_fts f
              JOIN assets a ON a.id = f.rowid
-             WHERE assets_fts MATCH ?
+             WHERE assets_fts MATCH ? AND ${exactConds}
            )
            GROUP BY ym ORDER BY ym DESC`,
         )
-        .all(query) as { ym: string; cnt: number; thumb_id: number | null }[]
+        .all(query, ...exactArgs) as { ym: string; cnt: number; thumb_id: number | null }[]
 
       let acc = 0
       months = groups.map((g) => {
@@ -106,11 +131,11 @@ export async function registerSearchRoutes(app: FastifyInstance): Promise<void> 
         .prepare(
           `SELECT a.* FROM assets_fts f
            JOIN assets a ON a.id = f.rowid
-           WHERE assets_fts MATCH ?
+           WHERE assets_fts MATCH ? AND ${exactConds}
            ORDER BY a.date_taken DESC, a.id DESC
            LIMIT ? OFFSET ?`,
         )
-        .all(query, limit, offset) as AssetRow[]
+        .all(query, ...exactArgs, limit, offset) as AssetRow[]
     } catch (err) {
       console.warn(`[search] FTS 查询失败，返回空: ${query}`, (err as Error).message)
     }
