@@ -36,6 +36,8 @@ desktop.ini
 .env
 .env.*
 *.local
+# 但示例模板要入库（别人照抄改 .env 用）
+!/server/.env.example
 
 # TypeScript 增量编译缓存
 *.tsbuildinfo

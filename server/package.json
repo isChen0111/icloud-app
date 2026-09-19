@@ -5,9 +5,9 @@
   "type": "module",
   "description": "本地 iCloud 照片浏览器 · 后端（Node.js + Fastify + SQLite + sharp）",
   "scripts": {
-    "dev": "tsx watch src/index.ts",
-    "start": "tsx src/index.ts",
-    "scan": "tsx src/cli-scan.ts",
+    "dev": "tsx watch --env-file-if-exists=.env src/index.ts",
+    "start": "tsx --env-file-if-exists=.env src/index.ts",
+    "scan": "tsx --env-file-if-exists=.env cli-scan.ts",
     "fix-size": "tsx scripts/fix-asset-size.ts",
     "fix-thumbs": "tsx scripts/rebuild-orientation-thumbs.ts",
     "postinstall": "powershell -ExecutionPolicy Bypass -File scripts/install-ffmpeg-full.ps1"
