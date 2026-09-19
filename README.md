@@ -38,10 +38,18 @@ icloud-app/
 
 ## 快速启动
 
+**前置要求**：Node.js 22/24（原生模块 better-sqlite3 按 Node ABI 预编译，版本需与编译目标一致）；Windows（脚本为 PowerShell）。
+
+```bash
+# 0. （可选）自定义路径：复制模板改名 .env，按需修改
+cd server
+Copy-Item .env.example .env   # 用记事本打开 .env 改照片库/缓存路径；不改则用默认值
+```
+
 ```bash
 # 1. 后端（端口 8899，首次启动自动扫描入库）
 cd server
-npm install          # postinstall 会自动装带 libheif 的 ffmpeg full 版（HEIC 解码必需）
+npm install          # postinstall 自动下载带 libheif 的 ffmpeg full 版（HEIC 解码必需，约 162MB，从 GitHub）
 npm run dev
 
 # 2. 前端（新终端，端口 5173）
@@ -54,6 +62,27 @@ npm run dev
 
 > 说明：后端首次启动会全量扫描照片库（~2 万媒体文件 / 12,591 资产，约几分钟），扫描完成后缩略图由
 > 后台队列按需预热；浏览时未生成的缩略图会现场生成（冷 0.7s / 热 25ms）。
+
+### ⚠ 装依赖注意事项（新机器/新目录必看）
+
+- **不要用 `npm install --ignore-scripts`**：这会跳过 better-sqlite3 的原生编译/预编译下载，启动直接报 `Could not locate the bindings file`。JS 包装了、C++ 原生 `.node` 没有，起不来。
+- **postinstall 要下 162MB ffmpeg**：从 GitHub Release 下载，网络慢会卡住。如果已从别处拷到 `server/vendor/ffmpeg-full.zip`，脚本检测到会自动跳过下载。
+- **两个目录各装一次**：`server/` 和 `web/` 的 `node_modules` 互相独立，git 都不存——新 clone 后两边都要 `npm install`。
+- **照片库 `iCloudPhoto/` 和 `server/cache/` 不入库**：新机器没有这俩。照片库需自己准备（放默认位置或用 `.env` 指向）；`cache/` 首次启动自动重建（会重新全量扫描+生成缩略图，耗时较长）。
+
+### 环境变量（.env）
+
+所有路径/端口都支持环境变量覆盖。在 `server/` 目录建 `.env`（照 `.env.example` 复制），启动脚本已自动加载（Node 原生 `--env-file-if-exists=.env`，文件不存在也不影响）：
+
+| 变量 | 默认值 | 说明 |
+|---|---|---|
+| `PHOTO_LIBRARY` | `<项目根>\\iCloudPhoto` | 照片库根目录（iCloudPD 输出，只读） |
+| `CACHE_DIR` | `<项目根>\\server\\cache` | 缩略图/封面/转码缓存目录 |
+| `DB_PATH` | `<项目根>\\server\\cache\\library.db` | SQLite 数据库文件 |
+| `PORT` | `8899` | 后端端口 |
+| `SCAN_LIMIT` | `0`（全量） | 调试用，>0 只扫前 N 个文件 |
+
+优先级：命令行临时设置 > `.env` 文件 > 代码默认值。同一时间不要两个后端实例连同一个 `library.db`（SQLite 写锁冲突）。
 
 ## 常用命令
 
