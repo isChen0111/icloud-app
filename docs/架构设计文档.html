@@ -198,7 +198,19 @@ GET /api/video/:id/poster?size=grid|detail   <span class="c"># 视频封面帧�
 GET /api/search?q=&amp;limit=&amp;offset=         <span class="c"># FTS5 trigram 搜索（文件名/日期子串，≥3 字符；offset 匹配流分页，返回 total/months）</span>
 GET /api/stats                               <span class="c"># 库统计 + 扫描进度（异步体积统计 + 落盘缓存）</span>
 POST /api/scan                               <span class="c"># 触发增量扫描（Content-Type: application/json，body {}）</span>
+DELETE /api/assets                           <span class="c"># 批量删除（body { ids }，去重限 1000；删源文件+DB+FTS+三档缩略图缓存，不可逆）</span>
 </pre>
+
+<h3>3.6.1 环境变量与路径配置（.env）</h3>
+<p>所有路径/端口集中在 <code>server/src/config.ts</code>，均支持环境变量覆盖。<b>server/.env</b> 文件（照 <code>.env.example</code> 复制，gitignore 不入库）由启动脚本经 Node 原生 <code>--env-file-if-exists=.env</code> 自动加载——新机器/新目录改路径不用敲命令行。</p>
+<pre>
+PHOTO_LIBRARY  &lt;项目根&gt;/iCloudPhoto        <span class="c"># 照片库根（iCloudPD 输出，只读）</span>
+CACHE_DIR      &lt;项目根&gt;/server/cache       <span class="c"># 缩略图/封面/转码缓存</span>
+DB_PATH        &lt;项目根&gt;/server/cache/library.db
+PORT           8899
+SCAN_LIMIT     0（全量；&gt;0 只扫前 N 个，调试用）
+</pre>
+<p>优先级：命令行临时设置 &gt; <code>.env</code> &gt; 代码默认值。同一时间仅允许一个后端实例连同一 <code>library.db</code>（SQLite 写锁）。</p>
 
 <h3>3.7 数据库 Schema（SQLite）</h3>
 <pre>
@@ -363,7 +375,7 @@ F:\iPhone\icloud-app\
 ├─ server/
 │  ├─ src/
 │  │  ├─ index.ts            <span class="c"># Fastify 入口（启动时库空则自动全量扫描）</span>
-│  │  ├─ config.ts           <span class="c"># 端口/缩略图尺寸/并发等全局配置</span>
+│  │  ├─ config.ts           <span class="c"># 端口/缩略图尺寸/并发等全局配置（路径类支持 .env 覆盖，见 §3.6.1）</span>
 │  │  ├─ cli-scan.ts         <span class="c"># 命令行扫描工具</span>
 │  │  ├─ db/schema.ts, index.ts  <span class="c"># SQLite 建表 + WAL 连接（better-sqlite3）</span>
 │  │  ├─ metadata/index.ts   <span class="c"># exifr（EXIF/GPS/Orientation）+ ffprobe（视频时长）</span>
