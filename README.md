@@ -49,7 +49,7 @@ Copy-Item .env.example .env   # 用记事本打开 .env 改照片库/缓存路�
 ```bash
 # 1. 后端（端口 8899，首次启动自动扫描入库）
 cd server
-npm install          # postinstall 自动下载带 libheif 的 ffmpeg full 版（HEIC 解码必需，约 162MB，从 GitHub）
+npm install          # postinstall 自动下载带 libheif 的 ffmpeg full 版（HEIC 解码必需，约 162MB）
 npm run dev
 
 # 2. 前端（新终端，端口 5173）
@@ -60,13 +60,26 @@ npm run dev
 
 打开 http://localhost:5173 即见照片墙。
 
+### 生产模式（单端口部署）
+
+开发模式跑两个端口（5173 + 8899）。生产模式只需一个端口：
+
+```bash
+cd web && npm run build   # 产出 web/dist/
+cd ../server && npm run start   # 后端自动检测 web/dist 并托管，访问 http://127.0.0.1:8899 即页面
+```
+
 > 说明：后端首次启动会全量扫描照片库（~2 万媒体文件 / 12,591 资产，约几分钟），扫描完成后缩略图由
 > 后台队列按需预热；浏览时未生成的缩略图会现场生成（冷 0.7s / 热 25ms）。
 
 ### ⚠ 装依赖注意事项（新机器/新目录必看）
 
 - **不要用 `npm install --ignore-scripts`**：这会跳过 better-sqlite3 的原生编译/预编译下载，启动直接报 `Could not locate the bindings file`。JS 包装了、C++ 原生 `.node` 没有，起不来。
-- **postinstall 要下 162MB ffmpeg**：从 GitHub Release 下载，网络慢会卡住。如果已从别处拷到 `server/vendor/ffmpeg-full.zip`，脚本检测到会自动跳过下载。
+- **国内镜像**：`server/.npmrc` 已配置 npmmirror 镜像（better-sqlite3/sharp/ffmpeg-static 预编译二进制走国内源），新 clone 后 `npm install` 自动生效，无需手动配置。
+- **postinstall 要下 162MB ffmpeg**：从项目自己的 GitHub Release 下载（`isChen0111/icloud-app/releases/tag/vendor-binaries`），含 libheif，HEIC 解码必需。网络慢/下不动时：
+  - **方案 A（推荐）**：把 `server/vendor/ffmpeg-full.zip` 从已有机器直接拷到新机器同位置，脚本检测到自动跳过下载；
+  - **方案 B**：浏览器手动打开 [Release 页面](https://github.com/isChen0111/icloud-app/releases/tag/vendor-binaries) 下载 `ffmpeg-full.zip`，放到 `server/vendor/ffmpeg-full.zip`；
+  - **方案 C**：设环境变量 `FFMPEG_FULL_URL` 指向你自己的镜像（如 OSS），再跑 `npm install`。
 - **两个目录各装一次**：`server/` 和 `web/` 的 `node_modules` 互相独立，git 都不存——新 clone 后两边都要 `npm install`。
 - **照片库 `iCloudPhoto/` 和 `server/cache/` 不入库**：新机器没有这俩。照片库需自己准备（放默认位置或用 `.env` 指向）；`cache/` 首次启动自动重建（会重新全量扫描+生成缩略图，耗时较长）。
 
@@ -127,7 +140,7 @@ npm run dev
 - **详情返回位置保留**：照片墙组件 KeepAlive 缓存（仅 GridView），返回时滚动位置/搜索态原样保留；恢复时 rAF 重测虚拟行，避免行高错位（重叠/间距异常）。
 - **日期分组与吸顶跨度**：月份头行（跨月组显示区间标签如「2021年4月-3月」）+ 吸顶日期跨度（视口首末资产行直出，如「2021年5月30日 - 5月11日」，过滤 overscan 预热行与真实可视范围一致）；工具栏「日期」按钮 → 方案 C 面板（左年份 + 右月份缩略图 3 行×4 列），点月份滚动定位该月首行（不重置数据）。
 - **FTS5 搜索**：trigram 分词器支持任意子串（搜 "9188" 或 "202409" 都秒出）；索引存小写文件名 + 原始/紧凑日期，入库时同步、启动时校验回填。**搜索结果照片墙化（2026-09-19）**：匹配集 = 倒序资产流，与照片墙共用 GridScroller 虚拟滚动（offset 分页 + total 真实计数 + 匹配集月份分组头 + 吸顶日期 + 列数滑块共享；search store 与 assets store 实现同一 GridDataSource 接口，组件实例不销毁只切数据源）。**⚠ trigram 精确性兜底**：FTS5 trigram 对多字符查询按「片段 AND」匹配（"2023"="202"+"023"，不要求相邻）会误命中时间串碰巧含两片段的照片——FTS 只做粗筛，每个查询 token 再按连续子串 `instr` 精筛（文件名小写 / ISO / 紧凑时间去 -，多 token AND）。
-- **目录热监听 + 删除对账（P2+-1）**：chokidar 监听照片库目录树（防抖 1.5s 合并事件 + 扫描互斥 + 忽略初始事件），手动拷入/删除/重命名文件自动触发全量同步；同步末尾做「磁盘文件 vs DB 资产」对账——磁盘上已消失的文件清理资产记录 + FTS 索引 + 缩略图缓存，手动删文件后照片墙不再残留"已不存在的图"。启动时（/api/scan）同样全量同步（幂等增量）。
+- **目录热监听 + 删除对账（P2+-1）**：chokidar 监听照片库目录树（防抖 1.5s 合并事件 + `awaitWriteFinish: 2s` 等文件写完 + 扫描互斥 + 忽略初始事件），手动拷入/删除/重命名文件自动触发全量同步；同步末尾做「磁盘文件 vs DB 资产」对账——磁盘上已消失的文件清理资产记录 + FTS 索引 + 缩略图缓存，手动删文件后照片墙不再残留"已不存在的图"。启动时（/api/scan）同样全量同步（幂等增量）。
 - **客户端删除（照片墙 + 详情页）**：单击单选 / Ctrl+单击多选（选中态画在缩略图内，虚拟滚动不参与布局、选中记忆放 Pinia store 滚动不丢）；删除按钮在搜索栏行（未选中灰禁、选中亮蓝）+ 确认弹框；详情页删除按钮与信息按钮统一蓝色圆形；删除后前端同步页缓存/月份计数（清空删除点之后的页缓存防错位），后端联动触发热监听对账。
 - **配对规则**：基名相同**且在同一目录内**即配对（`IMG_1234.HEIC ⇄ IMG_1234_HEVC.MOV`，`_HEVC` 后缀归一），无时间差校验。⚠️ **必须限定同一目录**：iCloudPD 会把同名文件（不同设备 / 编辑版本）归档进不同日期目录（如 `2018/02/04/IMG_0040*` 与 `2021/07/27/IMG_0040*`），只看基名会跨目录错误配对——同组多余视频被静默丢弃、实况视频可能配错照片，曾因此丢失 3,382 个视频（2026-09-08 修复，见下）。
 
@@ -163,7 +176,7 @@ npm run dev
 - **实况照片无声**：`<video muted>` 硬编码会永远静音；按住播放时应显式 `v.muted=false` 再 `play()`，失败（自动播放策略）则回退静音继续播。
 - **sharp 的 `rotate: true` 构造选项不生效**（0.33.5）：必须用链式 `.rotate()` 才会应用 EXIF 方向——构造选项静默忽略导致竖拍 JPG 缩略图全横。
 - **`Cache-Control: immutable` 会把旧图锁死一年**：缩略图内容可能因修复而变化，不能用 immutable；应保留 ETag 协商 + 前端 URL 版本号（rev）实现缓存失效。
-- **Windows npm 安装**：GitHub 二进制下载不通时用 npmmirror 二进制镜像（见上文安装说明）。
+- **Windows npm 安装**：`server/.npmrc` 已配 npmmirror 镜像（better-sqlite3/sharp/ffmpeg-static 预编译走国内源）；162MB ffmpeg-full 仍走 GitHub Release，下不动就手动拷 `server/vendor/ffmpeg-full.zip`。
 - **KeepAlive 下读不到滚动位置**：deactivated 钩子触发时组件 DOM 已移出文档，scrollTop 已归零；路由切换瞬间的 watch 也读不到真值。正确做法：滚动过程（onScroll）持续记录位置，缓存激活（onActivated）后写回 + 派发 scroll 事件重算可视窗口。
 - **KeepAlive 返回后行高错位**：缓存期间 ResizeObserver 把 clientWidth 读成 0，污染 viewportWidth → 恢复瞬间用兜底 200px 行高测量 → 行重叠/间距异常。修复：ResizeObserver 忽略宽度 0 + 恢复时 rAF 内先 measure 再派发 scroll。
 - **FTS5 trigram 多字符查询是「片段 AND」不是短语**：`MATCH '2023'` 实际等价 `"202" AND "023"`——只要求两个 3 字符片段都出现、不要求连成完整词（带引号短语同样无相邻约束，实测与 AND 结果一致）。日期时间串碰巧同时含这两段（如 `20181207T120239` 的 T1202→202 + 0239→023）就误命中。修复：FTS 粗筛后加 `instr(文件名小写/ISO/紧凑时间, 查询词)` 连续子串精筛，多 token 逐词 AND。
