@@ -15,9 +15,15 @@ $vendor = Join-Path $root 'vendor'
 $zip = Join-Path $vendor 'ffmpeg-full.zip'
 $unzipDir = Join-Path $vendor 'ffmpeg-full'
 
-Write-Host '[1/3] 下载 BtbN ffmpeg full 版（约 170MB，含 libheif）…'
+Write-Host '[1/3] 下载 ffmpeg full 版（约 170MB，含 libheif）…'
+# 下载地址：优先用环境变量 FFMPEG_FULL_URL，否则默认从项目自己的 GitHub Release 拉。
+# 项目 Release 里放一份锁定版本的 ffmpeg-full.zip，避免 BtbN 滚动更新导致版本漂移。
+$zipUrl = $env:FFMPEG_FULL_URL
+if (-not $zipUrl) {
+  $zipUrl = 'https://github.com/isChen0111/icloud-app/releases/download/vendor-binaries/ffmpeg-full.zip'
+}
 if (-not (Test-Path $zip)) {
-  curl.exe -s -L -m 600 -o $zip 'https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip'
+  curl.exe -s -L -m 600 -o $zip $zipUrl
 }
 
 Write-Host '[2/3] 解压…'

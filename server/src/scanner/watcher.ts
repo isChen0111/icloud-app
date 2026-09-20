@@ -52,8 +52,10 @@ export function startWatcher(): void {
   watcher = chokidar.watch(config.libraryRoot, {
     // 启动时不触发已有文件（启动同步已处理），只监听此后变化
     ignoreInitial: true,
-    // 文件写入稳定（500ms 无变化）才视为"完成"，避免读到拷贝一半的文件
-    awaitWriteFinish: { stabilityThreshold: 500, pollInterval: 100 },
+    // 文件写入稳定（2s 无变化）才视为"完成"，避免读到拷贝一半的文件。
+    // 注意：iCloudPD 连续下载大视频时，文件可能分块写入、中间停顿，
+    // 500ms 太短会误判"写完了"导致抽帧失败；2s 更稳妥。
+    awaitWriteFinish: { stabilityThreshold: 2000, pollInterval: 100 },
     // 忽略隐藏文件/目录（. 开头），如 .DS_Store、系统临时文件
     ignored: (p) => path.basename(p).startsWith('.'),
   })

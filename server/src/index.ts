@@ -11,6 +11,10 @@
  * 在这里统一挂载，互不依赖。
  */
 import Fastify from 'fastify'
+import fastifyStatic from '@fastify/static'
+import fs from 'node:fs'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { config } from './config.js'
 import { getDb } from './db/index.js'
 import { registerAssetRoutes } from './routes/assets.js'
@@ -21,6 +25,9 @@ import { registerSearchRoutes } from './routes/search.js'
 import { registerInfoRoutes } from './routes/info.js'
 import { runScan, scanProgress } from './scanner/index.js'
 import { startWatcher } from './scanner/watcher.js'
+
+/** 项目根目录（server/src/../..） */
+const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
 
 async function main(): Promise<void> {
   // ① 数据库初始化（建表）
@@ -42,6 +49,17 @@ async function main(): Promise<void> {
   await registerStatsRoutes(app)
   await registerSearchRoutes(app)
   await registerInfoRoutes(app)
+
+  // ②.5 生产模式静态托管：若 web/dist 存在（已 build），把前端挂到根路径。
+  //     开发模式下没有 dist，走 Vite 5173 + proxy，不影响。
+  const distDir = path.join(projectRoot, 'web', 'dist')
+  if (fs.existsSync(distDir)) {
+    await app.register(fastifyStatic, {
+      root: distDir,
+      prefix: '/',
+    })
+    app.log.info(`   前端:    http://127.0.0.1:${config.port}/`)
+  }
 
   // ③ 启动后台全量同步（P2+-1）：幂等增量，新增入库 + 删除对账 + 配对修正。
   //    不 await、不阻塞启动；前端轮询 /api/stats 可见进度。
