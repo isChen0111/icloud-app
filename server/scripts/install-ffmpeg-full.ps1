@@ -22,6 +22,8 @@ $zipUrl = $env:FFMPEG_FULL_URL
 if (-not $zipUrl) {
   $zipUrl = 'https://github.com/isChen0111/icloud-app/releases/download/vendor-binaries/ffmpeg-full.zip'
 }
+# curl 不会自动建目录，先确保 vendor 目录存在
+if (-not (Test-Path $vendor)) { New-Item -ItemType Directory -Force -Path $vendor | Out-Null }
 if (-not (Test-Path $zip)) {
   curl.exe -s -L -m 600 -o $zip $zipUrl
   $exit = $LASTEXITCODE
