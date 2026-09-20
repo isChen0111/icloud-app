@@ -24,6 +24,12 @@ if (-not $zipUrl) {
 }
 if (-not (Test-Path $zip)) {
   curl.exe -s -L -m 600 -o $zip $zipUrl
+  $exit = $LASTEXITCODE
+  # curl 失败（网络/404/超时）或文件太小（错误页 <1MB）都算失败
+  if ($exit -ne 0 -or -not (Test-Path $zip) -or (Get-Item $zip).Length -lt 1MB) {
+    if (Test-Path $zip) { Remove-Item $zip -Force }
+    throw "下载 ffmpeg-full.zip 失败（curl exit=$exit）。请手动下载 $zipUrl 放到 $zip，或设 FFMPEG_FULL_URL 环境变量。"
+  }
 }
 
 Write-Host '[2/3] 解压…'
