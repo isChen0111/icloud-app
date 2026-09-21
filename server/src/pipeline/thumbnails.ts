@@ -77,6 +77,7 @@ async function generate(assetId: number, size: ThumbSize): Promise<string | null
       try {
         await sharp(framePath, { failOn: 'none' })
           .resize(target, target, { fit: 'inside', withoutEnlargement: true })
+          .keepIccProfile()
           .webp({ quality })
           .toFile(outPath)
       } finally {
@@ -84,21 +85,22 @@ async function generate(assetId: number, size: ThumbSize): Promise<string | null
         fs.rmSync(framePath, { force: true })
       }
     } else if (isHeic(row.file_path)) {
-      // —— HEIC：sharp 官方预编译无 HEVC 解码器 → 用 ffmpeg(libheif) 解码为 JPEG 再处理 ——
-      const jpegPath = await heicToJpeg(abs)
+      // —— HEIC：sharp 官方预编译无 HEVC 解码器 → 用 ffmpeg(libheif) 解码为 PNG 再处理 ——
+      const pngPath = await heicToPng(abs)
       try {
-        await sharp(jpegPath, { failOn: 'none' })
+        await sharp(pngPath, { failOn: 'none' })
           .resize(target, target, { fit: 'inside', withoutEnlargement: true })
           .webp({ quality })
           .toFile(outPath)
       } finally {
-        fs.rmSync(jpegPath, { force: true })
+        fs.rmSync(pngPath, { force: true })
       }
     } else {
       // —— 其他图片（JPG/PNG/…）：sharp 直接解码 ——
       await sharp(abs, { failOn: 'none' }) // failOn: 容忍 EXIF 损坏的半坏图
         .rotate() // 应用 EXIF 方向（rotate 是链式方法，不是构造选项）
         .resize(target, target, { fit: 'inside', withoutEnlargement: true })
+        .keepIccProfile()
         .webp({ quality })
         .toFile(outPath)
     }
@@ -123,13 +125,13 @@ function isHeic(relPath: string): boolean {
   return ext === '.heic' || ext === '.heif'
 }
 
-/** 用 ffmpeg(libheif) 把 HEIC 解码为全尺寸 JPEG 临时文件（sharp 再二次处理） */
-function heicToJpeg(absPath: string): Promise<string> {
+/** 用 ffmpeg(libheif) 把 HEIC 解码为全尺寸 PNG 临时文件（sharp 再二次处理） */
+function heicToPng(absPath: string): Promise<string> {
   return new Promise((resolve, reject) => {
-    const tmp = path.join(config.cacheDir, 'tmp', `heic_${Date.now()}_${Math.random().toString(36).slice(2)}.jpg`)
+    const tmp = path.join(config.cacheDir, 'tmp', `heic_${Date.now()}_${Math.random().toString(36).slice(2)}.png`)
     fs.mkdirSync(path.dirname(tmp), { recursive: true })
     ffmpeg(absPath)
-      .outputOptions(['-frames:v', '1', '-q:v', '3']) // q:v 3 ≈ 高质量 JPEG
+      .outputOptions(['-frames:v', '1'])
       .output(tmp)
       .on('end', () => resolve(tmp))
       .on('error', (err) => reject(err))

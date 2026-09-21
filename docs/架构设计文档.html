@@ -451,7 +451,7 @@ F:\iPhone\icloud-app\
 <h2>9. 踩坑记录（P0 实测，学习价值高）</h2>
 <table>
 <tr><th style="width:200px">坑</th><th>现象</th><th>根因与修复</th></tr>
-<tr><td><b>HEIC 解码失败</b></td><td>缩略图 500，生成 0 字节文件；日志 <code>heif: No decoding plugin installed (11.6003)</code></td><td>sharp 官方预编译不含 HEVC-HEIC 插件（metadata 可读、转换失败）。修复：BtbN ffmpeg full 版（含 libheif）解码为 JPEG 再交 sharp；<code>scripts\install-ffmpeg-full.ps1</code> + <code>postinstall</code> 固化，重装依赖自动恢复。实测 0.13s/张（WASM heic-convert 1.5s/张作兜底）</td></tr>
+<tr><td><b>HEIC 解码失败</b></td><td>缩略图 500，生成 0 字节文件；日志 <code>heif: No decoding plugin installed (11.6003)</code></td><td>sharp 官方预编译不含 HEVC-HEIC 插件（metadata 可读、转换失败）。修复：BtbN ffmpeg full 版（含 libheif）解码为 PNG 再交 sharp；<code>scripts\install-ffmpeg-full.ps1</code> + <code>postinstall</code> 固化，重装依赖自动恢复。PNG 只用于避免中间 JPEG 的额外有损压缩，不代表已完成色彩转换。</td></tr>
 <tr><td><b>virtual 虚拟项恒空（virt=0）</b></td><td>网格 items 有数据但一行都不渲染</td><td><code>useVirtualizer</code> 返回 ref；<code>count</code> 必须用对象 getter <code>get count(){...}</code>（传 ref/函数时 core 数值比较恒 false）。元素晚挂载需手动 <code>measure()</code>。查了库源码 <code>getMeasurementOptions</code> 才定位</td></tr>
 <tr><td><b>flex item 百分比高度塌陷</b></td><td>详情页图片/视频区域 0 高度（父 flex:1 有高度，子 height:100% 解析为 0）</td><td>flex item 的百分比高度在多数浏览器不解析。修复：舞台元素统一 <code>position:absolute; inset:0</code>（父为 relative）</td></tr>
 <tr><td><b>better-sqlite3 参数爆炸</b></td><td><code>RangeError: Too many parameter values were provided</code></td><td>EXIF 的 GPS 度分秒返回数组 <code>[50,30,10]</code>，驱动把数组当参数列表展开。修复：<code>dmsToDecimal()</code> 先换算成十进制度数</td></tr>
@@ -461,6 +461,25 @@ F:\iPhone\icloud-app\
 <tr><td><b>KeepAlive 下滚动位置读不到</b></td><td>详情返回后照片墙总是回到顶部</td><td>deactivated 钩子触发时 DOM 已移出文档（scrollTop 归零），路由切换瞬间亦然。修复：onScroll 持续记录位置，onActivated 写回 + 派发 scroll 事件</td></tr>
 <tr><td><b>KeepAlive 返回后行高错位</b></td><td>宽窗口行重叠 / 窄窗口间距变大（同源）</td><td>缓存期间 ResizeObserver 把 clientWidth 读成 0 污染 viewportWidth → 恢复用兜底行高测量。修复：RO 忽略宽度 0 + 恢复时 rAF 先 measure 再派发 scroll</td></tr>
 </table>
+
+<h3>9.1 广色域 HEIC 与 Web 显示颜色差异（2026-09-21 实测）</h3>
+<div class="card">
+<p><b>现象：</b>同一张 Display P3 HEIC（例如 <code>IMG_7935.HEIC</code>）在 Windows“照片”查看状态和 iCloud 官网中颜色更鲜明；本项目生成的 WebP 以及部分普通图片应用中颜色偏淡。该差异目前记录为已知问题，暂不强行校正。</p>
+<p><b>已确认的处理链：</b></p>
+<pre>HEIC（含 Display P3 原色与约 536 bytes ICC）
+  → FFmpeg/libheif 解码
+  → PNG 临时文件（像素转为 RGB，但默认导出会丢失明确的 P3 ICC 标识）
+  → Sharp 缩放
+  → WebP 缓存（详情最长边 1600px）</pre>
+<p><b>已确认的事实：</b></p>
+<ul>
+  <li>FFmpeg 读取原始 HEIC 时报告 <code>color_primaries=smpte432</code>（Display P3）、<code>color_trc=bt709</code>、<code>color_space=smpte170m</code>，并检测到 536 bytes ICC。</li>
+  <li>当前 FFmpeg 默认输出 PNG 的报告为 <code>rgb24(pc, gbr/unknown/unknown)</code>；Sharp 读取该 PNG 时没有 ICC。不能把 Sharp 的 <code>space: srgb</code> 报告当作已完成 P3→sRGB 转换的证据。</li>
+  <li>仅使用 <code>keepIccProfile()</code> 不能恢复已经在 FFmpeg 输出阶段丢失的源 Profile；将源 ICC 事后附加到 PNG，再调用 <code>toColorspace('srgb')</code> 也没有实测复现 iCloud/Windows“照片”颜色。</li>
+  <li>已排除浏览器缓存、前端加载状态透明度、单纯 JPEG 中间压缩和单纯 WebP 质量设置是主要原因。</li>
+</ul>
+<p><b>当前取舍：</b>保留可明确说明作用的改动：HEIC 中间文件使用 PNG 以避免额外 JPEG 有损压缩；普通图片和视频帧尽量保留已有 ICC；缩略图 URL 版本递增以刷新旧缓存。撤销未经验证的 HEIC ICC 重挂载和 P3→sRGB 实验代码。后续若修复，应在 FFmpeg 阶段明确选择“正确转换为 sRGB”或“保留 Display P3 并写入匹配 ICC”，并用原始 HEIC、FFmpeg 输出、最终 WebP 三阶段产物和元数据进行回归对照，不能靠提高饱和度猜测修复。</p>
+</div>
 
 <p class="muted" style="margin-top:32px;">文档生成：2026-09-21（含 P0 落地同步、审查修复与隔离测试验证；此前同日审查已更新主题/KeepAlive/日期面板方案 C/默认 8 列）｜ 实测数据来源：icloud.com.cn/photos 浏览器实测与 photos3 前端源码分析；本机照片库全量扫描与浏览器端到端验证 ｜ 行业参考：Immich（缩略图三档 + 后台任务架构）、@tanstack/vue-virtual（虚拟滚动）、sharp / BtbN ffmpeg（HEIC 解码）。</p>
 

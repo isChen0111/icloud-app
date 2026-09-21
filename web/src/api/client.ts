@@ -72,8 +72,10 @@ export function triggerScan(): Promise<{ started: boolean }> {
  *  - v2 2026-09-08：修复早期 JPG 竖拍照片缩略图方向错误（sharp 构造选项
  *    rotate:true 失效 → 横图缓存；代码已改链式 .rotate() 并重建服务器缓存，
  *    但浏览器旧横图被一年强缓存锁定，bump 强制重新拉取）
+ *  - v3 2026-09-21：保留输入媒体 ICC 色彩配置，避免广色域照片转 WebP 后
+ *    颜色变淡；服务端同步重建缩略图缓存
  */
-const THUMB_REV = 2
+const THUMB_REV = 3
 
 /** 缩略图 URL（网格/详情/占位）；带 rev 使内容变更可强制刷新浏览器缓存 */
 export function thumbUrl(id: number, size: ThumbSize = 'grid'): string {
