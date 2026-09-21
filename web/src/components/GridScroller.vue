@@ -437,7 +437,7 @@ onMounted(async () => {
         :style="{ height: `${rowVirtualizer.getTotalSize()}px`, position: 'relative' }"
       >
         <!-- 只渲染可视行（月份头行 / 资产行混合；类型信息在 rows[row.index]） -->
-        <template v-for="row in rowVirtualizer.getVirtualItems()" :key="row.key">
+        <template v-for="row in rowVirtualizer.getVirtualItems()" :key="row.index">
           <!-- 月份头行（标签 = 真实月份区间，如「2021年4月-3月」） -->
           <div
             v-if="rows[row.index]?.type === 'header'"
