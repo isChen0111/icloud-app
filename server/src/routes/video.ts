@@ -28,12 +28,14 @@ function parseRange(rangeHeader: string | undefined, total: number): { start: nu
   // 支持 "bytes=-500"（末尾 500 字节）与 "bytes=100-"（100 到结尾）
   if (startStr === '') {
     const suffix = Number(endStr)
-    if (!suffix) return null
+    if (!Number.isInteger(suffix) || suffix <= 0 || total <= 0) return null
     return { start: Math.max(0, total - suffix), end: total - 1 }
   }
   const start = Number(startStr)
-  if (Number.isNaN(start) || start >= total) return null
-  const end = endStr === '' ? total - 1 : Math.min(Number(endStr), total - 1)
+  if (!Number.isInteger(start) || start < 0 || start >= total) return null
+  const requestedEnd = endStr === '' ? total - 1 : Number(endStr)
+  if (!Number.isInteger(requestedEnd) || requestedEnd < start) return null
+  const end = Math.min(requestedEnd, total - 1)
   return { start, end }
 }
 

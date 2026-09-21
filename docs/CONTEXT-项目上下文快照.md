@@ -1,6 +1,6 @@
 # 项目上下文快照（供会话压缩/新会话恢复用）
 
-> 生成日期：2026-09-08；最后同步：2026-09-19（Claude 审查竞态修复合并、搜索照片墙化、FTS trigram 精确性修复、文档三件套同步）。若本会话上下文被压缩或丢失，先读本文件 + 架构设计文档 + README，即可恢复全部关键信息。
+> 生成日期：2026-09-08；最后同步：2026-09-21（代码审查问题修复、`npm run scan` 入口修正、隔离测试验证）。若本会话上下文被压缩或丢失，先读本文件 + 架构设计文档 + README，即可恢复全部关键信息。
 
 ## 项目目标与现状
 - 用户已用 iCloudPD 把 iCloud 照片全部拉到本地（`F:\iPhone\icloud-app\iCloudPhoto\`，源文件：12,591 资产 = 照片 1,982 + 实况 7,434 + 视频 3,175，162.8GB，约 2 万媒体文件）。
@@ -13,7 +13,7 @@
 2. **行业调研**：Immich 三档缩略图、@tanstack/vue-virtual、sharp（libvips+libheif 是 Node HEIC 唯一成熟方案）、iCloudPD 输出结构（YYYY/MM/DD + `IMG_xxxx.HEIC ⇄ IMG_xxxx_HEVC.MOV`）。
 3. **P0 已落地并端到端验证**：后端 server/（Fastify + better-sqlite3 + sharp + ffmpeg）+ 前端 web/（Vue3.5+Vite+TS+Pinia 虚拟滚动/懒加载/详情轮播/实况/视频）。全量扫描 12,591 资产；HEIC 解码用 BtbN ffmpeg full 版（libheif）已固化 postinstall。
 4. **P1 已验收**：日期分组定位（月份头行 + 吸顶月份指示器 + **方案 C 日期导航面板**——工具栏「日期」按钮 → 下拉面板，左年份 + 右月份缩略图 3×4 网格，/api/dates 返回 108 个月 offset+thumbId）、缩放滑块（**默认 8 列**）、详情邻居预加载、blur 占位、hash 深链、键盘切换、实况按住播放。遗留：内存 LRU（本地场景收益低，后置）。
-5. **P2 已验收（范围收缩）**：FTS5 trigram 搜索（文件名/日期子串，至少 3 字符，/api/search）。用户已决定不做：HEVC 按需转码缓存 / 逆地理编码 / 收藏 / 最近删除 / 下载原片 / 批量选择（目录热监听后经 P2+-1 落地）。
+5. **P2 已验收（范围收缩）**：FTS5 trigram 搜索（文件名/日期子串，至少 3 字符，/api/search）。用户已决定不做：HEVC 按需转码缓存 / 逆地理编码 / 收藏 / 最近删除 / 下载原片；客户端批量选择已在 P2+-1 随删除功能落地。
 6. **稳定化（代码审查 5×P1 + 7×P2 = 12 项全部修复）**：
    - stats 异步体积统计 + 落盘缓存（首屏 229ms）
    - 原图宽高 11,009 条全量修正（`npm run fix-size`，fix-asset-size.ts）
@@ -31,7 +31,7 @@
 14. **客户端删除（2026-09-17）**：照片墙单击单选 / Ctrl+单击多选（选中态画缩略图内，selectedIds 存 Pinia store，虚拟滚动销毁重建不丢）；删除按钮在搜索栏行（未选中灰禁、选中亮蓝 + 「已选 N 项」）；确认弹框（DeleteConfirm，文案「永久删除、无法恢复」）；详情页删除按钮与信息按钮统一 34px 蓝色圆形；后端 DELETE /api/assets（去重限 1000，unlink 源文件只计数，事务删 DB+FTS+缓存，触发热监听对账幂等空转）。
 15. **2026-09-17 全项目审查 + 修复**：B1 删除后页缓存错位（removeAssets 清空删除点之后的页，防滚动错位）；B2 实况宽高兜底（thumb.ts ensureSize 条件 photo→非 video）；B3 首屏主题异常分支默认深色→浅色（index.html，应用默认白色）；B4 CORS 补 DELETE；B5 五处补丁残留排版整理（App/GridScroller/DetailView/GridItem/GridView，纯格式）；文档三件套同步（README + 架构设计文档 + 本快照）。
 16. **2026-09-18 采纳 Claude 审查修复**：assets store 删除与分页请求竞态（dataVersion 版本号 + requestSequence/activeRequests 每页唯一 id 双校验，删除后旧分页响应不回写缓存、加载中页重拉）；GridView 搜索宽度 ResizeObserver 正确启动（监听 searchActive 进入搜索后绑定、卸载 disconnect）。已合并 main（91c8b71）。
-17. **2026-09-19 搜索照片墙化 + trigram 精确性**：① 搜索照片墙化——后端 /api/search 加 offset 跳页分页 + total 真实计数 + months 匹配集月份分组；GridScroller 抽象 GridDataSource 接口（照片墙 assets store / 搜索 search store 共用，组件实例不销毁只切数据源）；列数提升到 theme store（thumbnailCols 持久化 4~12，照片墙/搜索共享）；GridView 搜索态改用 GridScroller（删除旧固定 5 列网格 + 100 条截断）。② FTS trigram 精确性——根因：trigram 对多字符查询按「片段 AND」匹配（"2023"="202"+"023"，带引号短语也无相邻约束），日期时间串碰巧含两片段即误命中（搜 2023 混入 2018/2021/2025 照片）；修复：FTS 粗筛 + 每个 token `instr(文件名小写/ISO/紧凑时间去 -)` 连续子串精筛（多 token AND）。实测 2131→2126=库中 2023 年资产数，误匹配归零 1ms。已合并 main（1b6fdee）。遗留：search store 换词 finally 竞态（旧请求可能误删新请求 pageLoading → 偶发重复请求，数据幂等无错，待修）。
+17. **2026-09-19～2026-09-21 搜索照片墙化、审查修复与运行验证**：① 搜索照片墙化——后端 /api/search 加 offset 跳页分页 + total 真实计数 + months 匹配集月份分组；GridScroller 抽象 GridDataSource 接口（照片墙 assets store / 搜索 search store 共用，组件实例不销毁只切数据源）；列数提升到 theme store（thumbnailCols 持久化 4~12，照片墙/搜索共享）；GridView 搜索态改用 GridScroller（删除旧固定 5 列网格 + 100 条截断）。② FTS trigram 精确性——FTS 粗筛 + 每个 token `instr` 连续子串精筛，多 token AND，误匹配归零。③ 搜索 store 增加统一结果失效/重置，旧请求不会污染新查询。④ 完成后端扫描、视频 Range、统计缓存、图片信息回退、同名额外视频保留等修复，并用隔离测试库验证；`server/package.json` 的 `npm run scan` 已修正为 `src/cli-scan.ts`。
 
 ## 照片库实测数据（2026-09-08）
 - 结构：`YYYY/MM/DD/文件名`（iCloudPD 默认），实况配对基名归一（`_HEVC` 后缀），**无时间差校验**。⚠️ **配对必须限定同一目录**——跨目录同名文件（不同设备/编辑版本的同名，如 `2018/02/04/IMG_0040*` 与 `2021/07/27/IMG_0040*`，全库 2,363 个基名分布多目录）若只按基名配对会错配丢视频（见「已完成」第 9 条）。
@@ -48,7 +48,7 @@
 ## 实施路线（最新）
 - ✅ P0：扫描 + 虚拟滚动 + 缩放 + 缩略图懒生成 + 详情 + 实况 + 视频
 - ✅ P1：日期定位 + 邻居预取 + blur + 深链 + 键盘 + 实况（剩内存 LRU 后置）
-- ✅ P2：FTS5 搜索（HEVC 转码/收藏/最近删除/下载/批量选择用户决定不做）
+- ✅ P2：FTS5 搜索（HEVC 转码/收藏/最近删除/下载不做；批量选择已随客户端删除落地）
 - ✅ 稳定化：12 项修复 + GitHub 版本管理
 - ✅ **P2+-1 部分落地（2026-09-17）**：目录热监听（chokidar）+ 删除对账（磁盘 vs DB）+ 启动同步（runScan startup）已合并。🔜 一键拉取（前端按钮 → 后端 spawn icloudpd 官方 exe `icloudpd-1.32.3-windows-amd64.exe` 14.4MB **免 Python**，已核验 GitHub Release；**已定 exe 方案**——首次启动脚本自动下载到 `iCloudTool\bin\`，gitignore 排除不入仓库）待开发；缺口：同步完成后前端 KeepAlive 缓存失效（需刷新页面）
 - 🔜 **P2+-2 冷启动体验（已纳入计划）**：顶部轮询 /api/stats 显示扫描进度「已扫描 x/20025 · 已找到 y」+ 缩略图预热进度 + 分批写库边扫边现

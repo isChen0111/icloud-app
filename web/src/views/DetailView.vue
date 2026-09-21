@@ -129,8 +129,10 @@ async function onConfirmDelete(): Promise<void> {
     }
   }
 function closeInfo(): void {
+  infoSeq++
   infoOpen.value = false
   info.value = null
+  infoLoading.value = false
 }
 
 /** 切到邻居 */

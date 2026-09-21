@@ -37,7 +37,7 @@ export async function registerInfoRoutes(app: FastifyInstance): Promise<void> {
   app.get('/api/assets/:id/info', async (req, reply) => {
     const { id } = req.params as { id: string }
     const row = db.prepare(`SELECT * FROM assets WHERE id = ?`).get(Number(id)) as
-      | (Record<string, unknown> & { id: number; type: string; filename: string; file_path: string; width: number | null; height: number | null; duration: number | null })
+      | (Record<string, unknown> & { id: number; type: string; filename: string; file_path: string; date_taken: string; width: number | null; height: number | null; duration: number | null })
       | undefined
     if (!row) return reply.code(404).send({ error: 'asset not found' })
 
@@ -88,7 +88,7 @@ export async function registerInfoRoutes(app: FastifyInstance): Promise<void> {
       id: row.id,
       type: row.type,
       filename: row.filename,
-      takenAt: m.takenAt,
+      takenAt: m.takenAt ?? row.date_taken,
       device: m.make && m.model ? (m.make === m.model ? m.model : `${m.make} ${m.model}`) : (m.make ?? m.model ?? null),
       format,
       lens: m.lens,

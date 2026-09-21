@@ -52,21 +52,26 @@ export const useSearchStore = defineStore('search', () => {
   /** 查询词版本守卫：换词后一切在途响应作废（防止串结果） */
   let searchSeq = 0
 
-  /** 设置查询词并重置（GridView 防抖后调用）；不自动发请求，由 init() 驱动 */
-  function setQuery(q: string): void {
+  function resetResults(): void {
     searchSeq++
-    query.value = q
-  }
-
-  /** 初始化（GridScroller onMounted / 数据源切换时调用）：
-   * 清空旧结果缓存 → 拉第一页（响应带回 total/months，骨架自动就绪） */
-  async function init(): Promise<void> {
     pages.clear()
     pageLoading.clear()
     failed.clear()
     totalCount.value = 0
     months.value = []
     loading.value = false
+  }
+
+  /** 设置查询词并重置（GridView 防抖后调用）；不自动发请求，由 init() 驱动 */
+  function setQuery(q: string): void {
+    query.value = q
+    resetResults()
+  }
+
+  /** 初始化（GridScroller onMounted / 数据源切换时调用）：
+   * 清空旧结果缓存 → 拉第一页（响应带回 total/months，骨架自动就绪） */
+  async function init(): Promise<void> {
+    resetResults()
     if (query.value.trim().length >= 3) ensureRange(0, PAGE)
   }
 
@@ -130,5 +135,6 @@ export const useSearchStore = defineStore('search', () => {
     clearSelection,
     setQuery,
     init,
+    resetResults,
   }
 })

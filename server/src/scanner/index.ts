@@ -29,6 +29,7 @@ export const scanProgress = {
   status: 'idle' as 'idle' | 'scanning' | 'done' | 'error',
   /** 本次扫描触发来源：手动 / 热监听 / 启动 */
   source: 'idle' as 'idle' | 'manual' | 'watcher' | 'startup',
+  runId: 0,
   totalFiles: 0,
   scannedFiles: 0,
   assetsFound: 0,
@@ -93,6 +94,7 @@ function walkDir(dir: string): string[] {
  */
 export async function runScan(source: 'manual' | 'watcher' | 'startup' = 'manual'): Promise<void> {
   scanProgress.source = source
+  scanProgress.runId++
   const db = getDb()
   scanProgress.status = 'scanning'
   scanProgress.message = '正在遍历目录…'
@@ -171,8 +173,6 @@ export async function runScan(source: 'manual' | 'watcher' | 'startup' = 'manual
   // 组装主资产列表：图片永远是主资产；没有图片配对的视频才是独立视频资产
   const assets: PairedAsset[] = []
   let livePairs = 0
-  const usedVideos = new Set<string>() // 已被实况配对占用的视频路径
-
   for (const [key, group] of byPairKey) {
     const images = group.filter((f) => f.kind === 'image')
     const videos = group.filter((f) => f.kind === 'video')
@@ -181,12 +181,13 @@ export async function runScan(source: 'manual' | 'watcher' | 'startup' = 'manual
       const img = images[0]
       const live = videos[0] ?? null
       if (live) {
-        usedVideos.add(live.relPath)
         livePairs++
       }
       assets.push({ image: img, liveVideo: live })
       // 同基名多余图片（如编辑变体）也独立入库为照片
       for (const extra of images.slice(1)) assets.push({ image: extra, liveVideo: null })
+      // 额外视频不能静默丢弃；作为普通视频资产保留。
+      for (const extra of videos.slice(1)) assets.push({ image: extra, liveVideo: null })
     } else if (videos.length > 0) {
       // 只有视频 → 普通视频资产
       for (const v of videos) assets.push({ image: v, liveVideo: null })
@@ -338,14 +339,17 @@ export async function runScan(source: 'manual' | 'watcher' | 'startup' = 'manual
   //    保证手动删文件/移动目录后照片墙不再显示"已不存在的图"。
   //    ⚠ 只删"遍历明确缺失"的文件：stat 瞬时失败的文件在 walkDir 阶段会被跳过，
   //    不会因 IO 抖动误删；实况视频缺失但主图还在的行不删（配对阶段已降级为 photo）。
+  // SCAN_LIMIT 只用于调试/验证，当前文件集合不完整时不能做删除对账。
   const diskPaths = new Set(files.map((f) => f.relPath))
   const dbRows = db.prepare(`SELECT id, file_path FROM assets`).all() as { id: number; file_path: string }[]
   const orphanIds: number[] = []
   const orphanSet = new Set<number>()
-  for (const r of dbRows) {
-    if (!diskPaths.has(r.file_path)) {
-      orphanIds.push(r.id)
-      orphanSet.add(r.id)
+  if (config.scanLimit <= 0) {
+    for (const r of dbRows) {
+      if (!diskPaths.has(r.file_path)) {
+        orphanIds.push(r.id)
+        orphanSet.add(r.id)
+      }
     }
   }
   if (orphanIds.length > 0) {

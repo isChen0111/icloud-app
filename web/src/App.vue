@@ -42,8 +42,19 @@ async function pollStats(): Promise<void> {
   try {
     stats.value = await fetchStats()
     backendReady.value = true
+    if (retryTimer !== undefined) {
+      window.clearTimeout(retryTimer)
+      retryTimer = undefined
+    }
   } catch {
-    retryTimer = window.setTimeout(() => void pollStats(), 5000)
+    backendReady.value = false
+    stats.value = null
+    if (retryTimer === undefined) {
+      retryTimer = window.setTimeout(() => {
+        retryTimer = undefined
+        void pollStats()
+      }, 5000)
+    }
   }
 }
 
@@ -55,7 +66,12 @@ watch(
   },
 )
 onMounted(() => void pollStats())
-onBeforeUnmount(() => window.clearTimeout(retryTimer))
+onBeforeUnmount(() => {
+  if (retryTimer !== undefined) {
+    window.clearTimeout(retryTimer)
+    retryTimer = undefined
+  }
+})
 </script>
 
 <template>

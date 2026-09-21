@@ -65,6 +65,8 @@ export async function registerStatsRoutes(app: FastifyInstance): Promise<void> {
 
   /** 内存中的体积缓存（null = 尚未算出） */
   let totalBytesCache: number | null = null
+  let assetCountAtCompute: number | null = null
+  let scanRunAtCompute = -1
   /** 后台计算任务（防止并发触发多次全库遍历） */
   let computing: Promise<void> | null = null
 
@@ -75,9 +77,18 @@ export async function registerStatsRoutes(app: FastifyInstance): Promise<void> {
       const data = JSON.parse(fs.readFileSync(statsCacheFile, 'utf8')) as {
         libraryRoot: string
         totalBytes: number
+        assetCount?: number
+        scanRunId?: number
       }
-      if (data.libraryRoot === config.libraryRoot && typeof data.totalBytes === 'number') {
+      if (
+        data.libraryRoot === config.libraryRoot &&
+        typeof data.totalBytes === 'number' &&
+        typeof data.assetCount === 'number' &&
+        typeof data.scanRunId === 'number'
+      ) {
         totalBytesCache = data.totalBytes
+        assetCountAtCompute = data.assetCount
+        scanRunAtCompute = data.scanRunId
       }
     } catch {
       /* 缓存损坏/版本不符：忽略，触发重算 */
@@ -91,9 +102,19 @@ export async function registerStatsRoutes(app: FastifyInstance): Promise<void> {
       try {
         const bytes = await walkSize(config.libraryRoot)
         totalBytesCache = bytes
+        assetCountAtCompute = (db.prepare(`SELECT COUNT(*) AS c FROM assets`).get() as { c: number }).c
+        scanRunAtCompute = scanProgress.runId
         // 落盘：下次进程重启直接读取
         fs.mkdirSync(config.cacheDir, { recursive: true })
-        fs.writeFileSync(statsCacheFile, JSON.stringify({ libraryRoot: config.libraryRoot, totalBytes: bytes }))
+        fs.writeFileSync(
+          statsCacheFile,
+          JSON.stringify({
+            libraryRoot: config.libraryRoot,
+            totalBytes: bytes,
+            assetCount: assetCountAtCompute,
+            scanRunId: scanRunAtCompute,
+          }),
+        )
       } catch (err) {
         console.error('[stats] 体积计算失败:', err)
       } finally {
@@ -115,6 +136,20 @@ export async function registerStatsRoutes(app: FastifyInstance): Promise<void> {
     for (const r of byType) counts[r.type] = r.count
 
     const total = counts.photo + counts.video + counts.live
+
+    // 资产数量变化或扫描完成后，之前的体积快照已不再可信。
+    if (
+      totalBytesCache !== null &&
+      (assetCountAtCompute !== total || scanRunAtCompute !== scanProgress.runId)
+    ) {
+      totalBytesCache = null
+      assetCountAtCompute = null
+      try {
+        fs.rmSync(statsCacheFile, { force: true })
+      } catch (err) {
+        console.error('[stats] 清理过期体积缓存失败:', err)
+      }
+    }
 
     // 若尚未算完（进程启动后第一次），后台继续算，本次返回 null 给前端
     ensureSizeComputed()
