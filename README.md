@@ -39,23 +39,18 @@ icloud-app/
 
 ## 快速启动
 
-**前置要求**：Node.js 22/24（原生模块 better-sqlite3 按 Node ABI 预编译，版本需与编译目标一致）；Windows（脚本为 PowerShell）。
-
-```bash
-# 0. （可选）自定义路径：复制模板改名 .env，按需修改
-cd server
-Copy-Item .env.example .env   # 用记事本打开 .env 改照片库/缓存路径；不改则用默认值
-```
+**前置要求**：Node.js 22 或更高版本；Windows（脚本为 PowerShell）。
 
 ```bash
 # 1. 后端（端口 8899，首次启动自动扫描入库）
 cd server
-npm install          # postinstall 自动下载带 libheif 的 ffmpeg full 版（HEIC 解码必需，约 162MB）
+npm ci               # 安装依赖、better-sqlite3 预编译模块，并下载 ffmpeg full（约 162MB）
+# （可选）自定义路径：Copy-Item .env.example .env 后按需修改
 npm run dev
 
 # 2. 前端（新终端，端口 5173）
 cd web
-npm install
+npm ci
 npm run dev
 ```
 
@@ -76,13 +71,14 @@ cd ../server && npm run start   # 后端自动检测 web/dist 并托管，访问
 ### ⚠ 装依赖注意事项（新机器/新目录必看）
 
 - **不要用 `npm install --ignore-scripts`**：这会跳过 better-sqlite3 的原生编译/预编译下载，启动直接报 `Could not locate the bindings file`。JS 包装了、C++ 原生 `.node` 没有，起不来。
-- **国内镜像**：`server/.npmrc` 已配置 npmmirror 镜像（better-sqlite3/sharp 预编译二进制走国内源），新 clone 后 `npm install` 自动生效，无需手动配置。
+- **国内镜像**：`server/.npmrc` 已配置 npmmirror registry 和 better-sqlite3 预编译二进制镜像。better-sqlite3 13 会直接源码编译，因此项目固定在带预编译安装流程的 12.x；如果预编译包不可用，源码编译才需要 Visual Studio C++ 工具链。
+- **npm 11 配置提示**：npm 11 可能对 better-sqlite3 的专用 binary-host 配置显示 `Unknown project config` 警告；当前仍会把它传给预编译安装脚本，已验证能从 npmmirror 下载。若升级 npm 主版本，需确认该配置仍生效。
 - **postinstall 要下 162MB ffmpeg**：从项目自己的 GitHub Release 下载（`isChen0111/icloud-app/releases/tag/vendor-binaries`），含 libheif，HEIC 解码必需。产物解压到 `server/vendor/ffmpeg-full/`，**不再写入 node_modules**。网络慢/下不动时：
   - **方案 A（推荐）**：把 `server/vendor/ffmpeg-full.zip` 从已有机器直接拷到新机器同位置，脚本检测到自动跳过下载；
   - **方案 B**：浏览器手动打开 [Release 页面](https://github.com/isChen0111/icloud-app/releases/tag/vendor-binaries) 下载 `ffmpeg-full.zip`，放到 `server/vendor/ffmpeg-full.zip`；
   - **方案 C**：设环境变量 `FFMPEG_FULL_URL` 指向你自己的镜像（如 OSS），再跑 `npm install`。
   - 若 zip 已解压过且能找到 `ffmpeg.exe`，postinstall 直接跳过。
-- **两个目录各装一次**：`server/` 和 `web/` 的 `node_modules` 互相独立，git 都不存——新 clone 后两边都要 `npm install`。
+- **两个目录各装一次**：`server/` 和 `web/` 的 `node_modules` 互相独立，git 都不存——新 clone 后两边都要 `npm ci`。
 - **照片库 `iCloudPhoto/` 和 `server/cache/` 不入库**：新机器没有这俩。照片库需自己准备（放默认位置或用 `.env` 指向）；`cache/` 首次启动自动重建（会重新全量扫描+生成缩略图，耗时较长）。
 
 ### 环境变量（.env）
