@@ -1,6 +1,6 @@
 # 项目上下文快照（供会话压缩/新会话恢复用）
 
-> 生成日期：2026-09-08；最后同步：2026-09-29（vendor ffmpeg 直出 + 去掉 fluent-ffmpeg/ffmpeg-static/heic-convert；sharp 0.35、better-sqlite3 13）。若本会话上下文被压缩或丢失，先读本文件 + 架构设计文档 + README，即可恢复全部关键信息。
+> 生成日期：2026-09-08；最后同步：2026-09-29（vendor ffmpeg 直出 + 去掉 fluent-ffmpeg/ffmpeg-static/heic-convert；sharp 0.35；better-sqlite3 固定 12.11.1 以使用预编译二进制，镜像配置见 server/.npmrc）。若本会话上下文被压缩或丢失，先读本文件 + 架构设计文档 + README，即可恢复全部关键信息。
 
 ## 项目目标与现状
 - 用户已用 iCloudPD 把 iCloud 照片全部拉到本地（`F:\iPhone\icloud-app\iCloudPhoto\`，源文件：12,591 资产 = 照片 1,982 + 实况 7,434 + 视频 3,175，162.8GB，约 2 万媒体文件）。
@@ -41,7 +41,7 @@
 - 关键统计：orientation=6 共 6,853 张（photo+live），orientation=1 共 1,905；非 HEIC + orientation 2~8 = 103 张（方向重建范围）。
 
 ## 技术选型（已定）
-- 后端：Node 24（用户 D:\nodejs）+ TypeScript + Fastify 5 + better-sqlite3 13 + exifr + sharp 0.35 + vendor ffmpeg spawn（BtbN full / libheif）+ p-queue（并发 8）
+- 后端：Node 24（用户 D:\nodejs）+ TypeScript + Fastify 5 + better-sqlite3 12.11.1（npmmirror 预编译二进制）+ exifr + sharp 0.35 + vendor ffmpeg spawn（BtbN full / libheif）+ p-queue（并发 8）
 - 前端：Vue 3.5 + Vite + TS + Pinia + vue-router(hash) + @tanstack/vue-virtual + 自研 useLazyImage（IntersectionObserver）
 - 缩略图三档：grid 320px / detail 1600px / blur 32px WebP；视频封面 ffmpeg 抽帧
 - 端口：后端 127.0.0.1:8899，前端 http://localhost:5173（Vite 绑 IPv6，勿用 127.0.0.1:5173）
