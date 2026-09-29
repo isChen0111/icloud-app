@@ -458,7 +458,7 @@ F:\iPhone\icloud-app\
 <tr><td><b>better-sqlite3 参数爆炸</b></td><td><code>RangeError: Too many parameter values were provided</code></td><td>EXIF 的 GPS 度分秒返回数组 <code>[50,30,10]</code>，驱动把数组当参数列表展开。修复：<code>dmsToDecimal()</code> 先换算成十进制度数</td></tr>
 <tr><td><b>exifr Orientation 返回字符串</b></td><td>API 返回 <code>"Rotate 90 CW"</code> 而非数字 1~8</td><td>exifr 默认翻译值。修复：<code>parse(..., { translateValues: false })</code></td></tr>
 <tr><td><b>实况照片按住不播放</b></td><td>按住只有淡入效果，视频不动</td><td>只设了 <code>playing=true</code>（opacity），从未调用 <code>video.play()</code>。修复：nextTick 后 <code>play()</code>，松开 <code>pause() + currentTime=0</code>；setPointerCapture 包 try/catch 兼容合成事件</td></tr>
-<tr><td><b>Windows npm 安装二进制下载失败</b></td><td>better-sqlite3 预编译或 162MB ffmpeg-full zip 下载超时</td><td>better-sqlite3 12.x 通过 <code>server/.npmrc</code> 从 npmmirror 下载预编译；sharp 使用 npm 平台包。ffmpeg-full 走 GitHub Release 解到 <code>server/vendor/ffmpeg-full/</code>，下载显示 curl 进度条；下不动就拷 zip 或设 <code>FFMPEG_FULL_URL</code></td></tr>
+<tr><td><b>Windows npm 安装二进制下载失败</b></td><td>better-sqlite3 包或 162MB ffmpeg-full zip 下载超时</td><td>better-sqlite3 13.0.3 的平台预编译随 npm 包分发；npm 11.9.0 下需在 lockfile 条目保留 <code>gypfile: false</code>，否则 <code>npm ci</code> 可能自动触发 node-gyp。sharp 使用 npm 平台包。ffmpeg-full 走 GitHub Release 解到 <code>server/vendor/ffmpeg-full/</code>，下载显示 curl 进度条；下不动就拷 zip 或设 <code>FFMPEG_FULL_URL</code></td></tr>
 <tr><td><b>KeepAlive 下滚动位置读不到</b></td><td>详情返回后照片墙总是回到顶部</td><td>deactivated 钩子触发时 DOM 已移出文档（scrollTop 归零），路由切换瞬间亦然。修复：onScroll 持续记录位置，onActivated 写回 + 派发 scroll 事件</td></tr>
 <tr><td><b>KeepAlive 返回后行高错位</b></td><td>宽窗口行重叠 / 窄窗口间距变大（同源）</td><td>缓存期间 ResizeObserver 把 clientWidth 读成 0 污染 viewportWidth → 恢复用兜底行高测量。修复：RO 忽略宽度 0 + 恢复时 rAF 先 measure 再派发 scroll</td></tr>
 </table>
