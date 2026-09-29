@@ -4,20 +4,12 @@
  * 从媒体文件中读取「拍摄时间 / 尺寸 / 方向 / GPS / 时长」。
  * - 图片：exifr 解析 EXIF（支持 HEIC/JPEG/PNG）。部分文件 EXIF 缺失时，
  *   用 sharp 读像素尺寸兜底。
- * - 视频：ffprobe（经 fluent-ffmpeg）读取时长与分辨率，并从元数据中找
+ * - 视频：ffprobe（vendor 里的 BtbN full 版）读取时长与分辨率，并从元数据中找
  *   creation_time；找不到就用目录日期/文件时间兜底。
  */
 import exifr from 'exifr'
-import ffmpeg from 'fluent-ffmpeg'
-import ffmpegPath from 'ffmpeg-static'
 import path from 'node:path'
-
-// fluent-ffmpeg 的 ffprobe 从环境变量 FFPROBE_PATH 找二进制；
-// ffmpeg-static 只自带 ffmpeg，我们把同目录的 ffprobe.exe 指给它们。
-if (ffmpegPath) {
-  ffmpeg.setFfmpegPath(ffmpegPath)
-  process.env.FFPROBE_PATH = path.join(path.dirname(ffmpegPath), 'ffprobe.exe')
-}
+import { ffprobeJson } from '../ffmpeg.js'
 
 /** 从目录 YYYY/MM/DD 解析日期（iCloudPD 默认结构），失败返回 null */
 export function parseDateFromDir(filePath: string): string | null {
@@ -160,46 +152,46 @@ export interface VideoFullMeta extends VideoMeta {
   bitRate: number | null
 }
 
-/** 解析视频全量元数据（信息面板用）。ffprobe 是回调封装，Promise 化。 */
-export function readVideoFullMeta(absPath: string): Promise<VideoFullMeta> {
-  return new Promise((resolve) => {
-    ffmpeg.ffprobe(absPath, (err, data) => {
-      if (err || !data?.format) {
-        resolve({ duration: null, width: null, height: null, creationTime: null, codec: null, bitRate: null })
-        return
-      }
-      const stream = data.streams?.find((s) => s.codec_type === 'video')
-      const creation = (data.format.tags as Record<string, unknown> | undefined)?.creation_time
-      resolve({
-        duration: typeof data.format.duration === 'number' ? data.format.duration : null,
-        width: stream?.width ?? null,
-        height: stream?.height ?? null,
-        creationTime: typeof creation === 'string' ? creation : null,
-        codec: stream?.codec_name ?? null,
-        bitRate: stream?.bit_rate != null ? Number(stream.bit_rate) : null,
-      })
-    })
-  })
+function numOrNull(v: unknown): number | null {
+  if (typeof v === 'number' && Number.isFinite(v)) return v
+  if (typeof v === 'string' && v !== '') {
+    const n = Number(v)
+    return Number.isFinite(n) ? n : null
+  }
+  return null
 }
 
-/** 解析视频元数据。ffprobe 是同步返回 Promise 的（fluent-ffmpeg 回调封装）。 */
-export function readVideoMeta(absPath: string): Promise<VideoMeta> {
-  return new Promise((resolve) => {
-    ffmpeg.ffprobe(absPath, (err, data) => {
-      if (err || !data?.format) {
-        resolve({ duration: null, width: null, height: null, creationTime: null })
-        return
-      }
-      const stream = data.streams?.find((s) => s.codec_type === 'video')
-      const creation = (data.format.tags as Record<string, unknown> | undefined)?.creation_time
-      resolve({
-        duration: typeof data.format.duration === 'number' ? data.format.duration : null,
-        width: stream?.width ?? null,
-        height: stream?.height ?? null,
-        creationTime: typeof creation === 'string' ? creation : null,
-      })
-    })
-  })
+/** 解析视频全量元数据（信息面板用）。 */
+export async function readVideoFullMeta(absPath: string): Promise<VideoFullMeta> {
+  try {
+    const data = await ffprobeJson(absPath)
+    if (!data.format) {
+      return { duration: null, width: null, height: null, creationTime: null, codec: null, bitRate: null }
+    }
+    const stream = data.streams?.find((s) => s.codec_type === 'video')
+    const creation = data.format.tags?.creation_time
+    return {
+      duration: numOrNull(data.format.duration),
+      width: stream?.width ?? null,
+      height: stream?.height ?? null,
+      creationTime: typeof creation === 'string' ? creation : null,
+      codec: stream?.codec_name ?? null,
+      bitRate: numOrNull(stream?.bit_rate) ?? numOrNull(data.format.bit_rate),
+    }
+  } catch {
+    return { duration: null, width: null, height: null, creationTime: null, codec: null, bitRate: null }
+  }
+}
+
+/** 解析视频元数据。 */
+export async function readVideoMeta(absPath: string): Promise<VideoMeta> {
+  const full = await readVideoFullMeta(absPath)
+  return {
+    duration: full.duration,
+    width: full.width,
+    height: full.height,
+    creationTime: full.creationTime,
+  }
 }
 
 /** 归一化 EXIF 时间字符串 → ISO8601（exifr 可能返回 Date 或字符串） */

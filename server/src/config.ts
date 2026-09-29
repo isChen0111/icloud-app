@@ -26,6 +26,9 @@ export const config = {
   /** SQLite 数据库文件位置（支持环境变量覆盖，测试隔离/多实例部署用） */
   dbPath: process.env.DB_PATH ?? path.join(projectRoot, 'server', 'cache', 'library.db'),
 
+  /** BtbN ffmpeg full 解压目录（含 libheif；postinstall 下载）。可用 FFMPEG_DIR 覆盖 */
+  ffmpegDir: process.env.FFMPEG_DIR ?? path.join(projectRoot, 'server', 'vendor', 'ffmpeg-full'),
+
   /** 缩略图尺寸档位（对标 iCloud 的 derivativeMSL 分级思想） */
   thumbSizes: {
     /** 网格缩略图：最长边 320px，覆盖全部缩放级别（对标 iCloud 415px 档） */

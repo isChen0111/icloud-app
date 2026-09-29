@@ -16,6 +16,7 @@ icloud-app/
 │   ├── src/
 │   │   ├── index.ts            # 服务入口（启动时库空则自动全量扫描）
 │   │   ├── config.ts           # 端口/缩略图尺寸/并发等全局配置
+│   │   ├── ffmpeg.ts           # vendor ffmpeg/ffprobe spawn 封装（HEIC 解码 / 抽帧 / 探针）
 │   │   ├── cli-scan.ts         # 命令行扫描工具（npm run scan）
 │   │   ├── db/                 # 数据库（schema + 连接，WAL 模式）
 │   │   ├── metadata/           # EXIF / ffprobe 元数据提取
@@ -75,11 +76,12 @@ cd ../server && npm run start   # 后端自动检测 web/dist 并托管，访问
 ### ⚠ 装依赖注意事项（新机器/新目录必看）
 
 - **不要用 `npm install --ignore-scripts`**：这会跳过 better-sqlite3 的原生编译/预编译下载，启动直接报 `Could not locate the bindings file`。JS 包装了、C++ 原生 `.node` 没有，起不来。
-- **国内镜像**：`server/.npmrc` 已配置 npmmirror 镜像（better-sqlite3/sharp/ffmpeg-static 预编译二进制走国内源），新 clone 后 `npm install` 自动生效，无需手动配置。
-- **postinstall 要下 162MB ffmpeg**：从项目自己的 GitHub Release 下载（`isChen0111/icloud-app/releases/tag/vendor-binaries`），含 libheif，HEIC 解码必需。网络慢/下不动时：
+- **国内镜像**：`server/.npmrc` 已配置 npmmirror 镜像（better-sqlite3/sharp 预编译二进制走国内源），新 clone 后 `npm install` 自动生效，无需手动配置。
+- **postinstall 要下 162MB ffmpeg**：从项目自己的 GitHub Release 下载（`isChen0111/icloud-app/releases/tag/vendor-binaries`），含 libheif，HEIC 解码必需。产物解压到 `server/vendor/ffmpeg-full/`，**不再写入 node_modules**。网络慢/下不动时：
   - **方案 A（推荐）**：把 `server/vendor/ffmpeg-full.zip` 从已有机器直接拷到新机器同位置，脚本检测到自动跳过下载；
   - **方案 B**：浏览器手动打开 [Release 页面](https://github.com/isChen0111/icloud-app/releases/tag/vendor-binaries) 下载 `ffmpeg-full.zip`，放到 `server/vendor/ffmpeg-full.zip`；
   - **方案 C**：设环境变量 `FFMPEG_FULL_URL` 指向你自己的镜像（如 OSS），再跑 `npm install`。
+  - 若 zip 已解压过且能找到 `ffmpeg.exe`，postinstall 直接跳过。
 - **两个目录各装一次**：`server/` 和 `web/` 的 `node_modules` 互相独立，git 都不存——新 clone 后两边都要 `npm install`。
 - **照片库 `iCloudPhoto/` 和 `server/cache/` 不入库**：新机器没有这俩。照片库需自己准备（放默认位置或用 `.env` 指向）；`cache/` 首次启动自动重建（会重新全量扫描+生成缩略图，耗时较长）。
 
@@ -92,6 +94,8 @@ cd ../server && npm run start   # 后端自动检测 web/dist 并托管，访问
 | `PHOTO_LIBRARY` | `<项目根>\\iCloudPhoto` | 照片库根目录（iCloudPD 输出，只读） |
 | `CACHE_DIR` | `<项目根>\\server\\cache` | 缩略图/封面/转码缓存目录 |
 | `DB_PATH` | `<项目根>\\server\\cache\\library.db` | SQLite 数据库文件 |
+| `FFMPEG_DIR` | `<项目根>\\server\\vendor\\ffmpeg-full` | BtbN ffmpeg full 解压目录 |
+| `FFMPEG_PATH` / `FFPROBE_PATH` | （自动在 FFMPEG_DIR 内查找） | 直接指定可执行文件 |
 | `PORT` | `8899` | 后端端口 |
 | `SCAN_LIMIT` | `0`（全量） | 调试用，>0 只扫前 N 个文件 |
 
@@ -131,7 +135,7 @@ cd ../server && npm run start   # 后端自动检测 web/dist 并托管，访问
 - **虚拟滚动（全量骨架）**：行序列（月份头 + 资产行）由「月份分组 + 列数」一次精确生成全库（8 列 1,676 行 / 219,106px）→ 滚动条 = 全库、任意位置双向滚动；@tanstack/vue-virtual 只挂载视口附近的 ~100 个 DOM 节点。资产数据按 120 条/页**区间懒加载**（pages Map 缓存，未加载行渲染灰块占位），滚动到哪行取哪行、幂等并发去重。行高走 getRowHeight(row) 函数（原比例显示的预留扩展点，当前固定方形）。
 - **缩略图懒生成**：首次浏览某张图才生成 320px WebP（~25KB），生成后永久缓存；同资产并发去重（in-flight Map）。
 - **缩略图缓存失效**：接口 `Cache-Control: max-age=1年`（无 immutable）+ ETag 协商；前端 URL 带 `rev` 版本号——内容变更（如生成参数修复）后 bump `THUMB_REV` 即可强制浏览器重新拉取。
-- **HEIC 解码**：sharp 官方预编译无 HEVC 插件，用 BtbN ffmpeg full 版（libheif）解码后再交 sharp 缩放。
+- **HEIC 解码**：sharp 官方预编译无 HEVC 插件，用 BtbN ffmpeg full 版（libheif）解码后再交 sharp 缩放。二进制在 `server/vendor/ffmpeg-full/`，由 `server/src/ffmpeg.ts` spawn，不经过 npm 的 ffmpeg-static。
 - **实况照片**：静止帧（HEIC）+ 配对视频（_HEVC.MOV），按住播放（**带原声**）、松开暂停复位。
 - **视频流**：原生 `<video>` + HTTP Range 206，拖动进度条零延迟。
 - **详情页三级渐进**：grid 档模糊占位秒出 → detail 档淡入覆盖（复用照片墙已缓存 grid，冷生成不白屏）；detail 缓存命中时两图并行、直出清晰大图。实况静止帧 / 视频 poster 同款（DetailView / LivePhoto / VideoStage，后端零改动）。
@@ -176,7 +180,7 @@ cd ../server && npm run start   # 后端自动检测 web/dist 并托管，访问
 - **实况照片无声**：`<video muted>` 硬编码会永远静音；按住播放时应显式 `v.muted=false` 再 `play()`，失败（自动播放策略）则回退静音继续播。
 - **sharp 的 `rotate: true` 构造选项不生效**（0.33.5）：必须用链式 `.rotate()` 才会应用 EXIF 方向——构造选项静默忽略导致竖拍 JPG 缩略图全横。
 - **`Cache-Control: immutable` 会把旧图锁死一年**：缩略图内容可能因修复而变化，不能用 immutable；应保留 ETag 协商 + 前端 URL 版本号（rev）实现缓存失效。
-- **Windows npm 安装**：`server/.npmrc` 已配 npmmirror 镜像（better-sqlite3/sharp/ffmpeg-static 预编译走国内源）；162MB ffmpeg-full 仍走 GitHub Release，下不动就手动拷 `server/vendor/ffmpeg-full.zip`。
+- **Windows npm 安装**：`server/.npmrc` 已配 npmmirror 镜像（better-sqlite3/sharp 预编译走国内源）；162MB ffmpeg-full 仍走 GitHub Release 解到 `server/vendor/ffmpeg-full/`，下不动就手动拷 `server/vendor/ffmpeg-full.zip`。
 - **KeepAlive 下读不到滚动位置**：deactivated 钩子触发时组件 DOM 已移出文档，scrollTop 已归零；路由切换瞬间的 watch 也读不到真值。正确做法：滚动过程（onScroll）持续记录位置，缓存激活（onActivated）后写回 + 派发 scroll 事件重算可视窗口。
 - **KeepAlive 返回后行高错位**：缓存期间 ResizeObserver 把 clientWidth 读成 0，污染 viewportWidth → 恢复瞬间用兜底 200px 行高测量 → 行重叠/间距异常。修复：ResizeObserver 忽略宽度 0 + 恢复时 rAF 内先 measure 再派发 scroll。
 - **FTS5 trigram 多字符查询是「片段 AND」不是短语**：`MATCH '2023'` 实际等价 `"202" AND "023"`——只要求两个 3 字符片段都出现、不要求连成完整词（带引号短语同样无相邻约束，实测与 AND 结果一致）。日期时间串碰巧同时含这两段（如 `20181207T120239` 的 T1202→202 + 0239→023）就误命中。修复：FTS 粗筛后加 `instr(文件名小写/ISO/紧凑时间, 查询词)` 连续子串精筛，多 token 逐词 AND。
