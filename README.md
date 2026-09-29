@@ -73,7 +73,7 @@ cd ../server && npm run start   # 后端自动检测 web/dist 并托管，访问
 - **不要用 `npm install --ignore-scripts`**：这会跳过 better-sqlite3 的原生编译/预编译下载，启动直接报 `Could not locate the bindings file`。JS 包装了、C++ 原生 `.node` 没有，起不来。
 - **国内镜像**：`server/.npmrc` 已配置 npmmirror registry 和 better-sqlite3 预编译二进制镜像。better-sqlite3 13 会直接源码编译，因此项目固定在带预编译安装流程的 12.x；如果预编译包不可用，源码编译才需要 Visual Studio C++ 工具链。
 - **npm 11 配置提示**：npm 11 可能对 better-sqlite3 的专用 binary-host 配置显示 `Unknown project config` 警告；当前仍会把它传给预编译安装脚本，已验证能从 npmmirror 下载。若升级 npm 主版本，需确认该配置仍生效。
-- **postinstall 要下 162MB ffmpeg**：从项目自己的 GitHub Release 下载（`isChen0111/icloud-app/releases/tag/vendor-binaries`），含 libheif，HEIC 解码必需。产物解压到 `server/vendor/ffmpeg-full/`，**不再写入 node_modules**。网络慢/下不动时：
+- **postinstall 要下约 162MB ffmpeg**：从项目自己的 GitHub Release 下载（`isChen0111/icloud-app/releases/tag/vendor-binaries`），含 libheif，HEIC 解码必需；下载时会显示 curl 进度条，完成后显示文件大小。产物解压到 `server/vendor/ffmpeg-full/`，**不再写入 node_modules**。网络慢/下不动时：
   - **方案 A（推荐）**：把 `server/vendor/ffmpeg-full.zip` 从已有机器直接拷到新机器同位置，脚本检测到自动跳过下载；
   - **方案 B**：浏览器手动打开 [Release 页面](https://github.com/isChen0111/icloud-app/releases/tag/vendor-binaries) 下载 `ffmpeg-full.zip`，放到 `server/vendor/ffmpeg-full.zip`；
   - **方案 C**：设环境变量 `FFMPEG_FULL_URL` 指向你自己的镜像（如 OSS），再跑 `npm install`。

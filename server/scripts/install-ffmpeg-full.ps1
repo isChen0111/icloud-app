@@ -32,19 +32,23 @@ if ($existing) {
   exit 0
 }
 
-Write-Host '[1/2] 下载 ffmpeg full 版（约 170MB，含 libheif）…'
 $zipUrl = $env:FFMPEG_FULL_URL
 if (-not $zipUrl) {
   $zipUrl = 'https://github.com/isChen0111/icloud-app/releases/download/vendor-binaries/ffmpeg-full.zip'
 }
 if (-not (Test-Path $vendor)) { New-Item -ItemType Directory -Force -Path $vendor | Out-Null }
-if (-not (Test-Path $zip)) {
-  curl.exe -s -L -m 600 -o $zip $zipUrl
+
+if (Test-Path $zip) {
+  Write-Host "[1/2] 使用已有压缩包：$zip"
+} else {
+  Write-Host '[1/2] 下载 ffmpeg full 版（约 170MB，含 libheif），curl 将显示下载进度…'
+  curl.exe --fail --location --show-error --progress-bar --max-time 600 --output $zip $zipUrl
   $exit = $LASTEXITCODE
   if ($exit -ne 0 -or -not (Test-Path $zip) -or (Get-Item $zip).Length -lt 1MB) {
     if (Test-Path $zip) { Remove-Item $zip -Force }
     throw "下载 ffmpeg-full.zip 失败（curl exit=$exit）。请手动下载 $zipUrl 放到 $zip，或设 FFMPEG_FULL_URL。"
   }
+  Write-Host "[1/2] 下载完成：$([math]::Round((Get-Item $zip).Length / 1MB, 1)) MB"
 }
 
 Write-Host '[2/2] 解压到 server/vendor/ffmpeg-full …'
