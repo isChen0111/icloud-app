@@ -13,13 +13,9 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import sharp from 'sharp'
-import ffmpeg from 'fluent-ffmpeg'
-import ffmpegPath from 'ffmpeg-static'
 import { config } from '../config.js'
 import { getDb } from '../db/index.js'
-
-// 把 ffmpeg 二进制路径交给 fluent-ffmpeg（Windows 上必须显式指定）
-if (ffmpegPath) ffmpeg.setFfmpegPath(ffmpegPath)
+import { ffprobeJson, runFfmpeg } from '../ffmpeg.js'
 
 /** 缩略图档位 */
 export type ThumbSize = keyof typeof config.thumbSizes
@@ -126,32 +122,44 @@ function isHeic(relPath: string): boolean {
 }
 
 /** 用 ffmpeg(libheif) 把 HEIC 解码为全尺寸 PNG 临时文件（sharp 再二次处理） */
-function heicToPng(absPath: string): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const tmp = path.join(config.cacheDir, 'tmp', `heic_${Date.now()}_${Math.random().toString(36).slice(2)}.png`)
-    fs.mkdirSync(path.dirname(tmp), { recursive: true })
-    ffmpeg(absPath)
-      .outputOptions(['-frames:v', '1'])
-      .output(tmp)
-      .on('end', () => resolve(tmp))
-      .on('error', (err) => reject(err))
-      .run()
-  })
+async function heicToPng(absPath: string): Promise<string> {
+  const tmp = path.join(config.cacheDir, 'tmp', `heic_${Date.now()}_${Math.random().toString(36).slice(2)}.png`)
+  fs.mkdirSync(path.dirname(tmp), { recursive: true })
+  try {
+    await runFfmpeg(['-hide_banner', '-loglevel', 'error', '-y', '-i', absPath, '-frames:v', '1', tmp])
+    return tmp
+  } catch (error) {
+    fs.rmSync(tmp, { force: true })
+    throw error
+  }
 }
 
 /** 用 ffmpeg 抽取视频某一帧为临时 PNG（供 sharp 二次处理） */
-function extractVideoFrame(absPath: string, maxSize: number): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const tmp = path.join(config.cacheDir, 'tmp', `frame_${Date.now()}_${Math.random().toString(36).slice(2)}.png`)
-    fs.mkdirSync(path.dirname(tmp), { recursive: true })
-    ffmpeg(absPath)
-      .seekInput(config.videoPosterSeek) // 跳过第 1 秒，避开黑场/片头
-      .outputOptions([`-vf`, `scale='min(${maxSize},iw)':'min(${maxSize},ih)':force_original_aspect_ratio=decrease`, '-frames:v', '1'])
-      .output(tmp)
-      .on('end', () => resolve(tmp))
-      .on('error', (err) => reject(err))
-      .run()
-  })
+async function extractVideoFrame(absPath: string, maxSize: number): Promise<string> {
+  const tmp = path.join(config.cacheDir, 'tmp', `frame_${Date.now()}_${Math.random().toString(36).slice(2)}.png`)
+  fs.mkdirSync(path.dirname(tmp), { recursive: true })
+  const vf = `scale='min(${maxSize},iw)':'min(${maxSize},ih)':force_original_aspect_ratio=decrease`
+  try {
+    await runFfmpeg([
+      '-hide_banner',
+      '-loglevel',
+      'error',
+      '-y',
+      '-ss',
+      String(config.videoPosterSeek), // 跳过第 1 秒，避开黑场/片头（-ss 在 -i 前：快搜）
+      '-i',
+      absPath,
+      '-vf',
+      vf,
+      '-frames:v',
+      '1',
+      tmp,
+    ])
+    return tmp
+  } catch (error) {
+    fs.rmSync(tmp, { force: true })
+    throw error
+  }
 }
 
 /**
@@ -200,19 +208,13 @@ export async function ensureSize(assetId: number): Promise<{ width: number; heig
 }
 
 /** 用 ffprobe 读取媒体像素尺寸（HEIC 等 sharp 不支持格式的兜底） */
-function probeSize(absPath: string): Promise<{ width: number; height: number } | null> {
-  return new Promise((resolve) => {
-    ffmpeg.ffprobe(absPath, (err, data) => {
-      if (err || !data?.streams) {
-        resolve(null)
-        return
-      }
-      const stream = data.streams.find((s) => s.codec_type === 'video' || s.codec_type === 'image')
-      if (stream?.width && stream?.height) {
-        resolve({ width: stream.width, height: stream.height })
-        return
-      }
-      resolve(null)
-    })
-  })
+async function probeSize(absPath: string): Promise<{ width: number; height: number } | null> {
+  try {
+    const data = await ffprobeJson(absPath)
+    const stream = data.streams?.find((s) => s.codec_type === 'video' || s.codec_type === 'image')
+    if (stream?.width && stream?.height) return { width: stream.width, height: stream.height }
+    return null
+  } catch {
+    return null
+  }
 }

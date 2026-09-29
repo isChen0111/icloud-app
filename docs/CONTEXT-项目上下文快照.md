@@ -1,6 +1,6 @@
 # 项目上下文快照（供会话压缩/新会话恢复用）
 
-> 生成日期：2026-09-08；最后同步：2026-09-21（代码审查问题修复、`npm run scan` 入口修正、隔离测试验证）。若本会话上下文被压缩或丢失，先读本文件 + 架构设计文档 + README，即可恢复全部关键信息。
+> 生成日期：2026-09-08；最后同步：2026-09-29（vendor ffmpeg 直出 + 去掉 fluent-ffmpeg/ffmpeg-static/heic-convert；sharp 0.35、better-sqlite3 13）。若本会话上下文被压缩或丢失，先读本文件 + 架构设计文档 + README，即可恢复全部关键信息。
 
 ## 项目目标与现状
 - 用户已用 iCloudPD 把 iCloud 照片全部拉到本地（`F:\iPhone\icloud-app\iCloudPhoto\`，源文件：12,591 资产 = 照片 1,982 + 实况 7,434 + 视频 3,175，162.8GB，约 2 万媒体文件）。
@@ -32,6 +32,7 @@
 15. **2026-09-17 全项目审查 + 修复**：B1 删除后页缓存错位（removeAssets 清空删除点之后的页，防滚动错位）；B2 实况宽高兜底（thumb.ts ensureSize 条件 photo→非 video）；B3 首屏主题异常分支默认深色→浅色（index.html，应用默认白色）；B4 CORS 补 DELETE；B5 五处补丁残留排版整理（App/GridScroller/DetailView/GridItem/GridView，纯格式）；文档三件套同步（README + 架构设计文档 + 本快照）。
 16. **2026-09-18 采纳 Claude 审查修复**：assets store 删除与分页请求竞态（dataVersion 版本号 + requestSequence/activeRequests 每页唯一 id 双校验，删除后旧分页响应不回写缓存、加载中页重拉）；GridView 搜索宽度 ResizeObserver 正确启动（监听 searchActive 进入搜索后绑定、卸载 disconnect）。已合并 main（91c8b71）。
 17. **2026-09-19～2026-09-21 搜索照片墙化、审查修复与运行验证**：① 搜索照片墙化——后端 /api/search 加 offset 跳页分页 + total 真实计数 + months 匹配集月份分组；GridScroller 抽象 GridDataSource 接口（照片墙 assets store / 搜索 search store 共用，组件实例不销毁只切数据源）；列数提升到 theme store（thumbnailCols 持久化 4~12，照片墙/搜索共享）；GridView 搜索态改用 GridScroller（删除旧固定 5 列网格 + 100 条截断）。② FTS trigram 精确性——FTS 粗筛 + 每个 token `instr` 连续子串精筛，多 token AND，误匹配归零。③ 搜索 store 增加统一结果失效/重置，旧请求不会污染新查询。④ 完成后端扫描、视频 Range、统计缓存、图片信息回退、同名额外视频保留等修复，并用隔离测试库验证；`server/package.json` 的 `npm run scan` 已修正为 `src/cli-scan.ts`。
+18. **2026-09-29 依赖清理**：去掉未使用的 `heic-convert`、已停维护的 `fluent-ffmpeg` 与精简版 `ffmpeg-static`；ffmpeg 改为 `server/vendor/ffmpeg-full/` 直出 + `src/ffmpeg.ts` spawn。sharp 升至 0.35、better-sqlite3 升至 13。
 
 ## 照片库实测数据（2026-09-08）
 - 结构：`YYYY/MM/DD/文件名`（iCloudPD 默认），实况配对基名归一（`_HEVC` 后缀），**无时间差校验**。⚠️ **配对必须限定同一目录**——跨目录同名文件（不同设备/编辑版本的同名，如 `2018/02/04/IMG_0040*` 与 `2021/07/27/IMG_0040*`，全库 2,363 个基名分布多目录）若只按基名配对会错配丢视频（见「已完成」第 9 条）。
@@ -40,7 +41,7 @@
 - 关键统计：orientation=6 共 6,853 张（photo+live），orientation=1 共 1,905；非 HEIC + orientation 2~8 = 103 张（方向重建范围）。
 
 ## 技术选型（已定）
-- 后端：Node 24（用户 D:\nodejs）+ TypeScript + Fastify 5 + better-sqlite3 + exifr + sharp + fluent-ffmpeg/ffmpeg-static + p-queue（并发 8）
+- 后端：Node 24（用户 D:\nodejs）+ TypeScript + Fastify 5 + better-sqlite3 13 + exifr + sharp 0.35 + vendor ffmpeg spawn（BtbN full / libheif）+ p-queue（并发 8）
 - 前端：Vue 3.5 + Vite + TS + Pinia + vue-router(hash) + @tanstack/vue-virtual + 自研 useLazyImage（IntersectionObserver）
 - 缩略图三档：grid 320px / detail 1600px / blur 32px WebP；视频封面 ffmpeg 抽帧
 - 端口：后端 127.0.0.1:8899，前端 http://localhost:5173（Vite 绑 IPv6，勿用 127.0.0.1:5173）
@@ -56,7 +57,7 @@
 
 ## 工程约定（踩坑沉淀）
 - **PowerShell 引号坑**：命令实际由 PowerShell 执行；`\"` 不是转义（用反引号）、双引号内 `$` 会展开。多层级引号一律落临时文件：复杂 JS/SQL 写 `.cjs` 文件再 `node 文件`；多行 commit 用 `Out-File` + `git commit --file=`。
-- **原生模块**：better-sqlite3/ffmpeg-static 按用户系统 Node 24 编译；我的环境 Node 22 加载会 ERR_DLOPEN_FAILED。**所有加载 better-sqlite3 的命令必须 `& "D:\nodejs\node.exe"`** 或先 PATH 前置。
+- **原生模块**：better-sqlite3 按用户系统 Node 24 编译；我的环境 Node 22 加载会 ERR_DLOPEN_FAILED。**所有加载 better-sqlite3 的命令必须 `& "D:\nodejs\node.exe"`** 或先 PATH 前置。ffmpeg 不再走 npm 原生包，在 `server/vendor/ffmpeg-full/`。
 - **服务进程**：用户自启后端 8899/前端 5173，勿占用；临时验证进程用完 TaskStop。
 - **git SSH**：固定 `core.sshCommand = "C:/Windows/System32/OpenSSH/ssh.exe" -o StrictHostKeyChecking=accept-new`；日常 `git push origin main` 畅通。
 - **临时脚本**：`server/scripts/.*`（dot 开头）用完即删，已在 .gitignore 排除防误提交。
