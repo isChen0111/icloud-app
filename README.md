@@ -70,9 +70,9 @@ cd ../server && npm run start   # 后端自动检测 web/dist 并托管，访问
 
 ### ⚠ 装依赖注意事项（新机器/新目录必看）
 
-- **不要用 `npm install --ignore-scripts`**：这会跳过 better-sqlite3 的原生编译/预编译下载，启动直接报 `Could not locate the bindings file`。JS 包装了、C++ 原生 `.node` 没有，起不来。
-- **国内镜像**：`server/.npmrc` 已配置 npmmirror registry 和 better-sqlite3 预编译二进制镜像。better-sqlite3 13 会直接源码编译，因此项目固定在带预编译安装流程的 12.x；如果预编译包不可用，源码编译才需要 Visual Studio C++ 工具链。
-- **npm 11 配置提示**：npm 11 可能对 better-sqlite3 的专用 binary-host 配置显示 `Unknown project config` 警告；当前仍会把它传给预编译安装脚本，已验证能从 npmmirror 下载。若升级 npm 主版本，需确认该配置仍生效。
+- **不要用 `npm ci --ignore-scripts`**：这会跳过项目的 postinstall，FFmpeg/FFprobe 不会自动下载，HEIC 解码和视频处理无法使用。better-sqlite3 13.0.3 的 Windows `.node` 预编译模块已随 npm 包提供。
+- **better-sqlite3 安装说明**：项目使用 13.0.3，Windows x64 预编译模块包含在 npm 包中，不需另装 Visual Studio。为避免 npm 11.9.0 在 `npm ci` 时看到 `binding.gyp` 后自动运行 `node-gyp rebuild`，`server/package-lock.json` 的 `node_modules/better-sqlite3` 条目需保留 `"gypfile": false`。如果用 `npm install` 更新锁文件，检查该字段仍存在，再用干净目录验证 `npm ci`。
+- **国内镜像**：`server/.npmrc` 只设置 npmmirror npm registry；Sharp 使用 npm 平台包，better-sqlite3 的平台二进制随 npm 包分发。
 - **postinstall 要下约 162MB ffmpeg**：从项目自己的 GitHub Release 下载（`isChen0111/icloud-app/releases/tag/vendor-binaries`），含 libheif，HEIC 解码必需；下载时会显示 curl 进度条，完成后显示文件大小。产物解压到 `server/vendor/ffmpeg-full/`，**不再写入 node_modules**。网络慢/下不动时：
   - **方案 A（推荐）**：把 `server/vendor/ffmpeg-full.zip` 从已有机器直接拷到新机器同位置，脚本检测到自动跳过下载；
   - **方案 B**：浏览器手动打开 [Release 页面](https://github.com/isChen0111/icloud-app/releases/tag/vendor-binaries) 下载 `ffmpeg-full.zip`，放到 `server/vendor/ffmpeg-full.zip`；
@@ -176,7 +176,7 @@ cd ../server && npm run start   # 后端自动检测 web/dist 并托管，访问
 - **实况照片无声**：`<video muted>` 硬编码会永远静音；按住播放时应显式 `v.muted=false` 再 `play()`，失败（自动播放策略）则回退静音继续播。
 - **sharp 的 `rotate: true` 构造选项不生效**（0.33.5）：必须用链式 `.rotate()` 才会应用 EXIF 方向——构造选项静默忽略导致竖拍 JPG 缩略图全横。
 - **`Cache-Control: immutable` 会把旧图锁死一年**：缩略图内容可能因修复而变化，不能用 immutable；应保留 ETag 协商 + 前端 URL 版本号（rev）实现缓存失效。
-- **Windows npm 安装**：`server/.npmrc` 配置 npmmirror registry 和 better-sqlite3 12.x 预编译二进制镜像；sharp 使用 npm 平台包。约 162MB 的 ffmpeg-full 仍走 GitHub Release，下载时显示进度条；下载不畅时可手动拷贝 `server/vendor/ffmpeg-full.zip`。
+- **Windows npm 安装**：`server/.npmrc` 配置 npmmirror registry；better-sqlite3 13.0.3 与 sharp 的平台二进制均随 npm 包分发。约 162MB 的 ffmpeg-full 仍走 GitHub Release，下载时显示进度条；下载不畅时可手动拷贝 `server/vendor/ffmpeg-full.zip`。
 - **KeepAlive 下读不到滚动位置**：deactivated 钩子触发时组件 DOM 已移出文档，scrollTop 已归零；路由切换瞬间的 watch 也读不到真值。正确做法：滚动过程（onScroll）持续记录位置，缓存激活（onActivated）后写回 + 派发 scroll 事件重算可视窗口。
 - **KeepAlive 返回后行高错位**：缓存期间 ResizeObserver 把 clientWidth 读成 0，污染 viewportWidth → 恢复瞬间用兜底 200px 行高测量 → 行重叠/间距异常。修复：ResizeObserver 忽略宽度 0 + 恢复时 rAF 内先 measure 再派发 scroll。
 - **FTS5 trigram 多字符查询是「片段 AND」不是短语**：`MATCH '2023'` 实际等价 `"202" AND "023"`——只要求两个 3 字符片段都出现、不要求连成完整词（带引号短语同样无相邻约束，实测与 AND 结果一致）。日期时间串碰巧同时含这两段（如 `20181207T120239` 的 T1202→202 + 0239→023）就误命中。修复：FTS 粗筛后加 `instr(文件名小写/ISO/紧凑时间, 查询词)` 连续子串精筛，多 token 逐词 AND。
