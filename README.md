@@ -176,7 +176,7 @@ cd ../server && npm run start   # 后端自动检测 web/dist 并托管，访问
 - **实况照片无声**：`<video muted>` 硬编码会永远静音；按住播放时应显式 `v.muted=false` 再 `play()`，失败（自动播放策略）则回退静音继续播。
 - **sharp 的 `rotate: true` 构造选项不生效**（0.33.5）：必须用链式 `.rotate()` 才会应用 EXIF 方向——构造选项静默忽略导致竖拍 JPG 缩略图全横。
 - **`Cache-Control: immutable` 会把旧图锁死一年**：缩略图内容可能因修复而变化，不能用 immutable；应保留 ETag 协商 + 前端 URL 版本号（rev）实现缓存失效。
-- **Windows npm 安装**：`server/.npmrc` 已配 npmmirror 镜像（better-sqlite3/sharp 预编译走国内源）；162MB ffmpeg-full 仍走 GitHub Release 解到 `server/vendor/ffmpeg-full/`，下不动就手动拷 `server/vendor/ffmpeg-full.zip`。
+- **Windows npm 安装**：`server/.npmrc` 配置 npmmirror registry 和 better-sqlite3 12.x 预编译二进制镜像；sharp 使用 npm 平台包。约 162MB 的 ffmpeg-full 仍走 GitHub Release，下载时显示进度条；下载不畅时可手动拷贝 `server/vendor/ffmpeg-full.zip`。
 - **KeepAlive 下读不到滚动位置**：deactivated 钩子触发时组件 DOM 已移出文档，scrollTop 已归零；路由切换瞬间的 watch 也读不到真值。正确做法：滚动过程（onScroll）持续记录位置，缓存激活（onActivated）后写回 + 派发 scroll 事件重算可视窗口。
 - **KeepAlive 返回后行高错位**：缓存期间 ResizeObserver 把 clientWidth 读成 0，污染 viewportWidth → 恢复瞬间用兜底 200px 行高测量 → 行重叠/间距异常。修复：ResizeObserver 忽略宽度 0 + 恢复时 rAF 内先 measure 再派发 scroll。
 - **FTS5 trigram 多字符查询是「片段 AND」不是短语**：`MATCH '2023'` 实际等价 `"202" AND "023"`——只要求两个 3 字符片段都出现、不要求连成完整词（带引号短语同样无相邻约束，实测与 AND 结果一致）。日期时间串碰巧同时含这两段（如 `20181207T120239` 的 T1202→202 + 0239→023）就误命中。修复：FTS 粗筛后加 `instr(文件名小写/ISO/紧凑时间, 查询词)` 连续子串精筛，多 token 逐词 AND。

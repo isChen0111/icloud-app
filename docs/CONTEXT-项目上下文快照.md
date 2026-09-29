@@ -32,7 +32,7 @@
 15. **2026-09-17 全项目审查 + 修复**：B1 删除后页缓存错位（removeAssets 清空删除点之后的页，防滚动错位）；B2 实况宽高兜底（thumb.ts ensureSize 条件 photo→非 video）；B3 首屏主题异常分支默认深色→浅色（index.html，应用默认白色）；B4 CORS 补 DELETE；B5 五处补丁残留排版整理（App/GridScroller/DetailView/GridItem/GridView，纯格式）；文档三件套同步（README + 架构设计文档 + 本快照）。
 16. **2026-09-18 采纳 Claude 审查修复**：assets store 删除与分页请求竞态（dataVersion 版本号 + requestSequence/activeRequests 每页唯一 id 双校验，删除后旧分页响应不回写缓存、加载中页重拉）；GridView 搜索宽度 ResizeObserver 正确启动（监听 searchActive 进入搜索后绑定、卸载 disconnect）。已合并 main（91c8b71）。
 17. **2026-09-19～2026-09-21 搜索照片墙化、审查修复与运行验证**：① 搜索照片墙化——后端 /api/search 加 offset 跳页分页 + total 真实计数 + months 匹配集月份分组；GridScroller 抽象 GridDataSource 接口（照片墙 assets store / 搜索 search store 共用，组件实例不销毁只切数据源）；列数提升到 theme store（thumbnailCols 持久化 4~12，照片墙/搜索共享）；GridView 搜索态改用 GridScroller（删除旧固定 5 列网格 + 100 条截断）。② FTS trigram 精确性——FTS 粗筛 + 每个 token `instr` 连续子串精筛，多 token AND，误匹配归零。③ 搜索 store 增加统一结果失效/重置，旧请求不会污染新查询。④ 完成后端扫描、视频 Range、统计缓存、图片信息回退、同名额外视频保留等修复，并用隔离测试库验证；`server/package.json` 的 `npm run scan` 已修正为 `src/cli-scan.ts`。
-18. **2026-09-29 依赖清理**：去掉未使用的 `heic-convert`、已停维护的 `fluent-ffmpeg` 与精简版 `ffmpeg-static`；ffmpeg 改为 `server/vendor/ffmpeg-full/` 直出 + `src/ffmpeg.ts` spawn。sharp 升至 0.35、better-sqlite3 升至 13。
+18. **2026-09-29 依赖清理**：去掉未使用的 `heic-convert`、已停维护的 `fluent-ffmpeg` 与精简版 `ffmpeg-static`；ffmpeg 改为 `server/vendor/ffmpeg-full/` 直出 + `src/ffmpeg.ts` spawn，sharp 升至 0.35。better-sqlite3 曾升级至 13，但其安装流程直接源码编译；为避免新 Windows 环境要求 Visual Studio C++ 工具链，随后恢复为带预编译下载流程的 12.11.1，并配置 npmmirror binary host。
 
 ## 照片库实测数据（2026-09-08）
 - 结构：`YYYY/MM/DD/文件名`（iCloudPD 默认），实况配对基名归一（`_HEVC` 后缀），**无时间差校验**。⚠️ **配对必须限定同一目录**——跨目录同名文件（不同设备/编辑版本的同名，如 `2018/02/04/IMG_0040*` 与 `2021/07/27/IMG_0040*`，全库 2,363 个基名分布多目录）若只按基名配对会错配丢视频（见「已完成」第 9 条）。
