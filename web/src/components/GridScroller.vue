@@ -382,6 +382,17 @@ watch(
   },
 )
 
+watch(
+  () => props.dataSource.months,
+  () => {
+    requestAnimationFrame(() => {
+      rowVirtualizer.value?.measure()
+      scrollEl.value?.dispatchEvent(new Event('scroll'))
+    })
+  },
+  { deep: true, flush: 'post' },
+)
+
 onMounted(async () => {
   observeWidth()
   // 数据源初始化（照片墙：/api/dates + 首屏；搜索：匹配集骨架 + 首屏）

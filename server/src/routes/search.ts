@@ -47,7 +47,10 @@ export async function registerSearchRoutes(app: FastifyInstance): Promise<void> 
       offset?: string
     }
     // 单页上限 500（虚拟滚动按页拉取，匹配集可达数千条；500 页足够大也不会撑爆响应）
-    const limit = Math.min(Number(limitRaw ?? 200) || 200, 500)
+    const limit = limitRaw === undefined ? 200 : Number(limitRaw)
+    if (!Number.isInteger(limit) || limit < 1 || limit > 500) {
+      return reply.code(400).send({ error: 'limit must be an integer between 1 and 500' })
+    }
     const offset = Math.max(0, Number(offsetRaw ?? 0) || 0)
     const query = sanitizeQuery(q ?? '')
 

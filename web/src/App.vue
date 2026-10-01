@@ -9,12 +9,14 @@
  */
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { fetchStats } from './api/client'
+import { useAssetStore } from './stores/assets'
 import { useThemeStore } from './stores/theme'
 import type { Stats } from './types'
 import { useRoute } from 'vue-router'
 
 const stats = ref<Stats | null>(null)
 const route = useRoute()
+const assetStore = useAssetStore()
 
 const backendReady = ref(false)
 
@@ -32,6 +34,10 @@ watch(
 
 /** 重连轮询定时器句柄 */
 let retryTimer: number | undefined
+let pollInProgress = false
+let disposed = false
+let lastScanRunId = -1
+let lastScanStatus: Stats['scan']['status'] = 'idle'
 
 /**
  * 拉取统计；失败则每 5 秒重试直到连上（修复审查 P1-F4）。
@@ -39,23 +45,42 @@ let retryTimer: number | undefined
  * "等待后端启动"，必须手动刷新。现在持续轮询，后端就绪自动恢复。
  */
 async function pollStats(): Promise<void> {
+  if (pollInProgress) return
+  pollInProgress = true
   try {
-    stats.value = await fetchStats()
+    const nextStats = await fetchStats()
+    const scan = nextStats.scan
+    const scanFinished =
+      (scan.status === 'done' || scan.status === 'error') &&
+      (scan.runId !== lastScanRunId || lastScanStatus === 'scanning')
+    stats.value = nextStats
     backendReady.value = true
-    if (retryTimer !== undefined) {
-      window.clearTimeout(retryTimer)
-      retryTimer = undefined
+    if (scanFinished) {
+      try {
+        await assetStore.refresh()
+      } catch (err) {
+        console.error('[app] 扫描后刷新照片墙失败:', err)
+        return
+      }
     }
+    lastScanRunId = scan.runId
+    lastScanStatus = scan.status
   } catch {
     backendReady.value = false
     stats.value = null
-    if (retryTimer === undefined) {
-      retryTimer = window.setTimeout(() => {
-        retryTimer = undefined
-        void pollStats()
-      }, 5000)
-    }
+  } finally {
+    pollInProgress = false
+    scheduleStatsPoll()
   }
+}
+
+function scheduleStatsPoll(): void {
+  if (disposed) return
+  if (retryTimer !== undefined) window.clearTimeout(retryTimer)
+  retryTimer = window.setTimeout(() => {
+    retryTimer = undefined
+    void pollStats()
+  }, 5000)
 }
 
 /** 回到照片墙时刷新统计（详情页删除后返回，顶栏计数保持准确） */
@@ -67,6 +92,7 @@ watch(
 )
 onMounted(() => void pollStats())
 onBeforeUnmount(() => {
+  disposed = true
   if (retryTimer !== undefined) {
     window.clearTimeout(retryTimer)
     retryTimer = undefined

@@ -67,9 +67,12 @@ async function onConfirmDelete(): Promise<void> {
   if (ids.length === 0) return
   deleting.value = true
   try {
-    await deleteAssets(ids)
+    const result = await deleteAssets(ids)
     assetStore.removeAssets(ids)
     confirmDeleteOpen.value = false
+    if (result.unlinkFail > 0) {
+      alert(`已从图库移除 ${result.deleted} 项，但有 ${result.unlinkFail} 个源文件未能删除。请检查文件是否被占用或权限是否足够。`)
+    }
     emit('deleted')
   } catch {
     alert('删除失败，请检查后端服务')

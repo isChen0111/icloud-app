@@ -20,6 +20,38 @@ import { ffprobeJson, runFfmpeg } from '../ffmpeg.js'
 /** 缩略图档位 */
 export type ThumbSize = keyof typeof config.thumbSizes
 
+/** 删除进程异常退出后遗留的临时帧；只处理本流水线命名且已超过 24 小时的文件。 */
+export function cleanStaleTempFiles(maxAgeMs = 24 * 60 * 60 * 1000): void {
+  const tempDir = path.join(config.cacheDir, 'tmp')
+  let entries: fs.Dirent[]
+  try {
+    entries = fs.readdirSync(tempDir, { withFileTypes: true })
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+      console.warn(`[thumb] 无法读取临时目录 ${tempDir}:`, err)
+    }
+    return
+  }
+
+  const cutoff = Date.now() - maxAgeMs
+  let removed = 0
+  for (const entry of entries) {
+    if (!entry.isFile() || !/^(?:frame|heic)_\d+_[a-z0-9]+\.png$/i.test(entry.name)) continue
+    const tempPath = path.join(tempDir, entry.name)
+    try {
+      if (fs.statSync(tempPath).mtimeMs < cutoff) {
+        fs.rmSync(tempPath)
+        removed++
+      }
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+        console.warn(`[thumb] 清理临时文件失败 ${tempPath}:`, err)
+      }
+    }
+  }
+  if (removed > 0) console.info(`[thumb] 已清理 ${removed} 个过期临时帧`)
+}
+
 /** 缓存文件绝对路径，如 cache/thumbs/grid/123.webp */
 export function thumbCachePath(size: ThumbSize, assetId: number): string {
   return path.join(config.cacheDir, 'thumbs', size, `${assetId}.webp`)

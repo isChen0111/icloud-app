@@ -87,9 +87,9 @@ export function videoStreamUrl(id: number): string {
   return `${BASE}/video/${id}/stream`
 }
 
-/** 视频封面 URL（size=detail 用于详情页播放前的大封面，默认 grid 用于网格） */
+/** 视频封面 URL（size=detail 用于详情页播放前的大封面，版本号用于刷新长缓存） */
 export function videoPosterUrl(id: number, size: ThumbSize = 'grid'): string {
-  return `${BASE}/video/${id}/poster?size=${size}`
+  return `${BASE}/video/${id}/poster?size=${size}&rev=${THUMB_REV}`
 }
 
 /** 给对象 URL 加防缓存参数（本地 dev 调试用，生产可去掉） */
@@ -100,14 +100,21 @@ export function withCacheBust(url: string, t: number): string {
 
 /** 批量删除资产（客户端删除：DB 行 + 缓存 + 磁盘源文件，不可逆）
  * 详情页删除单张 = 传 [id]；照片墙多选删除 = 传选中集合 */
-export function deleteAssets(ids: number[]): Promise<{ deleted: number; missing: number }> {
+export interface DeleteAssetsResult {
+  deleted: number
+  missing: number
+  /** 数据库记录已删除，但源文件因权限/占用等原因未能删除的文件数 */
+  unlinkFail: number
+}
+
+export function deleteAssets(ids: number[]): Promise<DeleteAssetsResult> {
   return fetch(`${BASE}/assets`, {
     method: 'DELETE',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ ids }),
   }).then(async (r) => {
     if (!r.ok) throw new Error(`API /assets DELETE → ${r.status}`)
-    return r.json() as Promise<{ deleted: number; missing: number }>
+    return r.json() as Promise<DeleteAssetsResult>
   })
 }
 

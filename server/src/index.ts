@@ -4,7 +4,7 @@
  * 启动流程：
  *   ① 初始化数据库（建表）
  *   ② 注册全部 API 路由
- *   ③ 若库为空 → 自动触发后台全量扫描（缩略图懒生成，不阻塞启动）
+ *   ③ 每次启动都触发后台全量增量同步（缩略图懒生成，不阻塞启动）
  *   ④ 打印访问地址
  *
  * 学习提示：Fastify 5 的插件式组织 —— 每个路由文件是一个 register 函数，
@@ -25,6 +25,7 @@ import { registerSearchRoutes } from './routes/search.js'
 import { registerInfoRoutes } from './routes/info.js'
 import { runScan, scanProgress } from './scanner/index.js'
 import { startWatcher } from './scanner/watcher.js'
+import { cleanStaleTempFiles } from './pipeline/thumbnails.js'
 
 /** 项目根目录（server/src/../..） */
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
@@ -32,14 +33,28 @@ const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '
 async function main(): Promise<void> {
   // ① 数据库初始化（建表）
   getDb()
+  cleanStaleTempFiles()
 
   const app = Fastify({ logger: true })
 
-  // 开发期 CORS：前端 Vite 跑在 5173，后端 8899，允许任意源直连
-  app.addHook('onSend', async (_req, reply) => {
-    reply.header('Access-Control-Allow-Origin', '*')
-    reply.header('Access-Control-Allow-Headers', 'Content-Type, Range')
-    reply.header('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS')
+  // 仅允许本机 Vite 开发服务器跨源访问；生产静态页面与 API 同源，无需 CORS。
+  const devOrigins = new Set([
+    'http://localhost:5173',
+    'http://127.0.0.1:5173',
+    'http://[::1]:5173',
+  ])
+  app.addHook('onRequest', async (request, reply) => {
+    const origin = request.headers.origin
+    const allowed = origin !== undefined && devOrigins.has(origin)
+    if (allowed) {
+      reply.header('Access-Control-Allow-Origin', origin)
+      reply.header('Vary', 'Origin')
+      reply.header('Access-Control-Allow-Headers', 'Content-Type, Range')
+      reply.header('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS')
+    }
+    if (request.method === 'OPTIONS') {
+      return reply.code(allowed ? 204 : 403).send()
+    }
   })
 
   // ② 路由
@@ -62,7 +77,7 @@ async function main(): Promise<void> {
   }
 
   // ③ 启动后台全量同步（P2+-1）：幂等增量，新增入库 + 删除对账 + 配对修正。
-  //    不 await、不阻塞启动；前端轮询 /api/stats 可见进度。
+  //    不 await、不阻塞启动；前端轮询 /api/stats 获取状态并在结束时刷新照片墙。
   void runScan('startup').catch((err) => {
     scanProgress.status = 'error'
     scanProgress.message = (err as Error).message

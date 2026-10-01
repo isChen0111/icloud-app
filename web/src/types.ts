@@ -86,7 +86,15 @@ export interface Stats {
   totalBytes: number
   totalSizeGB: number
   thumbQueue: number
-  scan: { status: string; totalFiles: number; scannedFiles: number; assetsFound: number; message: string }
+  scan: {
+    status: 'idle' | 'scanning' | 'done' | 'error'
+    runId: number
+    source: 'idle' | 'manual' | 'watcher' | 'startup'
+    totalFiles: number
+    scannedFiles: number
+    assetsFound: number
+    message: string
+  }
 }
 
 /** 月份分组（日期快速定位条数据源；offset = 该月首资产在倒序流中的全局位置） */

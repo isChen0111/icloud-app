@@ -55,7 +55,7 @@ export const useAssetStore = defineStore('assets', () => {
 
   /** 初始化月份分组（首次进入照片墙时由 GridScroller 调用） */
   function initMonths(list: MonthGroup[]): void {
-    if (list.length > 0) months.value = list
+    months.value = list
   }
 
   /** 取 [start, end) 区间的资产；缺页返回 null（调用方渲染占位并调 ensureRange） */
@@ -118,9 +118,29 @@ export const useAssetStore = defineStore('assets', () => {
       const res = await fetchDates()
       initMonths(res.items)
     } catch {
-      initMonths([])
+      // 首次拉取失败时保留已有骨架，避免临时网络错误让缓存视图塌空。
     }
     await loadFirstPage()
+  }
+
+  /** 扫描完成后刷新骨架和已缓存页，保留用户当前滚动位置。 */
+  async function refresh(): Promise<void> {
+    const res = await fetchDates()
+    const ranges = new Set([...pages.keys(), ...pageLoading, ...activeRequests.keys()])
+    if (ranges.size === 0) ranges.add(0)
+
+    dataVersion++
+    activeRequests.clear()
+    pageLoading.clear()
+    failed.clear()
+    pages.clear()
+    loading.value = false
+
+    initMonths(res.items)
+    const total = res.items.reduce((sum, month) => sum + month.count, 0)
+    for (const start of ranges) {
+      if (start < total || (start === 0 && total === 0)) ensureRange(start, start + PAGE)
+    }
   }
 
 
@@ -227,5 +247,6 @@ export const useAssetStore = defineStore('assets', () => {
     removeAssets,
     loadFirstPage,
     init,
+    refresh,
   }
 })

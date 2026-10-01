@@ -91,7 +91,10 @@ export async function registerAssetRoutes(app: FastifyInstance): Promise<void> {
   /** 照片墙分页：返回 { items, nextCursor, offset } */
   app.get('/api/assets', async (req, reply) => {
     const query = req.query as { cursor?: string; limit?: string; offset?: string }
-    const limit = Math.min(Number(query.limit ?? config.pageSize) || config.pageSize, 500)
+    const limit = query.limit === undefined ? config.pageSize : Number(query.limit)
+    if (!Number.isInteger(limit) || limit < 1 || limit > 500) {
+      return reply.code(400).send({ error: 'limit must be an integer between 1 and 500' })
+    }
     const cursor = decodeCursor(query.cursor)
     const offset = Number(query.offset ?? 0) || 0
 
@@ -177,7 +180,7 @@ export async function registerAssetRoutes(app: FastifyInstance): Promise<void> {
    * body: { ids: number[] }
    * 流程：
    *   ① 查 DB 拿 file_path / live_video（磁盘源文件位置）
-   *   ② 删磁盘源文件（主文件 + 实况视频）——失败只记计数不中断（文件没了 DB 也该删）
+   *   ② 删磁盘源文件（主文件 + 实况视频）——不存在视为已删；其他失败记录并返回计数
    *   ③ 事务删 DB 行 + FTS 索引 + 缩略图缓存（deleteAssetById）
    * 联动：磁盘 unlink 会触发热监听 → 自动对账（幂等空转，秒级无害）
    */
@@ -201,8 +204,11 @@ export async function registerAssetRoutes(app: FastifyInstance): Promise<void> {
         if (!rel) continue
         try {
           fs.unlinkSync(path.join(config.libraryRoot, rel))
-        } catch {
-          unlinkFail++
+        } catch (err) {
+          if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+            unlinkFail++
+            console.error(`[delete] 源文件删除失败 ${rel}:`, err)
+          }
         }
       }
     }
@@ -216,4 +222,3 @@ export async function registerAssetRoutes(app: FastifyInstance): Promise<void> {
     return reply.send({ deleted: rows.length, missing: ids.length - rows.length, unlinkFail })
   })
 }
-

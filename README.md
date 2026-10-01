@@ -44,7 +44,7 @@ icloud-app/
 ```bash
 # 1. 后端（端口 8899，首次启动自动扫描入库）
 cd server
-npm ci               # 安装依赖、better-sqlite3 预编译模块，并下载 ffmpeg full（约 162MB）
+npm ci               # 安装依赖、better-sqlite3 预编译模块，并下载 ffmpeg full（约 170MB）
 # （可选）自定义路径：Copy-Item .env.example .env 后按需修改
 npm run dev
 
@@ -73,7 +73,7 @@ cd ../server && npm run start   # 后端自动检测 web/dist 并托管，访问
 - **不要用 `npm ci --ignore-scripts`**：这会跳过项目的 postinstall，FFmpeg/FFprobe 不会自动下载，HEIC 解码和视频处理无法使用。better-sqlite3 13.0.3 的 Windows `.node` 预编译模块已随 npm 包提供。
 - **better-sqlite3 安装说明**：项目使用 13.0.3，Windows x64 预编译模块包含在 npm 包中，不需另装 Visual Studio。为避免 npm 11.9.0 在 `npm ci` 时看到 `binding.gyp` 后自动运行 `node-gyp rebuild`，`server/package-lock.json` 的 `node_modules/better-sqlite3` 条目需保留 `"gypfile": false`。如果用 `npm install` 更新锁文件，检查该字段仍存在，再用干净目录验证 `npm ci`。
 - **国内镜像**：`server/.npmrc` 只设置 npmmirror npm registry；Sharp 使用 npm 平台包，better-sqlite3 的平台二进制随 npm 包分发。
-- **postinstall 要下约 162MB ffmpeg**：从项目自己的 GitHub Release 下载（`isChen0111/icloud-app/releases/tag/vendor-binaries`），含 libheif，HEIC 解码必需；下载时会显示 curl 进度条，完成后显示文件大小。产物解压到 `server/vendor/ffmpeg-full/`，**不再写入 node_modules**。网络慢/下不动时：
+- **postinstall 要下约 170MB ffmpeg**：从项目自己的 GitHub Release 下载（`isChen0111/icloud-app/releases/tag/vendor-binaries`），含 libheif，HEIC 解码必需；下载时会显示 curl 进度条，完成后显示文件大小。产物解压到 `server/vendor/ffmpeg-full/`，**不再写入 node_modules**。网络慢/下不动时：
   - **方案 A（推荐）**：把 `server/vendor/ffmpeg-full.zip` 从已有机器直接拷到新机器同位置，脚本检测到自动跳过下载；
   - **方案 B**：浏览器手动打开 [Release 页面](https://github.com/isChen0111/icloud-app/releases/tag/vendor-binaries) 下载 `ffmpeg-full.zip`，放到 `server/vendor/ffmpeg-full.zip`；
   - **方案 C**：设环境变量 `FFMPEG_FULL_URL` 指向你自己的镜像（如 OSS），再跑 `npm install`。
@@ -131,6 +131,11 @@ cd ../server && npm run start   # 后端自动检测 web/dist 并托管，访问
 - **虚拟滚动（全量骨架）**：行序列（月份头 + 资产行）由「月份分组 + 列数」一次精确生成全库（8 列 1,676 行 / 219,106px）→ 滚动条 = 全库、任意位置双向滚动；@tanstack/vue-virtual 只挂载视口附近的 ~100 个 DOM 节点。资产数据按 120 条/页**区间懒加载**（pages Map 缓存，未加载行渲染灰块占位），滚动到哪行取哪行、幂等并发去重。行高走 getRowHeight(row) 函数（原比例显示的预留扩展点，当前固定方形）。
 - **缩略图懒生成**：首次浏览某张图才生成 320px WebP（~25KB），生成后永久缓存；同资产并发去重（in-flight Map）。
 - **缩略图缓存失效**：接口 `Cache-Control: max-age=1年`（无 immutable）+ ETag 协商；前端 URL 带 `rev` 版本号——内容变更（如生成参数修复）后 bump `THUMB_REV` 即可强制浏览器重新拉取。
+- **扫描同步与删除对账**：扫描只有在完整读取照片库后才会清理数据库中的孤儿记录；根目录或任一子目录读取失败时跳过本次删除对账。前端每 5 秒检查扫描状态，完成后刷新月份骨架和已缓存页，尽量保留滚动位置。
+- **临时帧清理**：视频/HEIC 处理产生的 FFmpeg PNG 临时帧正常会即时删除；后端启动时还会清理 `server/cache/tmp/` 中符合程序命名规则且超过 24 小时的遗留帧。
+- **删除失败反馈**：源文件已经不存在按删除成功处理；其他源文件删除失败时，数据库记录仍会移除，但界面会提示源文件可能仍留在磁盘。
+- **分页限制**：资产列表和搜索接口的 `limit` 必须是 1–500 的整数；非法值返回 HTTP 400。
+- **开发 CORS**：后端只允许 `localhost:5173`、`127.0.0.1:5173` 和 `[::1]:5173` 的开发来源；生产模式为同源托管。
 - **HEIC 解码**：sharp 官方预编译无 HEVC 插件，用 BtbN ffmpeg full 版（libheif）解码后再交 sharp 缩放。二进制在 `server/vendor/ffmpeg-full/`，由 `server/src/ffmpeg.ts` spawn，不经过 npm 的 ffmpeg-static。
 - **实况照片**：静止帧（HEIC）+ 配对视频（_HEVC.MOV），按住播放（**带原声**）、松开暂停复位。
 - **视频流**：原生 `<video>` + HTTP Range 206，拖动进度条零延迟。
@@ -176,7 +181,7 @@ cd ../server && npm run start   # 后端自动检测 web/dist 并托管，访问
 - **实况照片无声**：`<video muted>` 硬编码会永远静音；按住播放时应显式 `v.muted=false` 再 `play()`，失败（自动播放策略）则回退静音继续播。
 - **sharp 的 `rotate: true` 构造选项不生效**（0.33.5）：必须用链式 `.rotate()` 才会应用 EXIF 方向——构造选项静默忽略导致竖拍 JPG 缩略图全横。
 - **`Cache-Control: immutable` 会把旧图锁死一年**：缩略图内容可能因修复而变化，不能用 immutable；应保留 ETag 协商 + 前端 URL 版本号（rev）实现缓存失效。
-- **Windows npm 安装**：`server/.npmrc` 配置 npmmirror registry；better-sqlite3 13.0.3 与 sharp 的平台二进制均随 npm 包分发。约 162MB 的 ffmpeg-full 仍走 GitHub Release，下载时显示进度条；下载不畅时可手动拷贝 `server/vendor/ffmpeg-full.zip`。
+- **Windows npm 安装**：`server/.npmrc` 配置 npmmirror registry；better-sqlite3 13.0.3 与 sharp 的平台二进制均随 npm 包分发。约 170MB 的 ffmpeg-full 仍走 GitHub Release，下载时显示进度条；下载不畅时可手动拷贝 `server/vendor/ffmpeg-full.zip`。
 - **KeepAlive 下读不到滚动位置**：deactivated 钩子触发时组件 DOM 已移出文档，scrollTop 已归零；路由切换瞬间的 watch 也读不到真值。正确做法：滚动过程（onScroll）持续记录位置，缓存激活（onActivated）后写回 + 派发 scroll 事件重算可视窗口。
 - **KeepAlive 返回后行高错位**：缓存期间 ResizeObserver 把 clientWidth 读成 0，污染 viewportWidth → 恢复瞬间用兜底 200px 行高测量 → 行重叠/间距异常。修复：ResizeObserver 忽略宽度 0 + 恢复时 rAF 内先 measure 再派发 scroll。
 - **FTS5 trigram 多字符查询是「片段 AND」不是短语**：`MATCH '2023'` 实际等价 `"202" AND "023"`——只要求两个 3 字符片段都出现、不要求连成完整词（带引号短语同样无相邻约束，实测与 AND 结果一致）。日期时间串碰巧同时含这两段（如 `20181207T120239` 的 T1202→202 + 0239→023）就误命中。修复：FTS 粗筛后加 `instr(文件名小写/ISO/紧凑时间, 查询词)` 连续子串精筛，多 token 逐词 AND。

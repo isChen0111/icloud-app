@@ -3,7 +3,7 @@
  *
  * 流程：
  *  ① 递归遍历照片库，按扩展名分类 图片 / 视频
- *  ② 实况配对：基名相同的 图片+视频 配成一对（对标 iCloudPD 的 suffix 命名策略）
+ *  ② 实况配对：同目录内配对基名相同的 图片+视频（对标 iCloudPD 的 suffix 命名策略）
  *     - HEIC 实况：IMG_1234.HEIC  ⇄  IMG_1234_HEVC.MOV
  *     - JPEG 实况：IMG_1234.JPG   ⇄  IMG_1234.MOV
  *  ③ 提取元数据（EXIF / ffprobe / 目录日期兜底）
@@ -56,28 +56,30 @@ interface PairedAsset {
 }
 
 /**
- * 递归遍历目录，返回相对路径列表。
- * 跳过隐藏目录（以 . 开头）；目录不可读（无权限/已删除）时跳过而非抛错，
- * 避免单个坏目录让整个扫描中断。
+ * 递归遍历目录，保留已读文件并报告任何未能读取的目录。
+ * 目录读取失败不会中断入库，但扫描结果不完整时不能用于删除对账。
  */
-function walkDir(dir: string): string[] {
-  const results: string[] = []
+function walkDir(dir: string): { files: string[]; errors: string[] } {
+  const result = { files: [] as string[], errors: [] as string[] }
   let entries: fs.Dirent[]
   try {
     entries = fs.readdirSync(dir, { withFileTypes: true })
-  } catch {
-    return results
+  } catch (err) {
+    result.errors.push(`${dir}: ${(err as NodeJS.ErrnoException).code ?? (err as Error).message}`)
+    return result
   }
   for (const entry of entries) {
     if (entry.name.startsWith('.')) continue // 隐藏文件/目录
     const full = path.join(dir, entry.name)
     if (entry.isDirectory()) {
-      results.push(...walkDir(full))
+      const child = walkDir(full)
+      result.files.push(...child.files)
+      result.errors.push(...child.errors)
     } else if (entry.isFile()) {
-      results.push(full)
+      result.files.push(full)
     }
   }
-  return results
+  return result
 }
 
 /** 主扫描入口：全量扫描 + 入库。可重复调用（增量幂等）。
@@ -101,7 +103,13 @@ export async function runScan(source: 'manual' | 'watcher' | 'startup' = 'manual
 
   try {
   // ① 收集所有媒体文件
-  const absPaths = walkDir(config.libraryRoot)
+  const traversal = walkDir(config.libraryRoot)
+  const absPaths = traversal.files
+  const traversalComplete = traversal.errors.length === 0
+  if (!traversalComplete) {
+    console.warn(`[scan] 目录遍历不完整，${traversal.errors.length} 个目录无法读取；本次将跳过删除对账`)
+    for (const error of traversal.errors) console.warn(`[scan] 无法读取目录: ${error}`)
+  }
   const allFiles: RawFile[] = []
   for (const abs of absPaths) {
     const ext = path.extname(abs).toLowerCase()
@@ -344,7 +352,7 @@ export async function runScan(source: 'manual' | 'watcher' | 'startup' = 'manual
   const dbRows = db.prepare(`SELECT id, file_path FROM assets`).all() as { id: number; file_path: string }[]
   const orphanIds: number[] = []
   const orphanSet = new Set<number>()
-  if (config.scanLimit <= 0) {
+  if (config.scanLimit <= 0 && traversalComplete) {
     for (const r of dbRows) {
       if (!diskPaths.has(r.file_path)) {
         orphanIds.push(r.id)
@@ -366,7 +374,9 @@ export async function runScan(source: 'manual' | 'watcher' | 'startup' = 'manual
   cleanOrphanThumbs(validIds)
 
   scanProgress.status = 'done'
-  scanProgress.message = `扫描完成：共 ${scanProgress.assetsFound} 个媒体资产，${livePairs} 个实况照片`
+  scanProgress.message = traversalComplete
+    ? `扫描完成：共 ${scanProgress.assetsFound} 个媒体资产，${livePairs} 个实况照片`
+    : `扫描完成但目录遍历不完整：共 ${scanProgress.assetsFound} 个媒体资产，${livePairs} 个实况照片；已跳过删除对账`
   console.log(scanProgress.message)
   } catch (err) {
     // 容错：任何异常都收敛为可查询的 error 状态并上抛（/api/scan 的 catch 会接到）

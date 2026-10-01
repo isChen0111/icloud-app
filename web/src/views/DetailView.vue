@@ -116,9 +116,12 @@ async function onConfirmDelete(): Promise<void> {
     const prev = d.prevId
     deleting.value = true
     try {
-      await deleteAssets([id])
+      const result = await deleteAssets([id])
       assetStore.removeAssets([id])
       confirmDeleteOpen.value = false
+      if (result.unlinkFail > 0) {
+        alert(`已从图库移除，但有 ${result.unlinkFail} 个源文件未能删除。请检查文件是否被占用或权限是否足够。`)
+      }
       if (next != null) void router.push({ name: 'detail', params: { id: String(next) } })
       else if (prev != null) void router.push({ name: 'detail', params: { id: String(prev) } })
       else void router.push({ name: 'grid' })
