@@ -115,7 +115,7 @@ npm run start
 | GET | /api/assets?offset=&limit= | 按全局序号取任意区间（照片墙全量骨架的懒加载取数） |
 | GET | /api/assets/:id | 单个资产 + 前后邻居 id + 序号/总数 |
 | GET | /api/assets/:id/info | 详情信息面板：实时解析 EXIF / ffprobe（设备/镜头/ISO/光圈/GPS 等） |
-| GET | /api/thumb/:id?size=grid\|detail\|blur | 缩略图（懒生成） |
+| GET | /api/thumb/:id?size=grid\|detail | 缩略图（懒生成） |
 | GET | /api/video/:id/stream | 视频流（HTTP Range） |
 | GET | /api/video/:id/poster | 视频封面帧 |
 | GET | /api/stats | 库统计 + 扫描进度 |

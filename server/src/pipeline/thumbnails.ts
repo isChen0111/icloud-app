@@ -4,7 +4,6 @@
  * 对标 iCloud 的「衍生图分级」思想：
  * - grid  ：320px WebP，覆盖网格任意缩放级别（iCloud 用 415px 档做同样的事）
  * - detail：1600px WebP，详情页大图
- * - blur  ：32px 模糊 WebP，滚动时的即时占位
  * - poster：视频封面帧（ffmpeg 抽第 1 秒，再经 sharp 压成 320px WebP）
  *
  * 缓存路径：cache/thumbs/<size>/<assetId>.webp

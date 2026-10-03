@@ -35,12 +35,10 @@ export const config = {
     grid: 320,
     /** 详情大图：最长边 1600px（对标 iCloud 2048px 档，本地够用） */
     detail: 1600,
-    /** 模糊占位图：极小尺寸 + 高斯模糊，滚动时秒出 */
-    blur: 32,
   } as const,
 
   /** 缩略图质量（WebP） */
-  thumbQuality: { grid: 80, detail: 82, blur: 60 } as const,
+  thumbQuality: { grid: 80, detail: 82 } as const,
 
   /** 缩略图生成并发数（sharp 是 CPU/IO 混合任务，4~6 较稳） */
   thumbConcurrency: 8,

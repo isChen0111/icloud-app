@@ -389,14 +389,14 @@ export async function runScan(source: 'manual' | 'watcher' | 'startup' = 'manual
 
 
 /**
- * 删除一个资产：DB 行 + FTS 索引 + 缩略图缓存（grid/detail/blur 三档）。
+ * 删除一个资产：DB 行 + FTS 索引 + 缩略图缓存。
  * 供删除对账与后续客户端删除 API 复用。
  * 注意：缩略图队列 in-flight 恰好写出的文件会留一个孤儿 webp，
  * 由下次对账的 cleanOrphanThumbs 兜底清理。
  */
 export function deleteAssetById(id: number): void {
   const db = getDb()
-  for (const size of ['grid', 'detail', 'blur'] as const) {
+  for (const size of ['grid', 'detail'] as const) {
     fs.rmSync(thumbCachePath(size, id), { force: true })
   }
   db.prepare(`DELETE FROM assets_fts WHERE rowid = ?`).run(id)
@@ -404,11 +404,18 @@ export function deleteAssetById(id: number): void {
 }
 
 /**
- * 清理孤儿缩略图：cache/thumbs/<size>/ 下 id 已不存在于资产表的 .webp 文件。
+ * 清理废弃的 blur 缓存和孤儿缩略图：cache/thumbs/<size>/ 下 id 已不存在于资产表的 .webp 文件。
  * 目录不存在（从未生成过该档）时静默跳过。
  */
 function cleanOrphanThumbs(validIds: Set<number>): void {
-  for (const size of ['grid', 'detail', 'blur'] as const) {
+  const legacyBlurDir = path.join(config.cacheDir, 'thumbs', 'blur')
+  try {
+    fs.rmSync(legacyBlurDir, { recursive: true, force: true })
+  } catch (err) {
+    console.warn(`[scan] 清理已废弃的 blur 缩略图缓存失败: ${legacyBlurDir}`, err)
+  }
+
+  for (const size of ['grid', 'detail'] as const) {
     const dir = path.join(config.cacheDir, 'thumbs', size)
     let names: string[] = []
     try {
