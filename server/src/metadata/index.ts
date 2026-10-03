@@ -14,7 +14,8 @@ import { ffprobeJson } from '../ffmpeg.js'
 /** 从目录 YYYY/MM/DD 解析日期（iCloudPD 默认结构），失败返回 null */
 export function parseDateFromDir(filePath: string): string | null {
   // 例：2025/02/17/IMG_1234.HEIC → ['2025','02','17']
-  const m = filePath.match(/(\d{4})\/(\d{2})\/(\d{2})\//)
+  const normalizedPath = filePath.replace(/\\/g, '/')
+  const m = normalizedPath.match(/(\d{4})\/(\d{2})\/(\d{2})\//)
   if (!m) return null
   const y = Number(m[1])
   const mo = Number(m[2])

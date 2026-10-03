@@ -117,8 +117,22 @@ export async function runScan(source: 'manual' | 'watcher' | 'startup' = 'manual
     else if (VIDEO_EXTS.has(ext)) allFiles.push({ relPath: path.relative(config.libraryRoot, abs), absPath: abs, fileName: path.basename(abs), kind: 'video' })
   }
 
+  // iCloudPD 常用 YYYY/MM/DD 目录结构。优先处理目录日期较新的媒体，
+  // 让最新年份更早入库；同一天与无日期路径保持遍历顺序稳定。
+  const prioritizedFiles = allFiles
+    .map((file, index) => ({ file, index, directoryDate: parseDateFromDir(file.relPath) }))
+    .sort((a, b) => {
+      if (a.directoryDate && b.directoryDate) {
+        return b.directoryDate.localeCompare(a.directoryDate) || a.index - b.index
+      }
+      if (a.directoryDate) return -1
+      if (b.directoryDate) return 1
+      return a.index - b.index
+    })
+    .map(({ file }) => file)
+
   // 测试/调试用：限制扫描数量（SCAN_LIMIT 环境变量），验证管线时避免全量等待
-  const files = config.scanLimit > 0 ? allFiles.slice(0, config.scanLimit) : allFiles
+  const files = config.scanLimit > 0 ? prioritizedFiles.slice(0, config.scanLimit) : prioritizedFiles
   scanProgress.totalFiles = files.length
   scanProgress.scannedFiles = 0
 
