@@ -2,18 +2,18 @@
 /**
  * GridItem —— 网格单项
  *
- * 渲染层级（对标 iCloud DerivativeImage 的渐进式呈现）：
+ * 渲染层级：
  *   1. 灰色底色容器（方形，固定宽高）→ 保证滚动时布局零抖动
- *   2. blur 模糊占位图（32px，秒出）
- *   3. 真实缩略图（320px WebP）→ 加载完成后淡入覆盖占位
+ *   2. 缩略图 URL 按需请求（320px WebP）
+ *   3. 图片加载完成后淡入，期间保持底色占位
  *
  * 类型徽标：
  *   ▶ 视频（右下角）
  *   LIVE 实况照片（右上角，对标 iCloud 的实况徽标）
  */
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { blurUrl, useLazyImage } from '../composables/useLazyImage'
+import { useLazyImage } from '../composables/useLazyImage'
 import { formatDuration } from '../utils/format'
 import type { AssetDto } from '../types'
 import { useAssetStore } from '../stores/assets'
@@ -23,6 +23,7 @@ const router = useRouter()
 const store = useAssetStore()
 
 const { isVisible, src, rootRef } = useLazyImage(props.asset.id, 'grid')
+const imageLoaded = ref(false)
 
 /** 占位底色：按 id 生成一个稳定的浅灰渐变（视觉上比纯灰更柔和） */
 const placeholderBg = computed(() => {
@@ -56,10 +57,18 @@ function openDetail(): void {
     @click="onSelect"
     @dblclick="openDetail"
   >
-    <!-- 占位/懒加载锚点：进入视口后由 composable 注入真实图 -->
+    <!-- 底色占位/懒加载锚点：进入视口后请求缩略图，加载完成再淡入 -->
     <div ref="rootRef" class="thumb-layer">
-      <img v-if="isVisible" :src="blurUrl(asset.id)" class="thumb blur" alt="" decoding="async" />
-      <img v-if="isVisible" :src="src" class="thumb real" alt="" decoding="async" loading="lazy" />
+      <img
+        v-if="isVisible"
+        :src="src"
+        class="thumb real"
+        :class="{ loaded: imageLoaded }"
+        alt=""
+        decoding="async"
+        loading="lazy"
+        @load="imageLoaded = true"
+      />
     </div>
 
     <!-- 选中态叠加层：绝对定位在缩略图内部，不参与流布局（虚拟滚动行高零影响） -->
@@ -98,9 +107,9 @@ function openDetail(): void {
   height: 100%;
   object-fit: cover;
 }
-/* 真实图淡入覆盖占位（对标 iCloud 的 ProgressiveImageElement opacity 过渡） */
+/* 图片加载完成后淡入；加载期间显示容器底色 */
 .thumb.real { opacity: 0; transition: opacity 0.3s ease; }
-.thumb.real[src] { opacity: 1; }
+.thumb.real.loaded { opacity: 1; }
 .badge {
   position: absolute;
   display: flex;

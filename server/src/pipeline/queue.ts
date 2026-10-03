@@ -21,19 +21,18 @@ export interface EnqueueItem {
 }
 
 /**
- * 提交一个资产的全部网格档缩略图任务（grid + blur）。
+ * 提交一个资产的网格缩略图任务。
  * 调用方可并发触发多次，内部自动去重。
  */
 export function enqueueAsset(item: EnqueueItem): void {
-  for (const size of ['grid', 'blur'] as const) {
-    const key = `${item.id}:${size}`
-    if (queued.has(key)) continue
-    queued.add(key)
-    // eslint-disable-next-line @typescript-eslint/no-floating-promises
-    queue.add(() =>
-      ensureThumbnail(item.id, size).finally(() => queued.delete(key)),
-    )
-  }
+  const size = 'grid'
+  const key = `${item.id}:${size}`
+  if (queued.has(key)) return
+  queued.add(key)
+  // eslint-disable-next-line @typescript-eslint/no-floating-promises
+  queue.add(() =>
+    ensureThumbnail(item.id, size).finally(() => queued.delete(key)),
+  )
 }
 
 /** 队列当前积压数量（供 /api/stats 展示） */

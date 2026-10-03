@@ -117,8 +117,22 @@ export async function runScan(source: 'manual' | 'watcher' | 'startup' = 'manual
     else if (VIDEO_EXTS.has(ext)) allFiles.push({ relPath: path.relative(config.libraryRoot, abs), absPath: abs, fileName: path.basename(abs), kind: 'video' })
   }
 
+  // iCloudPD 常用 YYYY/MM/DD 目录结构。优先处理目录日期较新的媒体，
+  // 让最新年份更早入库；同一天与无日期路径保持遍历顺序稳定。
+  const prioritizedFiles = allFiles
+    .map((file, index) => ({ file, index, directoryDate: parseDateFromDir(file.relPath) }))
+    .sort((a, b) => {
+      if (a.directoryDate && b.directoryDate) {
+        return b.directoryDate.localeCompare(a.directoryDate) || a.index - b.index
+      }
+      if (a.directoryDate) return -1
+      if (b.directoryDate) return 1
+      return a.index - b.index
+    })
+    .map(({ file }) => file)
+
   // 测试/调试用：限制扫描数量（SCAN_LIMIT 环境变量），验证管线时避免全量等待
-  const files = config.scanLimit > 0 ? allFiles.slice(0, config.scanLimit) : allFiles
+  const files = config.scanLimit > 0 ? prioritizedFiles.slice(0, config.scanLimit) : prioritizedFiles
   scanProgress.totalFiles = files.length
   scanProgress.scannedFiles = 0
 
@@ -389,14 +403,14 @@ export async function runScan(source: 'manual' | 'watcher' | 'startup' = 'manual
 
 
 /**
- * 删除一个资产：DB 行 + FTS 索引 + 缩略图缓存（grid/detail/blur 三档）。
+ * 删除一个资产：DB 行 + FTS 索引 + 缩略图缓存。
  * 供删除对账与后续客户端删除 API 复用。
  * 注意：缩略图队列 in-flight 恰好写出的文件会留一个孤儿 webp，
  * 由下次对账的 cleanOrphanThumbs 兜底清理。
  */
 export function deleteAssetById(id: number): void {
   const db = getDb()
-  for (const size of ['grid', 'detail', 'blur'] as const) {
+  for (const size of ['grid', 'detail'] as const) {
     fs.rmSync(thumbCachePath(size, id), { force: true })
   }
   db.prepare(`DELETE FROM assets_fts WHERE rowid = ?`).run(id)
@@ -404,11 +418,18 @@ export function deleteAssetById(id: number): void {
 }
 
 /**
- * 清理孤儿缩略图：cache/thumbs/<size>/ 下 id 已不存在于资产表的 .webp 文件。
+ * 清理废弃的 blur 缓存和孤儿缩略图：cache/thumbs/<size>/ 下 id 已不存在于资产表的 .webp 文件。
  * 目录不存在（从未生成过该档）时静默跳过。
  */
 function cleanOrphanThumbs(validIds: Set<number>): void {
-  for (const size of ['grid', 'detail', 'blur'] as const) {
+  const legacyBlurDir = path.join(config.cacheDir, 'thumbs', 'blur')
+  try {
+    fs.rmSync(legacyBlurDir, { recursive: true, force: true })
+  } catch (err) {
+    console.warn(`[scan] 清理已废弃的 blur 缩略图缓存失败: ${legacyBlurDir}`, err)
+  }
+
+  for (const size of ['grid', 'detail'] as const) {
     const dir = path.join(config.cacheDir, 'thumbs', size)
     let names: string[] = []
     try {

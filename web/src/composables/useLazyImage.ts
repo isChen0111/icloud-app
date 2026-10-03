@@ -1,12 +1,10 @@
 /**
  * 图片懒加载组合式函数
  *
- * 对标 iCloud 的 DerivativeImage 行为：
- * - 网格项进入视口（IntersectionObserver）才真正创建 <img> 发起请求
- * - 先显示 32px 模糊占位（blur 档），大图到位后淡入覆盖（opacity 过渡）
- * - 滚动快速滑过时根本不会请求（离屏即取消）
+ * 网格项进入视口附近（IntersectionObserver）后才设置缩略图 URL，
+ * 滚动快速跳过的离屏图片不会发起请求。
  *
- * 用法：const { src, placeholder, isVisible } = useLazyImage(id, 'grid')
+ * 用法：const { src, isVisible, rootRef } = useLazyImage(id, 'grid')
  */
 import { onBeforeUnmount, ref, watch } from 'vue'
 import { thumbUrl } from '../api/client'
@@ -51,9 +49,4 @@ export function useLazyImage(assetId: number, size: 'grid' | 'detail' = 'grid') 
   onBeforeUnmount(() => observer?.disconnect())
 
   return { isVisible, src, rootRef }
-}
-
-/** 模糊占位图 URL（滚动时即时可见） */
-export function blurUrl(assetId: number): string {
-  return thumbUrl(assetId, 'blur')
 }

@@ -143,4 +143,4 @@ export interface GridDataSource {
 }
 
 /** 缩略图档位 */
-export type ThumbSize = 'grid' | 'detail' | 'blur'
+export type ThumbSize = 'grid' | 'detail'

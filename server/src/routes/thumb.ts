@@ -1,7 +1,7 @@
 /**
  * 缩略图路由
  *
- * GET /api/thumb/:id?size=grid|detail|blur
+ * GET /api/thumb/:id?size=grid|detail
  *   - 懒生成：缓存不存在 → 现场生成（sharp/ffmpeg）→ 写盘
  *   - 长缓存：缩略图路径含资产 id，可安全长缓存（max-age 1 年）；不用 immutable，
  *     留刷新协商通道（见下方修复注释）
@@ -12,7 +12,7 @@ import fs from 'node:fs'
 import { getDb } from '../db/index.js'
 import { ensureThumbnail, ensureSize, type ThumbSize } from '../pipeline/thumbnails.js'
 
-const VALID_SIZES = new Set<ThumbSize>(['grid', 'detail', 'blur'])
+const VALID_SIZES = new Set<ThumbSize>(['grid', 'detail'])
 
 /** 简单 ETag：由文件信息生成（无需读内容） */
 function etagFor(filePath: string): string {

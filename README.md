@@ -42,7 +42,7 @@ npm ci
 npm run dev
 ```
 
-打开 http://localhost:5173 查看照片墙。首次启动后端会扫描照片库并建立索引，照片较多时需要等待；缩略图会在浏览时按需生成。后端之后也会在启动时增量同步，并监听照片库的文件变化。
+打开 http://localhost:5173 查看照片墙。首次启动后端会先收集媒体文件，再优先处理目录日期较新的文件；扫描期间照片墙不自动刷新，扫描完成后会自动更新一次，期间也可以手动刷新查看已入库内容。扫描完成后，剩余网格缩略图进入后台生成队列；已显示照片的缩略图仍按需加载。目录日期只用于安排处理顺序，照片墙最终仍按实际拍摄时间排序。后端之后也会在启动时增量同步，并监听照片库的文件变化。
 
 如需使用非默认照片库路径，可先在 `server/` 目录创建 `.env`：
 
@@ -115,7 +115,7 @@ npm run start
 | GET | /api/assets?offset=&limit= | 按全局序号取任意区间（照片墙全量骨架的懒加载取数） |
 | GET | /api/assets/:id | 单个资产 + 前后邻居 id + 序号/总数 |
 | GET | /api/assets/:id/info | 详情信息面板：实时解析 EXIF / ffprobe（设备/镜头/ISO/光圈/GPS 等） |
-| GET | /api/thumb/:id?size=grid\|detail\|blur | 缩略图（懒生成） |
+| GET | /api/thumb/:id?size=grid\|detail | 缩略图（懒生成） |
 | GET | /api/video/:id/stream | 视频流（HTTP Range） |
 | GET | /api/video/:id/poster | 视频封面帧 |
 | GET | /api/stats | 库统计 + 扫描进度 |
