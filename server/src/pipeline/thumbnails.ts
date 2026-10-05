@@ -85,8 +85,16 @@ async function generate(assetId: number, size: ThumbSize): Promise<string | null
   const outPath = thumbCachePath(size, assetId)
   const db = getDb()
   const row = db
-    .prepare(`SELECT file_path, type, width, height FROM assets WHERE id = ?`)
-    .get(assetId) as { file_path: string; type: string; width: number | null; height: number | null } | undefined
+    .prepare(`SELECT file_path, type, width, height, duration FROM assets WHERE id = ?`)
+    .get(assetId) as
+    | {
+        file_path: string
+        type: string
+        width: number | null
+        height: number | null
+        duration: number | null
+      }
+    | undefined
   if (!row) return null
 
   const abs = path.join(config.libraryRoot, row.file_path)
@@ -100,7 +108,7 @@ async function generate(assetId: number, size: ThumbSize): Promise<string | null
 
     if (row.type === 'video') {
       // —— 视频：ffmpeg 抽帧 → sharp 缩放 ——
-      const framePath = await extractVideoFrame(abs, target)
+      const framePath = await extractVideoFrame(abs, target, row.duration)
       try {
         await sharp(framePath, { failOn: 'none' })
           .resize(target, target, { fit: 'inside', withoutEnlargement: true })
@@ -166,18 +174,27 @@ async function heicToPng(absPath: string): Promise<string> {
 }
 
 /** 用 ffmpeg 抽取视频某一帧为临时 PNG（供 sharp 二次处理） */
-async function extractVideoFrame(absPath: string, maxSize: number): Promise<string> {
+async function extractVideoFrame(
+  absPath: string,
+  maxSize: number,
+  duration: number | null,
+): Promise<string> {
   const tmp = path.join(config.cacheDir, 'tmp', `frame_${Date.now()}_${Math.random().toString(36).slice(2)}.png`)
   fs.mkdirSync(path.dirname(tmp), { recursive: true })
   const vf = `scale='min(${maxSize},iw)':'min(${maxSize},ih)':force_original_aspect_ratio=decrease`
-  try {
+  const seek =
+    duration !== null && Number.isFinite(duration) && duration > 0
+      ? Math.min(config.videoPosterSeek, duration / 2)
+      : config.videoPosterSeek
+
+  async function extractAt(seconds: number): Promise<void> {
     await runFfmpeg([
       '-hide_banner',
       '-loglevel',
       'error',
       '-y',
       '-ss',
-      String(config.videoPosterSeek), // 跳过第 1 秒，避开黑场/片头（-ss 在 -i 前：快搜）
+      String(seconds), // -ss 在 -i 前：快搜
       '-i',
       absPath,
       '-vf',
@@ -186,6 +203,19 @@ async function extractVideoFrame(absPath: string, maxSize: number): Promise<stri
       '1',
       tmp,
     ])
+    if (!fs.existsSync(tmp) || fs.statSync(tmp).size === 0) {
+      throw new Error(`No video frame available at ${seconds}s`)
+    }
+  }
+
+  try {
+    try {
+      await extractAt(seek)
+    } catch (error) {
+      if (seek === 0) throw error
+      fs.rmSync(tmp, { force: true })
+      await extractAt(0)
+    }
     return tmp
   } catch (error) {
     fs.rmSync(tmp, { force: true })

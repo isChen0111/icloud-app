@@ -170,7 +170,7 @@
 <tr><th>档位</th><th>规格</th><th>用途</th><th>全量估算</th></tr>
 <tr><td><b>grid</b></td><td>最长边 320px，WebP q80</td><td>网格任意缩放级别复用（实测 iCloud 415px 档覆盖 120~346px）</td><td>~25KB/张 × 12,591 ≈ <b>0.31GB</b></td></tr>
 <tr><td><b>detail</b></td><td>最长边 1600px，WebP q82</td><td>详情页大图（对标 iCloud 2048 档，本地 1600 已足够）</td><td>~250KB/张 ≈ <b>3GB</b>（可仅按需生成最近浏览的）</td></tr>
-<tr><td><b>video poster</b></td><td>ffmpeg 抽第 1 秒帧 → 320px WebP</td><td>视频缩略图</td><td>~60KB × 3,175 ≈ <b>0.19GB</b></td></tr>
+<tr><td><b>video poster</b></td><td>ffmpeg 优先抽第 1 秒帧；短视频按时长选择片段内时间点，无帧时回退到开头 → 320px WebP</td><td>视频缩略图</td><td>~60KB × 3,175 ≈ <b>0.19GB</b></td></tr>
 </table>
 <p>生成策略：缩略图按请求惰性生成，并由后台队列补齐缓存。前端请求某张缩略图 → 后端查缓存未命中 → 生成并写入磁盘缓存（ETag 缓存到浏览器）；扫描后待生成资产只将 <code>grid</code> 档加入后台队列（p-queue 并发 8），<code>detail</code> 档在详情访问时按需生成。照片墙格子接近视口时请求 grid，图片加载完成前显示稳定的底色占位，成功加载后淡入。同一资产、同一档位的并发生成由 <code>in-flight Map</code> 去重。</p>
 <div class="note"><b>性能取舍：移除独立 blur 档</b>：blur 小图虽小，生成时仍需读取、解码源媒体并缩放/编码；若与 grid 到达间隔很短，额外占位的视觉收益有限。本实现已移除独立 blur 档：后台队列只预热 grid，格子先显示底色，待 grid 图片加载成功后淡入；扫描时会清理旧的 <code>cache/thumbs/blur/</code> 缓存。详情页仍可复用 grid 图并通过 CSS 模糊作为临时占位，不会额外生成或请求 blur 文件。</div>
