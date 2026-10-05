@@ -131,7 +131,7 @@
 <tr><td>EXIF 提取</td><td><b>exifr</b></td><td>解析 HEIC/JPEG 的拍摄时间、GPS、方向、尺寸，支持分段读取大文件</td></tr>
 <tr><td>图像处理</td><td><b>sharp</b>（libvips）</td><td>生成 WebP 缩略图 4~5 倍于 ImageMagick。<b>注意（实测坑）</b>：sharp 官方预编译<b>不含 HEVC 解码插件</b>（HEIC 的 metadata 可读、转码报 <code>heif: No decoding plugin installed (11.6003)</code>），需配合 ffmpeg full 版解码，见 §9</td></tr>
 <tr><td>视频抽帧 / HEIC 解码</td><td><b>BtbN ffmpeg full 版 + spawn</b></td><td>抽取视频封面帧；<b>同时承担 HEIC 解码</b>（full 构建含 libheif，实测 0.13s/张）。二进制解压到 <code>server/vendor/ffmpeg-full/</code>，由 <code>src/ffmpeg.ts</code> 直接 spawn；不再依赖已停维护的 fluent-ffmpeg，也不再覆盖 npm 的 ffmpeg-static 精简版。</td></tr>
-<tr><td>任务队列</td><td><b>p-queue</b>（进程内并发控制）</td><td>缩略图生成 / 转码任务加并发上限（如 4），避免 IO 打满；单机无需 Redis</td></tr>
+<tr><td>任务队列</td><td><b>p-queue</b>（进程内并发控制）</td><td>缩略图生成 / 转码任务共享最多 8 个并发槽位，动态分配给后台补图和交互请求；单机无需 Redis</td></tr>
 <tr><td>静态服务</td><td><b>@fastify/static</b></td><td>自动支持 Range / ETag / Last-Modified，视频拖动进度条依赖 Range</td></tr>
 </table>
 
@@ -172,7 +172,7 @@
 <tr><td><b>detail</b></td><td>最长边 1600px，WebP q82</td><td>详情页大图（对标 iCloud 2048 档，本地 1600 已足够）</td><td>~250KB/张 ≈ <b>3GB</b>（可仅按需生成最近浏览的）</td></tr>
 <tr><td><b>video poster</b></td><td>ffmpeg 优先抽第 1 秒帧；短视频按时长选择片段内时间点，无帧时回退到开头 → 320px WebP</td><td>视频缩略图</td><td>~60KB × 3,175 ≈ <b>0.19GB</b></td></tr>
 </table>
-<p>生成策略：缩略图按请求惰性生成，并由后台队列补齐缓存。前端请求某张缩略图 → 后端查缓存未命中 → 生成并写入磁盘缓存（ETag 缓存到浏览器）；扫描后待生成资产只将 <code>grid</code> 档加入低优先级后台队列（并发 1），浏览活动期间暂停启动新的后台任务，空闲 30 秒后恢复。照片墙、搜索及详情触发的按需任务走独立交互队列（并发 2），保证用户当前请求优先；扫描流程不受该调度影响。Sharp 全局并发限制为 2，视频/HEIC 后台抽帧的 FFmpeg 解码线程限制为 1（交互任务为 2）。照片墙格子接近视口时请求 grid，图片加载完成前显示稳定的底色占位，成功加载后淡入。同一资产、同一档位的并发生成由 <code>in-flight Map</code> 去重。</p>
+<p>生成策略：缩略图按请求惰性生成，并由后台队列补齐缓存。前端请求某张缩略图 → 后端查缓存未命中 → 生成并写入磁盘缓存（ETag 缓存到浏览器）；扫描后待生成资产只将 <code>grid</code> 档加入后台队列。后台补图与照片墙、搜索及详情触发的交互任务共享最多 8 个并发槽位：空闲时后台可使用全部槽位；浏览活动期间暂停派发新的后台任务，已启动的任务不强制中断，释放的槽位优先给交互请求；停止活动 30 秒后后台恢复。扫描流程不受该调度影响。Sharp 全局并发限制为 2，视频/HEIC 后台抽帧的 FFmpeg 解码线程限制为 1（交互任务为 2）。照片墙格子接近视口时请求 grid，图片加载完成前显示稳定的底色占位，成功加载后淡入。同一资产、同一档位的并发生成由 <code>in-flight Map</code> 去重。</p>
 <div class="note"><b>性能取舍：移除独立 blur 档</b>：blur 小图虽小，生成时仍需读取、解码源媒体并缩放/编码；若与 grid 到达间隔很短，额外占位的视觉收益有限。本实现已移除独立 blur 档：后台队列只预热 grid，格子先显示底色，待 grid 图片加载成功后淡入；扫描时会清理旧的 <code>cache/thumbs/blur/</code> 缓存。详情页仍可复用 grid 图并通过 CSS 模糊作为临时占位，不会额外生成或请求 blur 文件。</div>
 
 <h3>3.5 视频播放与转码（关键风险点）</h3>
@@ -390,7 +390,7 @@ F:\iPhone\icloud-app\
 │  │  ├─ db/schema.ts, index.ts  <span class="c"># SQLite 建表 + WAL 连接（better-sqlite3）</span>
 │  │  ├─ metadata/index.ts   <span class="c"># exifr（EXIF/GPS/Orientation）+ ffprobe（视频时长）</span>
 │  │  ├─ scanner/index.ts, watcher.ts  <span class="c"># 目录扫描、实况配对（目录+基名）、UPSERT 幂等入库；chokidar 热监听（P2+-1）</span>
-│  │  ├─ pipeline/           <span class="c"># thumbnails（grid/detail 懒生成）+ queue（前台优先/后台并发 1）+ in-flight 去重</span>
+│  │  ├─ pipeline/           <span class="c"># thumbnails（grid/detail 懒生成）+ queue（交互/后台共享最多 8 并发）+ in-flight 去重</span>
 │  │  └─ routes/             <span class="c"># assets（cursor + offset 区间）/ thumb / video（Range 206）/ stats（含 /api/dates）/ search（FTS5）/ info（EXIF 详情）</span>
 │  ├─ scripts/               <span class="c"># install-ffmpeg-full.ps1（HEIC 解码）+ fix-asset-size.ts（宽高修正）+ rebuild-orientation-thumbs.ts（方向缓存重建）</span>
 │  ├─ vendor/                <span class="c"># BtbN ffmpeg full 版（含 libheif）</span>
@@ -438,7 +438,7 @@ F:\iPhone\icloud-app\
 <tr><td>detail 缩略图全量</td><td><b>~3GB</b></td><td>1600px WebP ≈ 250KB；建议只按需生成近期浏览，磁盘充足可全量</td></tr>
 <tr><td>视频封面帧</td><td><b>~0.19GB</b></td><td>≈ 60KB × 3,175</td></tr>
 <tr><td>首次全量入库</td><td><b>5~15 分钟</b></td><td>约 2 万文件扫描 + EXIF（并发 8）</td></tr>
-<tr><td>缩略图全量预热</td><td><b>耗时视资源量而定</b></td><td>后台并发 1；用户浏览活动时暂停启动新任务，空闲 30 秒后继续。优先保障交互流畅度，缓存可逐步补齐。</td></tr>
+<tr><td>缩略图全量预热</td><td><b>耗时视资源量而定</b></td><td>空闲时后台可使用最多 8 个并发槽位；浏览活动时暂停派发新后台任务，释放的槽位优先处理交互请求，空闲 30 秒后恢复后台补图。</td></tr>
 <tr><td>前端内存占用</td><td><b>&lt; 500MB 可控</b></td><td>blob LRU 上限 300MB；虚拟滚动 DOM 节点 ~200 个</td></tr>
 <tr><td>视频拖动响应</td><td><b>即时</b></td><td>Range 请求 + 本地磁盘，seek 延迟毫秒级</td></tr>
 </table>
@@ -448,7 +448,7 @@ F:\iPhone\icloud-app\
 <tr><th>风险</th><th>影响</th><th>对策</th></tr>
 <tr><td>HEVC 视频在 Windows Chrome 无法播放</td><td>部分视频黑屏</td><td>本机实测可播（策略 A 原片直出）；他机缺失 HEVC 扩展时按需转码 H.264（3.5 节策略 B）</td></tr>
 <tr><td>sharp 官方预编译缺 HEVC-HEIC 解码插件</td><td>HEIC 缩略图生成失败（<b>已触发并解决</b>）</td><td>BtbN ffmpeg full 版（libheif）解码 → sharp 缩放；脚本固化进 postinstall（见 §9）</td></tr>
-<tr><td>1.3 万项首次全量生成时间长</td><td>浏览初期缩略图缺失</td><td>懒生成 + 后台低并发队列（并发 1，浏览活动时暂停）+ 交互队列（并发 2）+ in-flight 去重；冷生成 0.68s 现场兜底，热缓存 25ms</td></tr>
+<tr><td>1.3 万项首次全量生成时间长</td><td>浏览初期缩略图缺失</td><td>懒生成 + 后台/交互共享最多 8 个槽位，浏览时暂停派发后台新任务，已运行任务完成后交互请求优先使用空槽 + in-flight 去重</td></tr>
 <tr><td>浏览器 blob 对象堆积</td><td>内存涨、卡顿</td><td>LRU 上限 + 卸载视口外 blob（revokeObjectURL）；本地直接用 img + HTTP 缓存，blob 场景少</td></tr>
 <tr><td>目录变更（新增/删除照片）</td><td>数据过期</td><td>chokidar 热监听（防抖 1.5s 自动同步）✅ + 启动全量同步 ✅ + 仅完整遍历后删除对账 ✅ + 前端轮询并在扫描结束后刷新照片墙 ✅ + 手动重扫（POST /api/scan）</td></tr>
 <tr><td>调试扫描截断文件清单</td><td>误把未扫描资产判定为孤儿并删除</td><td><code>SCAN_LIMIT&gt;0</code> 时跳过删除对账；仅全量扫描才根据完整磁盘清单清理孤儿</td></tr>

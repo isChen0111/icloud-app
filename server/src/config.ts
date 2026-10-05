@@ -40,10 +40,8 @@ export const config = {
   /** 缩略图质量（WebP） */
   thumbQuality: { grid: 80, detail: 82 } as const,
 
-  /** 与当前浏览无关的后台预览图并发数；有浏览活动时暂停启动新任务 */
-  thumbConcurrency: 1,
-  /** 当前浏览触发的预览图并发数 */
-  interactiveThumbConcurrency: 2,
+  /** 后台补图与用户请求共享的预览图最大并发数 */
+  thumbConcurrency: 8,
 
   /** 视频封面抽取时间点（秒） */
   videoPosterSeek: 1,

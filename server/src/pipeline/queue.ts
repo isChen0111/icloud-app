@@ -1,9 +1,10 @@
 /**
  * 任务队列（p-queue）
  *
- * 缩略图生成是 CPU/IO 混合任务，必须限制并发，避免后台补图影响用户浏览。
- * - 后台补图低并发运行；用户有浏览活动时暂停启动新的后台任务。
- * - 用户当前请求使用独立的有限并发队列，避免网格并发请求打满机器。
+ * 后台和交互任务共享一个总并发预算：
+ * - 空闲时后台最多使用全部并发；浏览活动时停止派发新的后台任务。
+ * - 后台已启动的任务不强制中断；其槽位释放后优先交给交互请求。
+ * - 交互和后台任务总运行数始终不超过配置上限。
  * - 同一资产重复入队：用 Set 去重（懒生成 + 滚动浏览时同一张图可能被反复请求）。
  */
 import PQueue from 'p-queue'
@@ -11,11 +12,41 @@ import { config } from '../config.js'
 import { ensureThumbnail } from './thumbnails.js'
 
 const queue = new PQueue({ concurrency: config.thumbConcurrency })
-const interactiveQueue = new PQueue({ concurrency: config.interactiveThumbConcurrency })
+const interactiveQueue = new PQueue({ concurrency: config.thumbConcurrency })
 const queued = new Map<string, Set<number>>() // 去重键 → 等待该任务结果的批次
 const browsingLeaseMs = 30_000
 let browsingUntil = 0
 let resumeTimer: NodeJS.Timeout | undefined
+let concurrencyUpdateScheduled = false
+
+function updateQueueConcurrency(): void {
+  const maxConcurrency = config.thumbConcurrency
+  const backgroundConcurrency = Math.max(1, maxConcurrency - interactiveQueue.pending)
+  const interactiveConcurrency = Math.max(1, maxConcurrency - queue.pending)
+
+  queue.concurrency = backgroundConcurrency
+  interactiveQueue.concurrency = interactiveConcurrency
+
+  if (Date.now() < browsingUntil || maxConcurrency <= interactiveQueue.pending) queue.pause()
+  else void queue.start()
+
+  if (maxConcurrency <= queue.pending) interactiveQueue.pause()
+  else void interactiveQueue.start()
+}
+
+function scheduleConcurrencyUpdate(): void {
+  if (concurrencyUpdateScheduled) return
+  concurrencyUpdateScheduled = true
+  queueMicrotask(() => {
+    concurrencyUpdateScheduled = false
+    updateQueueConcurrency()
+  })
+}
+
+queue.on('active', scheduleConcurrencyUpdate)
+queue.on('next', scheduleConcurrencyUpdate)
+interactiveQueue.on('active', scheduleConcurrencyUpdate)
+interactiveQueue.on('next', scheduleConcurrencyUpdate)
 
 export interface ThumbnailProgress {
   status: 'idle' | 'preparing' | 'done'
@@ -79,6 +110,7 @@ export function getThumbnailProgress(): ThumbnailProgress {
 export function markThumbnailBrowsing(leaseMs = browsingLeaseMs): void {
   browsingUntil = Date.now() + leaseMs
   queue.pause()
+  updateQueueConcurrency()
   if (resumeTimer) clearTimeout(resumeTimer)
   scheduleBackgroundResume()
 }
@@ -87,14 +119,14 @@ function scheduleBackgroundResume(): void {
   const remaining = browsingUntil - Date.now()
   if (remaining <= 0) {
     resumeTimer = undefined
-    void queue.start()
+    updateQueueConcurrency()
     return
   }
   resumeTimer = setTimeout(scheduleBackgroundResume, remaining)
   resumeTimer.unref()
 }
 
-/** 将直接由浏览页面触发的缩略图生成限制在两个并发内。 */
+/** 将直接由浏览页面触发的任务放入共享队列，并优先于剩余后台任务执行。 */
 export function runInteractiveThumbnail<T>(task: () => Promise<T>): Promise<T> {
   markThumbnailBrowsing()
   let result: T
@@ -108,6 +140,7 @@ export function runInteractiveThumbnail<T>(task: () => Promise<T>): Promise<T> {
  * 调用方可并发触发多次，内部自动去重。
  */
 export function enqueueAsset(item: EnqueueItem, priority: 'background' | 'user' = 'background'): void {
+  if (priority === 'user') markThumbnailBrowsing()
   const size = 'grid'
   const key = `${item.id}:${size}`
   const batchId = thumbnailBatchId
@@ -132,6 +165,7 @@ export function enqueueAsset(item: EnqueueItem, priority: 'background' | 'user' 
       })
       .finally(() => queued.delete(key)),
   )
+  updateQueueConcurrency()
 }
 
 function recordThumbnailResult(batchId: number, succeeded: boolean): void {

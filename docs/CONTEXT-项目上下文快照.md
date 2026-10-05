@@ -1,6 +1,6 @@
 # 项目上下文快照（供会话压缩/新会话恢复用）
 
-> 生成日期：2026-09-08；最后同步：2026-10-05（首次启动照片墙填充 + 资源状态顶栏、预览图失败清单/重试/忽略提醒）。若本会话上下文被压缩或丢失，先读本文件 + 架构设计文档 + README，即可恢复全部关键信息。
+> 生成日期：2026-09-08；最后同步：2026-10-06（缩略图动态并发 + 首次启动照片墙填充 + 资源状态顶栏、预览图失败清单/重试/忽略提醒）。若本会话上下文被压缩或丢失，先读本文件 + 架构设计文档 + README，即可恢复全部关键信息。
 
 ## 项目目标与现状
 - 用户已用 iCloudPD 把 iCloud 照片全部拉到本地（`F:\iPhone\icloud-app\iCloudPhoto\`，源文件：12,591 资产 = 照片 1,982 + 实况 7,434 + 视频 3,175，162.8GB，约 2 万媒体文件）。
@@ -42,7 +42,7 @@
 - 关键统计：orientation=6 共 6,853 张（photo+live），orientation=1 共 1,905；非 HEIC + orientation 2~8 = 103 张（方向重建范围）。
 
 ## 技术选型（已定）
-- 后端：Node 24（用户 D:\nodejs）+ TypeScript + Fastify 5 + better-sqlite3 13.0.3（包内平台预编译，lockfile 需保留 `gypfile:false`）+ exifr + sharp 0.35 + vendor ffmpeg spawn（BtbN full / libheif）+ p-queue（浏览交互并发 2；后台补图并发 1，浏览活动时暂停）
+- 后端：Node 24（用户 D:\nodejs）+ TypeScript + Fastify 5 + better-sqlite3 13.0.3（包内平台预编译，lockfile 需保留 `gypfile:false`）+ exifr + sharp 0.35 + vendor ffmpeg spawn（BtbN full / libheif）+ p-queue（交互与后台共享最多 8 个并发槽位；有浏览活动时暂停派发后台任务，空槽优先处理交互请求）
 - 前端：Vue 3.5 + Vite + TS + Pinia + vue-router(hash) + @tanstack/vue-virtual + 自研 useLazyImage（IntersectionObserver）
 - 缩略图档：grid 320px / detail 1600px WebP；视频封面 ffmpeg 抽帧。扫描后只后台预热 grid；照片墙格子先显示底色，grid 图片加载成功后淡入；已废弃的 blur 缓存由扫描清理
 - 端口：后端 127.0.0.1:8899，前端 http://localhost:5173（Vite 绑 IPv6，勿用 127.0.0.1:5173）
