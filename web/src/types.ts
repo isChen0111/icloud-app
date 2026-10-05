@@ -86,6 +86,14 @@ export interface Stats {
   totalBytes: number
   totalSizeGB: number
   thumbQueue: number
+  thumbnails: {
+    status: 'idle' | 'preparing' | 'done'
+    total: number
+    processed: number
+    completed: number
+    pending: number
+    failed: number
+  }
   scan: {
     status: 'idle' | 'scanning' | 'done' | 'error'
     runId: number

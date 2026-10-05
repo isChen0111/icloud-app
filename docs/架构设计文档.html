@@ -342,9 +342,12 @@ CREATE VIRTUAL TABLE assets_fts USING fts5(filename, location_text);
 <h3>4.9 P2+-1 目录热监听 + 删除对账 + 启动同步（已落地，一键拉取仍待开发）</h3>
 <ul>
 <li><b>热监听（scanner/watcher.ts）</b>：chokidar 监听 <code>iCloudPhoto/</code> 目录树——<code>ignoreInitial</code>（启动时已有文件不触发，由启动同步负责）+ <code>awaitWriteFinish 2s</code>（拷贝完成才视为落盘）+ 忽略隐藏文件；add/change/unlink/unlinkDir 任一事件 → 防抖 1.5s 合并 → 触发一次 <code>runScan('watcher')</code>（幂等增量）。扫描互斥：扫描中延后 2s 补一次（dirty 标志）。</li>
-<li><b>删除对账</b>：runScan 末尾「磁盘文件集合 vs DB 资产集合」——只有根目录和所有可见子目录都成功读取时才根据缺失路径清理资产记录 + FTS 索引 + 缩略图缓存；任一目录读取失败则保留所有数据库记录并跳过本次删除对账。完整扫描后再清理孤儿缩略图。</li>
+<li><b>删除/配对对账</b>：runScan 末尾按配对后的主资产路径核对 DB——只有根目录和所有可见子目录都成功读取时才清理已删除资产，或清除已从独立视频转为实况附件的旧视频记录及 FTS/缩略图缓存；配对 MOV 仍在磁盘但不作为照片墙独立资产。任一目录读取失败则保留数据库记录并跳过本次对账。完整扫描后再清理孤儿缩略图。</li>
 <li><b>启动同步</b>：index.ts 启动即后台 <code>runScan('startup')</code>（不 await 不阻塞），手动拷入的文件开机即被发现。</li>
 <li><b>扫描期间刷新</b>：前端保留每 5 秒一次的 <code>/api/stats</code> 轮询，但扫描期间不因资产数变化自动刷新照片墙，避免清空已加载页并导致格子/缩略图反复重载；用户可手动刷新查看已入库内容。扫描完成或失败后自动做一次最终刷新，并尽量保留滚动位置。为避免事件推送和高频重查带来额外复杂度，当前不使用 WebSocket/SSE。</li>
+<li><b>顶部资源状态</b>：顶栏保持单行摘要（状态 + 照片/视频数），点击后展开浮层详情，不改变照片墙布局高度。扫描中显示旋转图标、已检查媒体文件数和当前已入库资产数，不显示百分比或扫描总量；扫描完成显示勾号及最终文件数；失败用警告状态和错误说明。照片数 = 普通照片 + 实况照片，视频数只计独立视频、不含实况配对 MOV。</li>
+<li><b>预览图任务统计口径</b>：扫描期间不显示预览图百分比/总量，可提示浏览中的项目按需生成、其余扫描后入队。删除对账完成后，以仍在库中且 <code>thumb_status='pending'</code> 的 grid 预览图任务，加上既有 <code>error</code> 项作为本轮总量；既有失败项不自动重试，计入失败和已处理。成功/失败的队列任务结束时递增已处理，待处理 = 尚未结束的队列任务；百分比 = 已处理（成功 + 失败）/ 总量。每轮扫描重置前轮显示，等待扫描后任务总量确定再呈现。<code>/api/stats</code> 的 <code>thumbnails</code> 返回 status/total/processed/completed/pending/failed。</li>
+<li><b>顶部状态交互实现</b>：默认只显示一行摘要；详情浮层分“照片库扫描”和“预览图准备”两行。扫描中的预览图行不展示进度；扫描结束后再展示处理进度条与已处理、已生成、待处理、失败数量。没有待生成任务时显示“预览图已就绪”；失败数量单独强调，不以成功状态掩盖。</li>
 <li><b>临时帧回收</b>：视频/HEIC 缩略图生成时使用 <code>cache/tmp/</code> 下的 PNG 临时帧，正常完成后即时删除；后端启动时额外清理符合流水线文件名规则且超过 24 小时的残留文件。</li>
 </ul>
 
@@ -365,6 +368,7 @@ CREATE VIRTUAL TABLE assets_fts USING fts5(filename, location_text);
 <li><b>徽标体系</b>：标题「iCloud本地照片」+ favicon；网格/详情 LIVE 胶囊（详情按住播放时徽标内旋转加载动画）；视频时长胶囊（右下黑底，≥1h 显示 1:02:03）；详情页「按住播放」毛玻璃胶囊 + 手势图标 + 按住淡出；HDR 未做（实测库内仅 1 张含 GainMap）。</li>
 <li><b>详情页渐进显示</b>：grid 档经 CSS 模糊作为占位 → detail 档淡入覆盖（<code>@load</code> 后 0.3s opacity 过渡）；实况静止帧 / 视频 poster 同款；占位图 <code>object-fit: contain</code> + 无 scale（iCloud 简洁式完整画面）。</li>
 <li><b>详情页顶栏信息</b>：拍摄时间（「2026年8月31日 15:45」）+ 序号/总数（「1/1 项」）+ 信息按钮（iCloud 信息抽屉：EXIF/ffprobe 实时解析）。</li>
+<li><b>资源状态顶栏</b>：单行状态摘要 + 点击展开浮层详情；扫描只展示已检查文件数，完成后才展示预览图任务百分比和已处理/已生成/待处理/失败数量。扫描文件数按磁盘媒体文件计，照片/视频数按入库资产计，实况的配对 MOV 只属于对应照片、不重复计入视频数。</li>
 </ul>
 
 <h2>5. 项目结构（已落地）</h2>
@@ -410,7 +414,7 @@ F:\iPhone\icloud-app\
 <tr><td><span class="tag blue">稳定化（2026-09-08）</span></td><td>代码审查 P1×5 + P2×7 共 12 项问题全部修复：stats 异步体积统计+落盘缓存（首屏 229ms）、原图宽高 11,009 条全量修正（fix-size）、EXIF 方向缩略图重建（fix-thumbs 103 张）、浏览器缩略图缓存失效链路（thumbUrl rev 版本号 + 响应头去 immutable）、实况按住播放带原声 + id 变化重置 + 静音兜底、详情/搜索竞态守卫、扫描断点续跑容错</td><td>全量回归通过（网格/详情/实况/视频/搜索/日期定位）；git 私有仓库 + GitHub 远程（isChen0111/icloud-app），每次修复提交推送</td><td><span class="tag green">✅ 已验收</span></td></tr>
 <tr><td><span class="tag blue">扫描配对修复（2026-09-08 二次）</span></td><td><b>跨目录同名文件坑</b>（详见 §3.2 callout）：iCloudPD 把同名文件（不同设备/编辑版本）归档进不同日期目录，早期按「文件名基名」配对导致实况配对错乱、3,382 个视频被静默丢弃。修复：配对 key 改为「目录 + 基名」+ 增量扫描复用元数据仅修正 type/live_video。重扫后 11,009 → 12,591 资产（photo 1,982 / live 7,434 / video 3,175），与磁盘文件精确一致；与 iCloud 统计基本对齐（照片 9,416≈9,419，视频 3,175≈3,033）</td><td>全量重扫完成；实况配对跨目录 0、live 配对视频磁盘缺失 0、video 文件磁盘缺失 0；缩略图缓存孤儿 0</td><td><span class="tag green">✅ 已修复</span></td></tr>
 <tr><td><span class="tag blue">P2+-1 同步与热更新（2026-09-17 部分落地）</span></td><td>目录热监听（chokidar 防抖合并 + 扫描互斥 + 忽略初始事件）✅<br>完整扫描后删除对账；遍历不完整则保留数据库记录 ✅<br>启动同步 + 扫描结束后刷新照片墙 ✅<br>客户端删除 + 磁盘删除失败反馈 ✅<br>一键拉取：前端按钮 → 后端 spawn <b>icloudpd 官方 exe</b>（<code>icloudpd-1.32.3-windows-amd64.exe</code>，14.4MB，<b>免 Python</b>，已核验官方 Release 提供；exe 由首次启动脚本自动下载到 <code>iCloudTool\bin\</code>，gitignore 排除）——<b>待开发</b></td><td>手动拷文件自动入库；手动删文件自动清资产+缓存；点按钮拉取 iCloud → 增量入库</td><td><span class="tag green">✅ 热监听/对账/启动同步/客户端删除已合并</span><br><span class="tag orange">一键拉取待开发</span></td></tr>
-<tr><td><span class="tag blue">P2+-2 冷启动体验（部分完成）</span></td><td>按目录日期新到旧处理媒体；扫描期间只轮询状态、不自动刷新照片墙，结束或失败后最终刷新一次，用户可手动提前查看已入库内容；仍待开发：顶部详细扫描/缩略图预热进度展示</td><td>较新照片尽早入库；避免扫描中刷新造成已加载缩略图反复重载；扫描结束后照片墙自动更新</td><td><span class="tag green">✅ 扫描顺序与刷新策略已验证</span><br><span class="tag orange">顶部进度展示待开发</span></td></tr>
+<tr><td><span class="tag blue">P2+-2 冷启动体验（部分完成）</span></td><td>按目录日期新到旧处理媒体；扫描期间只轮询状态、不自动刷新照片墙，结束或失败后最终刷新一次；顶栏以单行摘要 + 浮层详情显示扫描及预览图任务口径</td><td>较新照片尽早入库；避免扫描中刷新造成已加载缩略图反复重载；状态计数口径一致，扫描结束后照片墙自动更新</td><td><span class="tag green">✅ 扫描顺序/刷新策略/状态 API 与 UI 已实现并验证</span><br><span class="tag orange">待用户界面验收</span></td></tr>
 <tr><td><span class="tag gray">P2+-3 语义搜索（已评估，暂缓）</span></td><td>语义搜索（人物/地点/场景任意组合，如「邓州 2023 年 陈咏新」）：<b>不连大模型</b>——face-api.js + tfjs-node 本地人脸检测/embedding → 特征聚类成 person → 一次性命名；地点/场景由 EXIF GPS（逆地理作为语义搜索的组成部分）+ 标签表补充；查询解析器把「时间/地点/人物」分词组合检索。视频抽帧入人脸库。语义标签写入独立 asset_tags 表（<b>不写文件元数据</b>，避免污染原片）</td><td>搜索"陈咏新" / "1岁的陈咏新" / "邓州2023年陈咏新" 命中正确子集</td><td><span class="tag gray">⏸ 用户已确认暂缓</span></td></tr>
 <tr><td><span class="tag gray">P2+-4 详情缓存治理（可选项，已列入）</span></td><td>detail 档大图（~250KB/张，全浏览约 2.7GB）是永久缓存无自动清理。两个可选治理：<b>① 保留最近 N 个月浏览过的 detail 图</b>——按 detail 档的最近访问时间（新增字段或 mtime）定期清理更旧的缓存；<b>② 一键清空 detail 缓存</b>——前端按钮/脚本删 <code>server/cache/thumbs/detail/</code>，下次浏览按需重新生成。grid 档缓存体积较小</td><td>detail 缓存体积可控；清空后浏览正常（懒生成自动重建）</td><td><span class="tag orange">已列入，待排期</span></td></tr>
 <tr><td><span class="tag blue">2026-09-17 / 2026-10-01 代码审查与稳健性修复</span></td><td>既有 B1–B5 修复已合并 main；本次补充：目录遍历不完整时跳过删除对账、扫描完成后刷新照片墙、删除失败明确反馈、分页 limit 校验、开发 CORS 来源白名单、视频封面缓存版本、启动时清理过期临时帧；同步相关代码注释与文档</td><td>不完整扫描不误清数据库；新增/移除文件无需手动刷新；删除反馈反映源文件状态</td><td><span class="tag orange">本次修改待验证</span></td></tr>
