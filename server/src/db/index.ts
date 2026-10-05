@@ -25,6 +25,14 @@ export function getDb(): Database.Database {
   db.pragma('synchronous = NORMAL') // 平衡持久性与性能
   db.exec(SCHEMA_SQL)
 
+  const assetColumns = new Set(
+    (db.prepare(`PRAGMA table_info(assets)`).all() as { name: string }[]).map((column) => column.name),
+  )
+  if (!assetColumns.has('thumb_error')) db.exec(`ALTER TABLE assets ADD COLUMN thumb_error TEXT`)
+  if (!assetColumns.has('thumb_ignored')) {
+    db.exec(`ALTER TABLE assets ADD COLUMN thumb_ignored INTEGER NOT NULL DEFAULT 0`)
+  }
+
   // —— FTS5 索引一致性回填 ——
   // 场景：每次启动（schema DROP+CREATE 后必为空）、扫描中断等。
   // 对比行数：不一致则全量重建（11k 行毫秒级，扫描入库后正常状态两侧相等）。

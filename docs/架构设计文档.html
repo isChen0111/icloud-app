@@ -228,6 +228,8 @@ CREATE TABLE assets (
   location_text TEXT,                        <span class="c">-- 可选逆地理编码结果</span>
   live_video    TEXT,                        <span class="c">-- 实况配对 MOV 的 file_path</span>
   thumb_status  TEXT DEFAULT 'pending',      <span class="c">-- pending|done|error</span>
+  thumb_error   TEXT,                        <span class="c">-- 最近一次网格预览图失败原因</span>
+  thumb_ignored INTEGER NOT NULL DEFAULT 0,   <span class="c">-- 是否从待处理提醒中忽略</span>
   detail_status TEXT DEFAULT 'pending',
   transcode_status TEXT DEFAULT 'none',      <span class="c">-- none|queued|done|error</span>
   checksum      TEXT
@@ -346,8 +348,9 @@ CREATE VIRTUAL TABLE assets_fts USING fts5(filename, location_text);
 <li><b>启动同步</b>：index.ts 启动即后台 <code>runScan('startup')</code>（不 await 不阻塞），手动拷入的文件开机即被发现。</li>
 <li><b>扫描期间刷新</b>：前端保留每 5 秒一次的 <code>/api/stats</code> 轮询，但扫描期间不因资产数变化自动刷新照片墙，避免清空已加载页并导致格子/缩略图反复重载；用户可手动刷新查看已入库内容。扫描完成或失败后自动做一次最终刷新，并尽量保留滚动位置。为避免事件推送和高频重查带来额外复杂度，当前不使用 WebSocket/SSE。</li>
 <li><b>顶部资源状态</b>：顶栏保持单行摘要（状态 + 照片/视频数），点击后展开浮层详情，不改变照片墙布局高度。扫描中显示旋转图标、已检查媒体文件数和当前已入库资产数，不显示百分比或扫描总量；扫描完成显示勾号及最终文件数；失败用警告状态和错误说明。照片数 = 普通照片 + 实况照片，视频数只计独立视频、不含实况配对 MOV。</li>
-<li><b>预览图任务统计口径</b>：扫描期间不显示预览图百分比/总量，可提示浏览中的项目按需生成、其余扫描后入队。删除对账完成后，以仍在库中且 <code>thumb_status='pending'</code> 的 grid 预览图任务，加上既有 <code>error</code> 项作为本轮总量；既有失败项不自动重试，计入失败和已处理。成功/失败的队列任务结束时递增已处理，待处理 = 尚未结束的队列任务；百分比 = 已处理（成功 + 失败）/ 总量。每轮扫描重置前轮显示，等待扫描后任务总量确定再呈现。<code>/api/stats</code> 的 <code>thumbnails</code> 返回 status/total/processed/completed/pending/failed。</li>
-<li><b>顶部状态交互实现</b>：默认只显示一行摘要；详情浮层分“照片库扫描”和“预览图准备”两行。扫描中的预览图行不展示进度；扫描结束后再展示处理进度条与已处理、已生成、待处理、失败数量。没有待生成任务时显示“预览图已就绪”；失败数量单独强调，不以成功状态掩盖。</li>
+<li><b>预览图任务统计口径</b>：扫描期间不显示预览图百分比/总量，可提示浏览中的项目按需生成、其余扫描后入队。删除对账完成后，以仍在库中且 <code>thumb_status='pending'</code> 的 grid 预览图任务，加上未忽略的既有 <code>error</code> 项作为本轮总量；既有失败项不自动重试，计入失败和已处理。成功/失败的队列任务结束时递增已处理，待处理 = 尚未结束的队列任务；百分比 = 已处理（成功 + 失败）/ 总量。忽略项不再计入待处理提醒；重试会将其重新入队。<code>/api/stats</code> 的 <code>thumbnails</code> 返回 status/total/processed/completed/pending/failed。</li>
+<li><b>顶部状态交互实现</b>：默认只显示一行摘要；详情浮层分“照片库扫描”和“预览图准备”两行。扫描中的预览图行不展示进度；扫描结束后再展示处理进度条与已处理、已生成、待处理、失败数量。失败数是可点击入口，打开失败清单，可查看文件路径和失败原因、逐项或批量重试、忽略/恢复提醒。忽略仅关闭待处理提醒，不会删除源文件；旧记录若没有持久化错误原因会明确显示未记录。每次统计轮询都按数据库当前未忽略的失败状态同步失败数，并以“已处理 - 当前失败数”校正已生成数，使照片墙按需重试成功后顶栏与失败清单保持一致。没有待生成任务时显示“预览图已就绪”。</li>
+<li><b>失败记录与恢复 API</b>：<code>assets.thumb_error</code> 记录最近一次网格预览图生成失败原因（最长 1000 字符），<code>thumb_ignored</code> 持久化用户的忽略状态；既有数据库启动时通过列检查补齐字段，旧失败记录没有原因时由 UI 提示“失败时未记录详细原因”。<code>GET /api/thumbnails/failed</code> 返回待处理与已忽略失败项；<code>POST /api/thumbnails/retry</code> 支持指定 ID 或全部待处理项；<code>POST /api/thumbnails/ignore</code> 支持忽略或恢复提醒。扫描或预览图批次进行时，修改请求返回 409，避免改变批次统计。</li>
 <li><b>临时帧回收</b>：视频/HEIC 缩略图生成时使用 <code>cache/tmp/</code> 下的 PNG 临时帧，正常完成后即时删除；后端启动时额外清理符合流水线文件名规则且超过 24 小时的残留文件。</li>
 </ul>
 

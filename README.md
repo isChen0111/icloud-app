@@ -119,6 +119,9 @@ npm run start
 | GET | /api/video/:id/stream | 视频流（HTTP Range） |
 | GET | /api/video/:id/poster | 视频封面帧 |
 | GET | /api/stats | 库统计 + 扫描进度 + 预览图任务计数（扫描时只报已检查文件数；扫描结束后提供预览图总量/已处理/已生成/待处理/失败） |
+| GET | /api/thumbnails/failed | 预览图失败文件清单及待处理/已忽略数量 |
+| POST | /api/thumbnails/retry | 重试指定失败项或全部待处理失败项（body: `{ ids }` 或 `{ all: true }`） |
+| POST | /api/thumbnails/ignore | 忽略或恢复失败提醒（body: `{ ids, ignored }` 或 `{ all: true, ignored }`） |
 | POST | /api/scan | 触发扫描 |
 | GET | /api/dates | 年月分组：{ ym, label, count, offset, thumbId }（offset=该月首资产全局位置） |
 | GET | /api/search?q=&limit=&offset= | FTS5 全文搜索（文件名/日期子串，至少 3 字符；返回 total 真实计数 + months 匹配集月份分组 + offset 匹配流分页，搜索结果照片墙化） |
@@ -128,7 +131,7 @@ npm run start
 
 - 按日期浏览照片、实况照片和视频，支持搜索、日期跳转和详情浏览。
 - 照片墙采用虚拟滚动和图片懒加载，适合浏览较大的本地照片库。
-- 顶栏资源状态提供照片库扫描数量和预览图后台处理进度；扫描文件数与照片/视频资产数分别按文件和入库资产统计。
+- 顶栏资源状态提供照片库扫描数量和预览图后台处理进度；扫描文件数与照片/视频资产数分别按文件和入库资产统计。失败项可点击查看原因、单项/批量重试或忽略提醒；忽略不会删除原文件，且可随时恢复提醒。
 - 实况照片可按住播放；视频支持封面预览和流式播放。
 - 照片库目录发生变化后会自动同步；删除照片是永久操作，源文件无法从应用恢复。
 - 深浅主题和照片墙缩放设置会保存在当前浏览器中。

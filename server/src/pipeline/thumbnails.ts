@@ -7,7 +7,7 @@
  * - poster：视频封面帧（ffmpeg 抽第 1 秒，再经 sharp 压成 320px WebP）
  *
  * 缓存路径：cache/thumbs/<size>/<assetId>.webp
- * 生成后把 assets 表对应 status 置为 done；失败置 error 并留日志。
+ * 生成后把 assets 表对应 status 置为 done；网格预览图失败时持久化原因。
  */
 import fs from 'node:fs'
 import path from 'node:path'
@@ -98,12 +98,12 @@ async function generate(assetId: number, size: ThumbSize): Promise<string | null
   if (!row) return null
 
   const abs = path.join(config.libraryRoot, row.file_path)
-  if (!fs.existsSync(abs)) return null
 
   const target = config.thumbSizes[size]
   const quality = config.thumbQuality[size]
 
   try {
+    if (!fs.existsSync(abs)) throw new Error('源文件不存在或无法访问')
     fs.mkdirSync(path.dirname(outPath), { recursive: true })
 
     if (row.type === 'video') {
@@ -141,15 +141,21 @@ async function generate(assetId: number, size: ThumbSize): Promise<string | null
     }
 
     // 更新状态（detail 生成成功时也顺带记录宽高兜底）
-    if (size === 'grid') db.prepare(`UPDATE assets SET thumb_status='done' WHERE id=?`).run(assetId)
+    if (size === 'grid') {
+      db.prepare(`UPDATE assets SET thumb_status='done', thumb_error=NULL, thumb_ignored=0 WHERE id=?`).run(assetId)
+    }
     if (size === 'detail') db.prepare(`UPDATE assets SET detail_status='done' WHERE id=?`).run(assetId)
     return outPath
   } catch (err) {
-    console.error(`[thumb] 生成失败 asset=${assetId} size=${size}`, (err as Error).message)
+    const message = err instanceof Error ? err.message : String(err)
+    console.error(`[thumb] 生成失败 asset=${assetId} size=${size}`, message)
     // 兜底（审查 #7）：删除可能留下的 0 字节/半成品文件——否则 ensureThumbnail 的
     // existsSync 会把"存在"的坏文件永久当有效返回，修复后也不会重新生成
     fs.rmSync(outPath, { force: true })
-    if (size === 'grid') db.prepare(`UPDATE assets SET thumb_status='error' WHERE id=?`).run(assetId)
+    if (size === 'grid') {
+      db.prepare(`UPDATE assets SET thumb_status='error', thumb_error=?, thumb_ignored=0 WHERE id=?`)
+        .run(message.slice(0, 1000), assetId)
+    }
     return null
   }
 }

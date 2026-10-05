@@ -4,13 +4,36 @@
  * 所有后端请求集中在这里，页面组件只调用这些函数。
  * 返回类型统一用 Promise<T>，失败抛错由调用方处理。
  */
-import type { AssetDetail, AssetDto, AssetInfo, MonthGroup, PageResult, SearchResult, Stats, ThumbSize } from '../types'
+import type {
+  AssetDetail,
+  AssetDto,
+  AssetInfo,
+  MonthGroup,
+  PageResult,
+  SearchResult,
+  Stats,
+  ThumbnailFailuresResult,
+  ThumbSize,
+} from '../types'
 
 const BASE = '/api'
 
 async function get<T>(path: string): Promise<T> {
   const res = await fetch(`${BASE}${path}`)
   if (!res.ok) throw new Error(`API ${path} → ${res.status}`)
+  return res.json() as Promise<T>
+}
+
+async function post<T>(path: string, body: unknown): Promise<T> {
+  const res = await fetch(`${BASE}${path}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  if (!res.ok) {
+    const error = (await res.json()) as { error?: unknown }
+    throw new Error(typeof error.error === 'string' ? error.error : `API ${path} → ${res.status}`)
+  }
   return res.json() as Promise<T>
 }
 
@@ -36,6 +59,21 @@ export function fetchAssetInfo(id: number): Promise<AssetInfo> {
 /** 库统计（也返回扫描进度） */
 export function fetchStats(): Promise<Stats> {
   return get<Stats>('/stats')
+}
+
+export function fetchThumbnailFailures(): Promise<ThumbnailFailuresResult> {
+  return get<ThumbnailFailuresResult>('/thumbnails/failed')
+}
+
+export function retryThumbnailFailures(selection: { ids: number[] } | { all: true }): Promise<{ retried: number }> {
+  return post('/thumbnails/retry', selection)
+}
+
+export function setThumbnailFailuresIgnored(
+  selection: { ids: number[] } | { all: true },
+  ignored: boolean,
+): Promise<{ updated: number }> {
+  return post('/thumbnails/ignore', { ...selection, ignored })
 }
 
 /** 年月分组（日期快速定位条数据源） */

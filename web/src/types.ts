@@ -105,6 +105,21 @@ export interface Stats {
   }
 }
 
+export interface ThumbnailFailure {
+  id: number
+  filename: string
+  filePath: string
+  type: AssetType
+  error: string | null
+  ignored: number
+}
+
+export interface ThumbnailFailuresResult {
+  items: ThumbnailFailure[]
+  activeCount: number
+  ignoredCount: number
+}
+
 /** 月份分组（日期快速定位条数据源；offset = 该月首资产在倒序流中的全局位置） */
 export interface MonthGroup {
   ym: string

@@ -395,7 +395,7 @@ export async function runScan(source: 'manual' | 'watcher' | 'startup' = 'manual
     .prepare(`SELECT id, file_path, type, live_video FROM assets WHERE thumb_status = 'pending'`)
     .all() as { id: number; file_path: string; type: string; live_video: string | null }[]
   const failedThumbs = (
-    db.prepare(`SELECT COUNT(*) AS count FROM assets WHERE thumb_status = 'error'`).get() as {
+    db.prepare(`SELECT COUNT(*) AS count FROM assets WHERE thumb_status = 'error' AND thumb_ignored = 0`).get() as {
       count: number
     }
   ).count

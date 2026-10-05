@@ -155,6 +155,18 @@ export async function registerStatsRoutes(app: FastifyInstance): Promise<void> {
     ensureSizeComputed()
     const bytes = totalBytesCache
 
+    const thumbnailProgress = getThumbnailProgress()
+    const activeThumbnailFailures = (
+      db
+        .prepare(`SELECT COUNT(*) AS count FROM assets WHERE thumb_status = 'error' AND thumb_ignored = 0`)
+        .get() as { count: number }
+    ).count
+    const adjustedThumbnailProgress = {
+      ...thumbnailProgress,
+      failed: activeThumbnailFailures,
+      completed: Math.max(0, thumbnailProgress.processed - activeThumbnailFailures),
+    }
+
     return reply.send({
       assets: total,
       photos: counts.photo,
@@ -163,7 +175,7 @@ export async function registerStatsRoutes(app: FastifyInstance): Promise<void> {
       totalBytes: bytes, // null = 后台计算中（前端尚未消费该字段，可安全为 null）
       totalSizeGB: bytes === null ? null : Number((bytes / 1024 ** 3).toFixed(1)),
       thumbQueue: queueSize(),
-      thumbnails: getThumbnailProgress(),
+      thumbnails: adjustedThumbnailProgress,
       scan: { ...scanProgress },
     })
   })
