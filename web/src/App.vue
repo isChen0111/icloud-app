@@ -300,7 +300,7 @@ onBeforeUnmount(() => {
                 }}
               </strong>
               <span v-if="stats?.scan.status === 'scanning'">
-                已检查 {{ numberFormat.format(stats.scan.scannedFiles) }} 个媒体文件；扫描期间不显示百分比。
+                已检查 {{ numberFormat.format(stats.scan.scannedFiles) }} 个媒体文件。
               </span>
               <span v-else-if="stats?.scan.status === 'idle'">后端已连接，正在准备启动照片库检查。</span>
               <span v-else-if="stats?.scan.status === 'error'" class="error-message">
@@ -311,9 +311,19 @@ onBeforeUnmount(() => {
               </span>
               <span v-else>等待后端返回照片库状态。</span>
             </div>
-            <div v-if="stats" class="popover-counts">
-              <b>{{ numberFormat.format(photoCount) }}</b> 张照片<br>
-              <b>{{ numberFormat.format(videoCount) }}</b> 个视频
+            <div v-if="stats" class="popover-count-area">
+              <div class="popover-counts">
+                <b>{{ numberFormat.format(photoCount) }}</b> 张照片<br>
+                <b>{{ numberFormat.format(videoCount) }}</b> 个视频
+              </div>
+              <button
+                class="count-info"
+                type="button"
+                aria-label="照片和视频数量口径说明"
+                data-tooltip="照片数包含普通照片和实况照片；视频数不含实况照片附带的视频片段。"
+              >
+                !
+              </button>
             </div>
           </div>
 
@@ -432,9 +442,6 @@ onBeforeUnmount(() => {
               <span v-else>失败 <b>0</b></span>
             </div>
           </template>
-          <p class="status-footnote">
-            照片数包含普通照片和实况照片；视频数不含实况照片附带的视频片段。
-          </p>
         </section>
       </div>
 
@@ -696,7 +703,6 @@ onBeforeUnmount(() => {
 .heading-copy > span { color: var(--text-2); font-size: 11px; line-height: 1.5; }
 .heading-copy .error-message { color: #d05245; overflow-wrap: anywhere; }
 .popover-counts {
-  flex: 0 0 auto;
   color: var(--text-2);
   font-size: 10px;
   line-height: 1.65;
@@ -704,6 +710,60 @@ onBeforeUnmount(() => {
   white-space: nowrap;
 }
 .popover-counts b { color: var(--text-1); font-size: 11px; }
+.popover-count-area {
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  flex: 0 0 auto;
+}
+.count-info {
+  display: inline-grid;
+  width: 14px;
+  height: 14px;
+  place-items: center;
+  margin-top: 1px;
+  padding: 0;
+  border: 1px solid var(--text-3);
+  border-radius: 50%;
+  background: transparent;
+  color: var(--text-2);
+  font: inherit;
+  font-size: 9px;
+  font-weight: 650;
+  line-height: 1;
+  cursor: help;
+}
+.count-info::after {
+  position: absolute;
+  z-index: 5;
+  top: calc(100% + 8px);
+  right: 0;
+  width: max-content;
+  max-width: min(270px, calc(100vw - 64px));
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-panel);
+  box-shadow: 0 5px 18px rgb(0 0 0 / 16%);
+  color: var(--text-1);
+  content: attr(data-tooltip);
+  font-size: 11px;
+  font-weight: 400;
+  line-height: 1.5;
+  text-align: left;
+  white-space: normal;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(-3px);
+  transition: opacity 0.14s ease, transform 0.14s ease;
+}
+.count-info:hover::after,
+.count-info:focus-visible::after {
+  opacity: 1;
+  transform: translateY(0);
+}
+.count-info:focus-visible { outline: 2px solid #4384ee; outline-offset: 2px; }
 .status-row { display: flex; align-items: center; gap: 10px; padding-top: 13px; }
 .row-icon {
   width: 27px;
@@ -775,12 +835,6 @@ onBeforeUnmount(() => {
 }
 .failure-link b { font: inherit; font-weight: 650; }
 .failure-link:hover { text-decoration: underline; }
-.status-footnote {
-  margin: 11px 0 0 37px;
-  color: var(--text-3);
-  font-size: 9px;
-  line-height: 1.5;
-}
 .failure-backdrop {
   position: fixed;
   z-index: 100;
