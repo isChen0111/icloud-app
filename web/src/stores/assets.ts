@@ -36,6 +36,7 @@ export const useAssetStore = defineStore('assets', () => {
   const failed = reactive(new Set<number>())
   /** 删除等数据变更后，使变更前发出的分页响应失效，避免旧数据回写缓存 */
   let dataVersion = 0
+  let monthsRequestSequence = 0
   let requestSequence = 0
   const activeRequests = new Map<number, number>()
 
@@ -114,10 +115,13 @@ export const useAssetStore = defineStore('assets', () => {
    * 由 GridScroller onMounted / 数据源切换时调用；幂等（已加载页跳过）。
    * 照片墙与搜索结果共用同一入口（各自 store 实现同一接口）。 */
   async function init(): Promise<void> {
+    const requestId = ++monthsRequestSequence
     try {
       const res = await fetchDates()
+      if (requestId !== monthsRequestSequence) return
       initMonths(res.items)
     } catch {
+      if (requestId !== monthsRequestSequence) return
       // 首次拉取失败时保留已有骨架，避免临时网络错误让缓存视图塌空。
     }
     await loadFirstPage()
@@ -125,7 +129,9 @@ export const useAssetStore = defineStore('assets', () => {
 
   /** 扫描完成后刷新骨架和已缓存页，保留用户当前滚动位置。 */
   async function refresh(): Promise<void> {
+    const requestId = ++monthsRequestSequence
     const res = await fetchDates()
+    if (requestId !== monthsRequestSequence) return
     const ranges = new Set([...pages.keys(), ...pageLoading, ...activeRequests.keys()])
     if (ranges.size === 0) ranges.add(0)
 

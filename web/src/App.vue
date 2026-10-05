@@ -121,13 +121,18 @@ async function pollStats(): Promise<void> {
     const scanFinished =
       (scan.status === 'done' || scan.status === 'error') &&
       (scan.runId !== lastScanRunId || lastScanStatus === 'scanning')
+    const galleryNeedsInitialData =
+      scan.status === 'scanning' && nextStats.assets > 0 && assetStore.totalCount === 0
     stats.value = nextStats
     backendReady.value = true
-    if (scanFinished) {
+    if (scanFinished || galleryNeedsInitialData) {
       try {
         await assetStore.refresh()
       } catch (err) {
-        console.error('[app] 扫描后刷新照片墙失败:', err)
+        console.error(
+          scanFinished ? '[app] 扫描后刷新照片墙失败:' : '[app] 扫描期间初始化照片墙失败:',
+          err,
+        )
         return
       }
     }
