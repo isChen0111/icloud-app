@@ -42,7 +42,7 @@
 - 关键统计：orientation=6 共 6,853 张（photo+live），orientation=1 共 1,905；非 HEIC + orientation 2~8 = 103 张（方向重建范围）。
 
 ## 技术选型（已定）
-- 后端：Node 24（用户 D:\nodejs）+ TypeScript + Fastify 5 + better-sqlite3 13.0.3（包内平台预编译，lockfile 需保留 `gypfile:false`）+ exifr + sharp 0.35 + vendor ffmpeg spawn（BtbN full / libheif）+ p-queue（并发 8）
+- 后端：Node 24（用户 D:\nodejs）+ TypeScript + Fastify 5 + better-sqlite3 13.0.3（包内平台预编译，lockfile 需保留 `gypfile:false`）+ exifr + sharp 0.35 + vendor ffmpeg spawn（BtbN full / libheif）+ p-queue（浏览交互并发 2；后台补图并发 1，浏览活动时暂停）
 - 前端：Vue 3.5 + Vite + TS + Pinia + vue-router(hash) + @tanstack/vue-virtual + 自研 useLazyImage（IntersectionObserver）
 - 缩略图档：grid 320px / detail 1600px WebP；视频封面 ffmpeg 抽帧。扫描后只后台预热 grid；照片墙格子先显示底色，grid 图片加载成功后淡入；已废弃的 blur 缓存由扫描清理
 - 端口：后端 127.0.0.1:8899，前端 http://localhost:5173（Vite 绑 IPv6，勿用 127.0.0.1:5173）

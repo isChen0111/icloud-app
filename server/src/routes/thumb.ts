@@ -3,6 +3,8 @@
  *
  * GET /api/thumb/:id?size=grid|detail
  *   - 懒生成：缓存不存在 → 现场生成（sharp/ffmpeg）→ 写盘
+ * POST /api/thumbnails/activity
+ *   - 标记用户浏览活动，暂缓启动无关的后台预览图任务
  *   - 长缓存：缩略图路径含资产 id，可安全长缓存（max-age 1 年）；不用 immutable，
  *     留刷新协商通道（见下方修复注释）
  *   - ETag：基于文件 mtime+size 的弱校验，省重复传输
@@ -10,6 +12,7 @@
 import type { FastifyInstance } from 'fastify'
 import fs from 'node:fs'
 import { getDb } from '../db/index.js'
+import { markThumbnailBrowsing, runInteractiveThumbnail } from '../pipeline/queue.js'
 import { ensureThumbnail, ensureSize, type ThumbSize } from '../pipeline/thumbnails.js'
 
 const VALID_SIZES = new Set<ThumbSize>(['grid', 'detail'])
@@ -22,6 +25,11 @@ function etagFor(filePath: string): string {
 
 export async function registerThumbRoutes(app: FastifyInstance): Promise<void> {
   const db = getDb()
+
+  app.post('/api/thumbnails/activity', async (_req, reply) => {
+    markThumbnailBrowsing()
+    return reply.code(204).send()
+  })
 
   app.get('/api/thumb/:id', async (req, reply) => {
     const { id } = req.params as { id: string }
@@ -38,7 +46,7 @@ export async function registerThumbRoutes(app: FastifyInstance): Promise<void> {
     if (!row) return reply.code(404).send({ error: 'asset not found' })
 
     // 懒生成（内部已处理"已存在则直接返回"）
-    const outPath = await ensureThumbnail(assetId, size)
+    const outPath = await runInteractiveThumbnail(() => ensureThumbnail(assetId, size))
     if (!outPath || !fs.existsSync(outPath)) {
       return reply.code(500).send({ error: 'thumbnail generation failed' })
     }
@@ -83,7 +91,7 @@ export async function registerThumbRoutes(app: FastifyInstance): Promise<void> {
     if (!VALID_SIZES.has(size)) {
       return reply.code(400).send({ error: `size must be one of: ${[...VALID_SIZES].join(',')}` })
     }
-    const outPath = await ensureThumbnail(Number(id), size)
+    const outPath = await runInteractiveThumbnail(() => ensureThumbnail(Number(id), size))
     if (!outPath || !fs.existsSync(outPath)) return reply.code(404).send({ error: 'poster not found' })
     // 长缓存 + ETag 协商（与缩略图同策略：封面内容修复后走 if-none-match 刷新）
     const etag = etagFor(outPath)
