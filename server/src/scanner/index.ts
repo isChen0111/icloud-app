@@ -17,7 +17,7 @@ import path from 'node:path'
 import { config } from '../config.js'
 import { getDb } from '../db/index.js'
 import { readImageMeta, readVideoMeta, normalizeDate, parseDateFromDir, baseName } from '../metadata/index.js'
-import { enqueueAsset } from '../pipeline/queue.js'
+import { beginThumbnailBatch, enqueueAsset, resetThumbnailProgress } from '../pipeline/queue.js'
 import { thumbCachePath } from '../pipeline/thumbnails.js'
 
 /** 支持的媒体扩展名（小写） */
@@ -69,7 +69,7 @@ function walkDir(dir: string): { files: string[]; errors: string[] } {
     return result
   }
   for (const entry of entries) {
-    if (entry.name.startsWith('.')) continue // 隐藏文件/目录
+    if (entry.name.startsWith('.') && entry.isDirectory()) continue // 忽略隐藏目录；文件再由媒体扩展名筛选
     const full = path.join(dir, entry.name)
     if (entry.isDirectory()) {
       const child = walkDir(full)
@@ -100,6 +100,10 @@ export async function runScan(source: 'manual' | 'watcher' | 'startup' = 'manual
   const db = getDb()
   scanProgress.status = 'scanning'
   scanProgress.message = '正在遍历目录…'
+  scanProgress.totalFiles = 0
+  scanProgress.scannedFiles = 0
+  scanProgress.assetsFound = 0
+  resetThumbnailProgress()
 
   try {
   // ① 收集所有媒体文件
@@ -112,7 +116,10 @@ export async function runScan(source: 'manual' | 'watcher' | 'startup' = 'manual
   }
   const allFiles: RawFile[] = []
   for (const abs of absPaths) {
-    const ext = path.extname(abs).toLowerCase()
+    const fileName = path.basename(abs).toLowerCase()
+    const ext =
+      path.extname(abs).toLowerCase() ||
+      (IMAGE_EXTS.has(fileName) || VIDEO_EXTS.has(fileName) ? fileName : '')
     if (IMAGE_EXTS.has(ext)) allFiles.push({ relPath: path.relative(config.libraryRoot, abs), absPath: abs, fileName: path.basename(abs), kind: 'image' })
     else if (VIDEO_EXTS.has(ext)) allFiles.push({ relPath: path.relative(config.libraryRoot, abs), absPath: abs, fileName: path.basename(abs), kind: 'video' })
   }
@@ -251,6 +258,7 @@ export async function runScan(source: 'manual' | 'watcher' | 'startup' = 'manual
   let i = 0
   for (const a of assets) {
     const absPath = a.image.absPath
+    const fileCount = 1 + Number(a.liveVideo !== null)
 
     const isVideo = a.image.kind === 'video'
     // —— 图片：EXIF ——
@@ -277,7 +285,8 @@ export async function runScan(source: 'manual' | 'watcher' | 'startup' = 'manual
         exist.gpsLon,
         a.liveVideo ? a.liveVideo.relPath : null,
       ])
-      scanProgress.scannedFiles++
+      scanProgress.scannedFiles += fileCount
+      scanProgress.assetsFound++
       if (batch.length >= 200) {
         scanAll(batch.splice(0))
       }
@@ -319,6 +328,7 @@ export async function runScan(source: 'manual' | 'watcher' | 'startup' = 'manual
       } catch {
         // 文件瞬时不可读（刚被移动/删除）：跳过本资产，下次重扫再试
         console.warn(`[scan] 跳过不可读文件: ${a.image.relPath}`)
+        scanProgress.scannedFiles += fileCount
         continue
       }
     }
@@ -336,7 +346,7 @@ export async function runScan(source: 'manual' | 'watcher' | 'startup' = 'manual
       gpsLon,
       a.liveVideo ? a.liveVideo.relPath : null,
     ])
-    scanProgress.scannedFiles++
+    scanProgress.scannedFiles += fileCount
     scanProgress.assetsFound++
 
     // 每 200 条批量提交一次（事务提升性能）
@@ -347,28 +357,21 @@ export async function runScan(source: 'manual' | 'watcher' | 'startup' = 'manual
   }
   if (batch.length > 0) scanAll(batch)
 
-  // ⑤ 把「缺少缩略图」的资产全部交给懒生成队列（队列本身有并发与去重）
-  const rows = db
-    .prepare(`SELECT id, file_path, type, live_video FROM assets WHERE thumb_status = 'pending'`)
-    .all() as { id: number; file_path: string; type: string; live_video: string | null }[]
-
-  for (const r of rows) {
-    enqueueAsset({ id: r.id, relPath: r.file_path, type: r.type as 'photo' | 'video' | 'live', liveVideo: r.live_video })
-  }
-
-  // ⑥ 删除对账（P2+-1）：磁盘文件集合 vs DB 资产集合
+  // ⑤ 删除对账（P2+-1）：磁盘文件集合 vs DB 资产集合
   //    磁盘上已消失的文件 → 删资产记录 + FTS 索引 + 缩略图缓存，
   //    保证手动删文件/移动目录后照片墙不再显示"已不存在的图"。
   //    ⚠ 只删"遍历明确缺失"的文件：stat 瞬时失败的文件在 walkDir 阶段会被跳过，
   //    不会因 IO 抖动误删；实况视频缺失但主图还在的行不删（配对阶段已降级为 photo）。
   // SCAN_LIMIT 只用于调试/验证，当前文件集合不完整时不能做删除对账。
-  const diskPaths = new Set(files.map((f) => f.relPath))
+  // 以配对后的主资产路径对账，而非原始媒体路径。实况 MOV 虽仍存在于磁盘，
+  // 但已作为照片资产的 live_video 附件；若它此前曾以独立视频入库，应清掉旧记录。
+  const assetPaths = new Set(assets.map((asset) => asset.image.relPath))
   const dbRows = db.prepare(`SELECT id, file_path FROM assets`).all() as { id: number; file_path: string }[]
   const orphanIds: number[] = []
   const orphanSet = new Set<number>()
   if (config.scanLimit <= 0 && traversalComplete) {
     for (const r of dbRows) {
-      if (!diskPaths.has(r.file_path)) {
+      if (!assetPaths.has(r.file_path)) {
         orphanIds.push(r.id)
         orphanSet.add(r.id)
       }
@@ -382,10 +385,24 @@ export async function runScan(source: 'manual' | 'watcher' | 'startup' = 'manual
     console.log(`[scan] 删除对账：清理 ${orphanIds.length} 个已不存在于磁盘的资产`)
   }
 
-  // ⑦ 清理孤儿缩略图：缓存目录里 id 已不属于任何资产的 .webp（含 in-flight 竞态遗留）
+  // ⑥ 清理孤儿缩略图：缓存目录里 id 已不属于任何资产的 .webp（含 in-flight 竞态遗留）
   const validIds = new Set<number>()
   for (const r of dbRows) if (!orphanSet.has(r.id)) validIds.add(r.id)
   cleanOrphanThumbs(validIds)
+
+  // ⑦ 扫描完成且删除对账结束后，统计真实待处理/失败预览图并启动后台队列。
+  const pendingThumbs = db
+    .prepare(`SELECT id, file_path, type, live_video FROM assets WHERE thumb_status = 'pending'`)
+    .all() as { id: number; file_path: string; type: string; live_video: string | null }[]
+  const failedThumbs = (
+    db.prepare(`SELECT COUNT(*) AS count FROM assets WHERE thumb_status = 'error' AND thumb_ignored = 0`).get() as {
+      count: number
+    }
+  ).count
+  beginThumbnailBatch(pendingThumbs.length, failedThumbs)
+  for (const r of pendingThumbs) {
+    enqueueAsset({ id: r.id, relPath: r.file_path, type: r.type as 'photo' | 'video' | 'live', liveVideo: r.live_video })
+  }
 
   scanProgress.status = 'done'
   scanProgress.message = traversalComplete

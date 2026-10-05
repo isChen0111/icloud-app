@@ -1,0 +1,322 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>资源状态顶部 UI 方案</title>
+  <style>
+    :root {
+      color-scheme: light;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
+      color: #202124;
+      background: #f2f3f5;
+      font-synthesis: none;
+      text-rendering: optimizeLegibility;
+      --muted: #777d86;
+      --line: #e8eaf0;
+      --blue: #3478f6;
+      --green: #24965a;
+    }
+    * { box-sizing: border-box; }
+    [hidden] { display: none !important; }
+    body { margin: 0; min-width: 360px; }
+    button { font: inherit; }
+    .prototype { max-width: 1440px; margin: 0 auto; padding: 28px 30px 44px; }
+    .intro { margin: 0 auto 20px; max-width: 1000px; }
+    .eyebrow { color: var(--blue); font-size: 12px; font-weight: 700; letter-spacing: .08em; }
+    h1 { margin: 7px 0 6px; font-size: 23px; letter-spacing: -.02em; }
+    .intro p { margin: 0; color: #636a74; font-size: 14px; line-height: 1.6; }
+    .scenario-bar {
+      display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+      max-width: 1000px; margin: 0 auto 12px;
+    }
+    .scenario-label { margin-right: 4px; color: var(--muted); font-size: 12px; }
+    .scenario {
+      border: 1px solid #d9dde5; border-radius: 999px; padding: 7px 12px;
+      color: #555d68; background: white; cursor: pointer; font-size: 12px;
+    }
+    .scenario:hover { border-color: #9fbdf8; }
+    .scenario.active { color: #1458c4; border-color: #9cbafa; background: #eef4ff; font-weight: 650; }
+    .hint { margin-left: auto; color: #8a9099; font-size: 11px; }
+
+    .app-frame {
+      position: relative; overflow: hidden; min-height: 510px;
+      border: 1px solid #dfe2e8; border-radius: 13px; background: #fbfbfc;
+      box-shadow: 0 14px 40px rgba(32, 41, 55, .08);
+    }
+    .topbar {
+      position: relative; z-index: 3; display: flex; align-items: center; gap: 18px;
+      height: 52px; padding: 0 18px; border-bottom: 1px solid #e6e8ec;
+      background: rgba(255,255,255,.94); backdrop-filter: blur(18px);
+    }
+    .brand { flex: 0 0 auto; font-size: 14px; font-weight: 680; letter-spacing: .01em; }
+    .brand-mark {
+      display: inline-grid; width: 20px; height: 20px; margin-right: 7px;
+      place-items: center; vertical-align: -5px; border-radius: 6px;
+      color: white; background: linear-gradient(145deg, #7db6ff, #4b78e8); font-size: 12px;
+    }
+    .status-cluster {
+      position: relative; display: flex; align-items: center; gap: 11px;
+      min-width: 0; flex: 1;
+    }
+    .status-button {
+      display: inline-flex; align-items: center; gap: 7px; min-width: 0;
+      border: 0; border-radius: 8px; padding: 6px 8px; color: #414852;
+      background: transparent; white-space: nowrap; cursor: pointer; font-size: 12px;
+    }
+    .status-button:hover, .status-button[aria-expanded="true"] { background: #f0f3f8; }
+    .status-text { overflow: hidden; text-overflow: ellipsis; }
+    .status-icon { display: inline-grid; width: 16px; height: 16px; flex: 0 0 16px; place-items: center; }
+    .spinner {
+      width: 13px; height: 13px; border: 2px solid #cbd9f6; border-top-color: var(--blue);
+      border-radius: 50%; animation: spin .8s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .check-icon { color: var(--green); font-size: 16px; font-weight: 800; }
+    .count-divider { width: 1px; height: 18px; background: #e2e5ea; }
+    .asset-counts { overflow: hidden; color: #737984; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+    .asset-counts strong { color: #3c424c; font-weight: 650; }
+    .mini-progress { width: 42px; height: 3px; overflow: hidden; border-radius: 9px; background: #e7eaf0; }
+    .mini-progress > span { display: block; width: 35%; height: 100%; background: var(--blue); }
+    .chevron { color: #9aa1ab; font-size: 11px; }
+    .theme {
+      display: grid; width: 30px; height: 30px; flex: 0 0 30px; margin-left: auto;
+      place-items: center; border: 0; border-radius: 8px; background: #f2f4f7; color: #525966;
+    }
+
+    .popover {
+      position: absolute; z-index: 10; top: 40px; left: 0; width: min(390px, calc(100vw - 34px));
+      padding: 16px; border: 1px solid #e4e7ed; border-radius: 12px; background: white;
+      box-shadow: 0 14px 36px rgba(25, 35, 52, .16);
+    }
+    .popover[hidden] { display: none; }
+    .pop-head { display: flex; align-items: flex-start; gap: 11px; padding-bottom: 13px; border-bottom: 1px solid var(--line); }
+    .pop-head .status-icon { margin-top: 2px; }
+    .pop-title { font-size: 14px; font-weight: 700; }
+    .pop-subtitle { margin-top: 4px; color: var(--muted); font-size: 11px; line-height: 1.55; }
+    .metric { margin-left: auto; color: #69717c; font-size: 11px; white-space: nowrap; }
+    .metric strong { color: #303741; font-size: 12px; }
+    .status-row { display: flex; align-items: center; gap: 10px; padding: 13px 0 3px; }
+    .row-icon {
+      display: grid; width: 27px; height: 27px; flex: 0 0 27px; place-items: center;
+      border-radius: 8px; color: #4c6fae; background: #f0f5ff; font-size: 13px;
+    }
+    .row-icon.complete { color: var(--green); background: #edf8f1; }
+    .row-copy { min-width: 0; flex: 1; }
+    .row-title { font-size: 12px; font-weight: 650; }
+    .row-note { margin-top: 3px; color: var(--muted); font-size: 10px; line-height: 1.5; }
+    .row-value { color: #5d6570; font-size: 11px; white-space: nowrap; }
+    .progress-track { height: 5px; margin: 11px 0 9px 37px; overflow: hidden; border-radius: 8px; background: #edf0f4; }
+    .progress-track span { display: block; width: 35%; height: 100%; border-radius: inherit; background: linear-gradient(90deg, #6ba0ff, #3478f6); }
+    .stats-line {
+      display: flex; justify-content: space-between; gap: 8px; margin: 11px 0 0 37px;
+      color: #777e88; font-size: 10px;
+    }
+    .stats-line strong { color: #424954; font-weight: 650; }
+    .footnote { margin: 13px 0 0 37px; color: #969ca5; font-size: 10px; line-height: 1.5; }
+    .error-note { color: #b64a37; }
+
+    .gallery-toolbar {
+      display: flex; align-items: center; justify-content: space-between; height: 48px;
+      padding: 0 20px; border-bottom: 1px solid #eceef2; color: #707782; font-size: 12px;
+    }
+    .tool-pills { display: flex; gap: 7px; }
+    .tool-pill { width: 28px; height: 25px; border: 1px solid #e5e7eb; border-radius: 7px; background: white; }
+    .gallery {
+      display: grid; grid-template-columns: repeat(8, minmax(0, 1fr)); gap: 8px;
+      padding: 16px 20px 22px;
+    }
+    .tile { position: relative; aspect-ratio: 1; overflow: hidden; border-radius: 7px; background: #e2e5ea; }
+    .tile::before, .tile::after { position: absolute; content: ""; }
+    .tile::before { inset: 0; background: linear-gradient(145deg, var(--c1), var(--c2)); }
+    .tile::after { width: 115%; height: 65%; left: -8%; bottom: -18%; border-radius: 50% 50% 0 0; background: rgba(15,35,45,.22); transform: rotate(-8deg); }
+    .tile:nth-child(3n)::before { background: linear-gradient(145deg, #a4c6df, #5b8292); }
+    .tile:nth-child(4n)::before { background: linear-gradient(145deg, #d7a27e, #855648); }
+    .tile:nth-child(5n)::before { background: linear-gradient(145deg, #bbc9a0, #697b62); }
+    .tile:nth-child(7n)::before { background: linear-gradient(145deg, #b8b5d7, #63658b); }
+    .tile:nth-child(2n)::after { bottom: -29%; transform: rotate(11deg); }
+    .tile:nth-child(6n)::after { height: 42%; bottom: -8%; background: rgba(255,255,255,.22); }
+    .caption { padding: 0 20px 16px; color: #9298a1; font-size: 11px; }
+    .proposal {
+      display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px;
+      max-width: 1000px; margin: 17px auto 0;
+    }
+    .proposal article { padding: 13px 14px; border: 1px solid #e3e6eb; border-radius: 10px; background: rgba(255,255,255,.72); }
+    .proposal h2 { margin: 0 0 5px; font-size: 12px; }
+    .proposal p { margin: 0; color: #69717b; font-size: 11px; line-height: 1.55; }
+    @media (max-width: 760px) {
+      .prototype { padding: 20px 12px 30px; }
+      .topbar { gap: 8px; padding: 0 10px; }
+      .status-cluster { gap: 3px; }
+      .asset-counts { display: none; }
+      .count-divider { display: none; }
+      .status-button { padding: 6px 5px; font-size: 11px; }
+      .gallery { grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 5px; padding: 11px; }
+      .gallery-toolbar { padding: 0 11px; }
+      .proposal { grid-template-columns: 1fr; }
+      .hint { width: 100%; margin-left: 0; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; }
+    }
+  </style>
+</head>
+<body>
+  <main class="prototype">
+    <section class="intro">
+      <div class="eyebrow">TOP BAR · RESOURCE STATUS</div>
+      <h1>顶部资源状态：一行摘要，详情悬浮展开</h1>
+      <p>状态摘要继续放在现有顶栏，不增加页面固定高度；点击状态区域，在照片墙上方浮出详情卡片，因此查看详细进度时也不会挤压网格。</p>
+    </section>
+
+    <nav class="scenario-bar" aria-label="原型状态">
+      <span class="scenario-label">切换预览：</span>
+      <button class="scenario active" data-state="scanning">正在扫描</button>
+      <button class="scenario" data-state="preparing">准备预览图</button>
+      <button class="scenario" data-state="done">全部完成</button>
+      <span class="hint">点顶栏状态可展开 / 收起详情</span>
+    </nav>
+
+    <section class="app-frame" aria-label="照片墙界面原型">
+      <header class="topbar">
+        <div class="brand"><span class="brand-mark">▧</span>iCloud 本地照片</div>
+        <div class="status-cluster">
+          <button id="statusButton" class="status-button" aria-expanded="true" aria-controls="statusPopover">
+            <span id="statusIcon" class="status-icon"><span class="spinner"></span></span>
+            <span id="statusText" class="status-text">正在扫描 · 已检查 5,290 个文件</span>
+            <span id="miniProgress" class="mini-progress" hidden><span></span></span>
+            <span class="chevron">⌄</span>
+          </button>
+          <span class="count-divider"></span>
+          <div class="asset-counts"><strong id="photoCount">9,431</strong> 张照片 <span aria-hidden="true">·</span> <strong id="videoCount">3,178</strong> 个视频</div>
+
+          <section id="statusPopover" class="popover" aria-live="polite">
+            <div class="pop-head">
+              <span id="popIcon" class="status-icon"><span class="spinner"></span></span>
+              <div>
+                <div id="popTitle" class="pop-title">正在扫描照片库</div>
+                <div id="popSubtitle" class="pop-subtitle">已检查 5,290 个媒体文件。扫描期间数量持续更新，不显示百分比。</div>
+              </div>
+              <div class="metric"><strong id="popPhotoCount">9,431</strong> 张照片<br><strong id="popVideoCount">3,178</strong> 个视频</div>
+            </div>
+
+            <div class="status-row">
+              <div id="scanRowIcon" class="row-icon"><span class="spinner"></span></div>
+              <div class="row-copy">
+                <div id="scanRowTitle" class="row-title">照片库扫描中</div>
+                <div id="scanRowNote" class="row-note">检查文件变化并更新图库索引</div>
+              </div>
+              <div id="scanRowValue" class="row-value">5,290 个文件</div>
+            </div>
+
+            <div class="status-row">
+              <div id="thumbRowIcon" class="row-icon">▧</div>
+              <div class="row-copy">
+                <div id="thumbRowTitle" class="row-title">预览图</div>
+                <div id="thumbRowNote" class="row-note">浏览中的项目按需生成，其余项目将在扫描结束后准备</div>
+              </div>
+              <div id="thumbRowValue" class="row-value">稍后准备</div>
+            </div>
+            <div id="progressTrack" class="progress-track" hidden><span></span></div>
+            <div id="thumbStats" class="stats-line" hidden>
+              <span>已处理 <strong>421 / 1,200</strong></span>
+              <span>待处理 <strong>779</strong></span>
+              <span class="error-note">失败 <strong>1</strong></span>
+            </div>
+            <div id="footnote" class="footnote">照片数包含普通照片与实况照片；视频数不包含实况照片附带的视频片段。</div>
+          </section>
+        </div>
+        <button class="theme" aria-label="主题">☾</button>
+      </header>
+
+      <div class="gallery-toolbar">
+        <span>照片墙　·　全部资源</span>
+        <div class="tool-pills"><button class="tool-pill" aria-label="网格"></button><button class="tool-pill" aria-label="布局"></button></div>
+      </div>
+      <div class="gallery" aria-hidden="true">
+        <div class="tile" style="--c1:#a5bfca;--c2:#546d78"></div><div class="tile" style="--c1:#c8aa8a;--c2:#816650"></div>
+        <div class="tile" style="--c1:#91b6c7;--c2:#426777"></div><div class="tile" style="--c1:#d5b99d;--c2:#82604c"></div>
+        <div class="tile" style="--c1:#b9c69f;--c2:#67755d"></div><div class="tile" style="--c1:#a4b6d0;--c2:#5b6b8c"></div>
+        <div class="tile" style="--c1:#c5b7d0;--c2:#746780"></div><div class="tile" style="--c1:#d0b58e;--c2:#795c40"></div>
+        <div class="tile" style="--c1:#a1bbc1;--c2:#4e7279"></div><div class="tile" style="--c1:#d7ac91;--c2:#835849"></div>
+        <div class="tile" style="--c1:#b9c69f;--c2:#69775f"></div><div class="tile" style="--c1:#b1b4d0;--c2:#686b8b"></div>
+        <div class="tile" style="--c1:#a8c3ce;--c2:#526c79"></div><div class="tile" style="--c1:#d4b08e;--c2:#805f48"></div>
+        <div class="tile" style="--c1:#b4c49c;--c2:#65755b"></div><div class="tile" style="--c1:#c0afcb;--c2:#6e637c"></div>
+      </div>
+      <div class="caption">照片墙示意图 · 原型中的照片为纯色占位，并非真实媒体</div>
+    </section>
+
+    <section class="proposal" aria-label="设计要点">
+      <article><h2>默认态保持轻</h2><p>顶栏只放状态、一个有意义的数量和现有照片/视频总数；不用常驻第二行或进度面板。</p></article>
+      <article><h2>详细态不占布局</h2><p>点击状态后显示悬浮卡片，扫描与预览图分成两行；关闭时照片墙高度完全不变。</p></article>
+      <article><h2>百分比只用于预览图</h2><p>扫描只显示已检查文件数。扫描结束后预览图总量确定，再显示已完成、待处理、失败和进度条。</p></article>
+    </section>
+  </main>
+
+  <script>
+    const states = {
+      scanning: {
+        top: '正在扫描 · 已检查 5,290 个文件', photos: '9,431', videos: '3,178',
+        title: '正在扫描照片库', subtitle: '已检查 5,290 个媒体文件。扫描期间数量持续更新，不显示百分比。',
+        scanTitle: '照片库扫描中', scanNote: '检查文件变化并更新图库索引', scanValue: '5,290 个文件',
+        thumbTitle: '预览图', thumbNote: '浏览中的项目按需生成，其余项目将在扫描结束后准备',
+        thumbValue: '稍后准备', progress: false, scanComplete: false, allComplete: false, mini: false
+      },
+      preparing: {
+        top: '正在准备预览图 · 35%', photos: '9,431', videos: '3,178',
+        title: '照片库已更新', subtitle: '已检查 12,609 个媒体文件；照片和视频数量已同步。',
+        scanTitle: '照片库扫描完成', scanNote: '共检查 12,609 个媒体文件', scanValue: '✓ 完成',
+        thumbTitle: '正在准备预览图', thumbNote: '用于照片墙浏览，不会修改原始照片',
+        thumbValue: '35%', processed: '421', progress: true, scanComplete: true, allComplete: false, mini: true
+      },
+      done: {
+        top: '资源已更新', photos: '9,431', videos: '3,178',
+        title: '资源已准备就绪', subtitle: '照片库检查已完成，当前需要的预览图也已准备完成。',
+        scanTitle: '照片库扫描完成', scanNote: '共检查 12,609 个媒体文件', scanValue: '✓ 完成',
+        thumbTitle: '预览图已准备完成', thumbNote: '所有待处理预览图任务均已结束',
+        thumbValue: '✓ 完成', progress: false, scanComplete: true, allComplete: true, mini: false
+      }
+    };
+    const statusButton = document.getElementById('statusButton');
+    const popover = document.getElementById('statusPopover');
+    statusButton.addEventListener('click', () => {
+      const open = statusButton.getAttribute('aria-expanded') === 'true';
+      statusButton.setAttribute('aria-expanded', String(!open));
+      popover.hidden = open;
+    });
+    document.querySelectorAll('.scenario').forEach((button) => {
+      button.addEventListener('click', () => {
+        document.querySelectorAll('.scenario').forEach((item) => item.classList.toggle('active', item === button));
+        const state = states[button.dataset.state];
+        document.getElementById('statusText').textContent = state.top;
+        document.getElementById('photoCount').textContent = state.photos;
+        document.getElementById('videoCount').textContent = state.videos;
+        document.getElementById('popPhotoCount').textContent = state.photos;
+        document.getElementById('popVideoCount').textContent = state.videos;
+        document.getElementById('popTitle').textContent = state.title;
+        document.getElementById('popSubtitle').textContent = state.subtitle;
+        document.getElementById('scanRowTitle').textContent = state.scanTitle;
+        document.getElementById('scanRowNote').textContent = state.scanNote;
+        document.getElementById('scanRowValue').textContent = state.scanValue;
+        document.getElementById('thumbRowTitle').textContent = state.thumbTitle;
+        document.getElementById('thumbRowNote').textContent = state.thumbNote;
+        document.getElementById('thumbRowValue').textContent = state.thumbValue;
+        const processedCount = state.processed ?? '420';
+        document.querySelector('#thumbStats strong').textContent = `${processedCount} / 1,200`;
+        document.getElementById('progressTrack').hidden = !state.progress;
+        document.getElementById('thumbStats').hidden = !state.progress;
+        document.getElementById('miniProgress').hidden = !state.mini;
+        document.getElementById('statusIcon').innerHTML = state.allComplete ? '<span class="check-icon">✓</span>' : '<span class="spinner"></span>';
+        document.getElementById('popIcon').innerHTML = state.scanComplete ? '<span class="check-icon">✓</span>' : '<span class="spinner"></span>';
+        document.getElementById('scanRowIcon').className = state.scanComplete ? 'row-icon complete' : 'row-icon';
+        document.getElementById('scanRowIcon').innerHTML = state.scanComplete ? '✓' : '<span class="spinner"></span>';
+        document.getElementById('footnote').textContent = state.scanComplete
+          ? '照片数包含普通照片与实况照片；视频数不包含实况照片附带的视频片段。预览图失败项目会单独提示。'
+          : '照片数包含普通照片与实况照片；视频数不包含实况照片附带的视频片段。';
+        statusButton.setAttribute('aria-expanded', 'true');
+        popover.hidden = false;
+      });
+    });
+  </script>
+</body>
+</html>

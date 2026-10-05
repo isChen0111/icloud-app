@@ -86,6 +86,14 @@ export interface Stats {
   totalBytes: number
   totalSizeGB: number
   thumbQueue: number
+  thumbnails: {
+    status: 'idle' | 'preparing' | 'done'
+    total: number
+    processed: number
+    completed: number
+    pending: number
+    failed: number
+  }
   scan: {
     status: 'idle' | 'scanning' | 'done' | 'error'
     runId: number
@@ -95,6 +103,21 @@ export interface Stats {
     assetsFound: number
     message: string
   }
+}
+
+export interface ThumbnailFailure {
+  id: number
+  filename: string
+  filePath: string
+  type: AssetType
+  error: string | null
+  ignored: number
+}
+
+export interface ThumbnailFailuresResult {
+  items: ThumbnailFailure[]
+  activeCount: number
+  ignoredCount: number
 }
 
 /** 月份分组（日期快速定位条数据源；offset = 该月首资产在倒序流中的全局位置） */

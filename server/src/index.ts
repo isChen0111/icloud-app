@@ -23,6 +23,7 @@ import { registerVideoRoutes } from './routes/video.js'
 import { registerStatsRoutes } from './routes/stats.js'
 import { registerSearchRoutes } from './routes/search.js'
 import { registerInfoRoutes } from './routes/info.js'
+import { registerThumbnailErrorRoutes } from './routes/thumbnail-errors.js'
 import { runScan, scanProgress } from './scanner/index.js'
 import { startWatcher } from './scanner/watcher.js'
 import { cleanStaleTempFiles } from './pipeline/thumbnails.js'
@@ -64,6 +65,7 @@ async function main(): Promise<void> {
   await registerStatsRoutes(app)
   await registerSearchRoutes(app)
   await registerInfoRoutes(app)
+  await registerThumbnailErrorRoutes(app)
 
   // ②.5 生产模式静态托管：若 web/dist 存在（已 build），把前端挂到根路径。
   //     开发模式下没有 dist，走 Vite 5173 + proxy，不影响。
