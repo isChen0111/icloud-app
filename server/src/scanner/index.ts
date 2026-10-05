@@ -69,7 +69,7 @@ function walkDir(dir: string): { files: string[]; errors: string[] } {
     return result
   }
   for (const entry of entries) {
-    if (entry.name.startsWith('.')) continue // 隐藏文件/目录
+    if (entry.name.startsWith('.') && entry.isDirectory()) continue // 忽略隐藏目录；文件再由媒体扩展名筛选
     const full = path.join(dir, entry.name)
     if (entry.isDirectory()) {
       const child = walkDir(full)
@@ -116,7 +116,10 @@ export async function runScan(source: 'manual' | 'watcher' | 'startup' = 'manual
   }
   const allFiles: RawFile[] = []
   for (const abs of absPaths) {
-    const ext = path.extname(abs).toLowerCase()
+    const fileName = path.basename(abs).toLowerCase()
+    const ext =
+      path.extname(abs).toLowerCase() ||
+      (IMAGE_EXTS.has(fileName) || VIDEO_EXTS.has(fileName) ? fileName : '')
     if (IMAGE_EXTS.has(ext)) allFiles.push({ relPath: path.relative(config.libraryRoot, abs), absPath: abs, fileName: path.basename(abs), kind: 'image' })
     else if (VIDEO_EXTS.has(ext)) allFiles.push({ relPath: path.relative(config.libraryRoot, abs), absPath: abs, fileName: path.basename(abs), kind: 'video' })
   }

@@ -162,7 +162,7 @@
   <div class="arrow">→</div>
   <div class="step"><b>⑤ 入队</b>生成缩略图 / 抽视频帧 / 加入后台队列</div>
 </div>
-<p class="muted">增量设计：以 <code>file_path</code> 为唯一键 UPSERT（无 checksum 比对）；<b>已入库文件复用现有元数据、仅修正 type/live_video</b>（配对规则变更后重扫即可生效，无需清库）。扫描优先依据常见的 <code>YYYY/MM/DD</code> 目录日期处理较新的媒体；这只是处理优先级，入库和照片墙展示仍按 EXIF/ffprobe 得到的实际拍摄时间排序。没有可识别目录日期的文件排在有日期文件之后，不会被跳过。全量扫描时间主要取决于媒体元数据读取和磁盘性能。</p>
+<p class="muted">增量设计：以 <code>file_path</code> 为唯一键 UPSERT（无 checksum 比对）；<b>已入库文件复用现有元数据、仅修正 type/live_video</b>（配对规则变更后重扫即可生效，无需清库）。媒体类型以支持的扩展名识别；隐藏目录忽略，但隐藏媒体文件仍会检查扩展名。对文件名恰为扩展名的合法文件（如 <code>.mp4</code>），在 Node 将其视为 dotfile、<code>path.extname()</code> 返回空字符串时仍按媒体类型收录。扫描优先依据常见的 <code>YYYY/MM/DD</code> 目录日期处理较新的媒体；这只是处理优先级，入库和照片墙展示仍按 EXIF/ffprobe 得到的实际拍摄时间排序。没有可识别目录日期的文件排在有日期文件之后，不会被跳过。全量扫描时间主要取决于媒体元数据读取和磁盘性能。</p>
 
 <h3>3.4 缩略图流水线</h3>
 <p>参照 iCloud 的「档位 + 按需」模型，定义 grid 与 detail 两档缩略图，视频另生成 poster：</p>
