@@ -105,7 +105,7 @@ export async function registerThumbnailErrorRoutes(app: FastifyInstance): Promis
         type: asset.type,
         liveVideo: null,
       }
-      enqueueAsset(item)
+      enqueueAsset(item, 'user')
     }
     return reply.send({ retried: assets.length })
   })

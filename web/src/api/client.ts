@@ -76,6 +76,11 @@ export function setThumbnailFailuresIgnored(
   return post('/thumbnails/ignore', { ...selection, ignored })
 }
 
+export async function notifyThumbnailBrowsing(): Promise<void> {
+  const response = await fetch(`${BASE}/thumbnails/activity`, { method: 'POST' })
+  if (!response.ok) throw new Error(`API /thumbnails/activity → ${response.status}`)
+}
+
 /** 年月分组（日期快速定位条数据源） */
 export function fetchDates(): Promise<{ unit: string; items: MonthGroup[] }> {
   return get('/dates')

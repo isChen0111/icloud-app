@@ -16,6 +16,8 @@ import { config } from '../config.js'
 import { getDb } from '../db/index.js'
 import { ffprobeJson, runFfmpeg } from '../ffmpeg.js'
 
+sharp.concurrency(2)
+
 /** 缩略图档位 */
 export type ThumbSize = keyof typeof config.thumbSizes
 
@@ -67,7 +69,11 @@ const inFlight = new Map<string, Promise<string | null>>()
  * 确保某资产具备指定档位的缩略图；已存在则直接返回路径。
  * 这是「懒生成」的核心入口：API 请求缩略图 → 未命中 → 现场生成。
  */
-export function ensureThumbnail(assetId: number, size: ThumbSize): Promise<string | null> {
+export function ensureThumbnail(
+  assetId: number,
+  size: ThumbSize,
+  priority: 'interactive' | 'background' = 'interactive',
+): Promise<string | null> {
   const outPath = thumbCachePath(size, assetId)
   if (fs.existsSync(outPath)) return Promise.resolve(outPath)
 
@@ -75,13 +81,17 @@ export function ensureThumbnail(assetId: number, size: ThumbSize): Promise<strin
   const pending = inFlight.get(key)
   if (pending) return pending // 已在生成 → 复用同一个 Promise
 
-  const task = generate(assetId, size).finally(() => inFlight.delete(key))
+  const task = generate(assetId, size, priority).finally(() => inFlight.delete(key))
   inFlight.set(key, task)
   return task
 }
 
 /** 实际生成逻辑（被 ensureThumbnail 去重包装） */
-async function generate(assetId: number, size: ThumbSize): Promise<string | null> {
+async function generate(
+  assetId: number,
+  size: ThumbSize,
+  priority: 'interactive' | 'background',
+): Promise<string | null> {
   const outPath = thumbCachePath(size, assetId)
   const db = getDb()
   const row = db
@@ -108,7 +118,7 @@ async function generate(assetId: number, size: ThumbSize): Promise<string | null
 
     if (row.type === 'video') {
       // —— 视频：ffmpeg 抽帧 → sharp 缩放 ——
-      const framePath = await extractVideoFrame(abs, target, row.duration)
+      const framePath = await extractVideoFrame(abs, target, row.duration, priority)
       try {
         await sharp(framePath, { failOn: 'none' })
           .resize(target, target, { fit: 'inside', withoutEnlargement: true })
@@ -121,7 +131,7 @@ async function generate(assetId: number, size: ThumbSize): Promise<string | null
       }
     } else if (isHeic(row.file_path)) {
       // —— HEIC：sharp 官方预编译无 HEVC 解码器 → 用 ffmpeg(libheif) 解码为 PNG 再处理 ——
-      const pngPath = await heicToPng(abs)
+      const pngPath = await heicToPng(abs, priority)
       try {
         await sharp(pngPath, { failOn: 'none' })
           .resize(target, target, { fit: 'inside', withoutEnlargement: true })
@@ -167,11 +177,23 @@ function isHeic(relPath: string): boolean {
 }
 
 /** 用 ffmpeg(libheif) 把 HEIC 解码为全尺寸 PNG 临时文件（sharp 再二次处理） */
-async function heicToPng(absPath: string): Promise<string> {
+async function heicToPng(absPath: string, priority: 'interactive' | 'background'): Promise<string> {
   const tmp = path.join(config.cacheDir, 'tmp', `heic_${Date.now()}_${Math.random().toString(36).slice(2)}.png`)
   fs.mkdirSync(path.dirname(tmp), { recursive: true })
   try {
-    await runFfmpeg(['-hide_banner', '-loglevel', 'error', '-y', '-i', absPath, '-frames:v', '1', tmp])
+    await runFfmpeg([
+      '-hide_banner',
+      '-loglevel',
+      'error',
+      '-y',
+      '-threads',
+      priority === 'background' ? '1' : '2',
+      '-i',
+      absPath,
+      '-frames:v',
+      '1',
+      tmp,
+    ])
     return tmp
   } catch (error) {
     fs.rmSync(tmp, { force: true })
@@ -184,6 +206,7 @@ async function extractVideoFrame(
   absPath: string,
   maxSize: number,
   duration: number | null,
+  priority: 'interactive' | 'background',
 ): Promise<string> {
   const tmp = path.join(config.cacheDir, 'tmp', `frame_${Date.now()}_${Math.random().toString(36).slice(2)}.png`)
   fs.mkdirSync(path.dirname(tmp), { recursive: true })
@@ -201,6 +224,8 @@ async function extractVideoFrame(
       '-y',
       '-ss',
       String(seconds), // -ss 在 -i 前：快搜
+      '-threads',
+      priority === 'background' ? '1' : '2',
       '-i',
       absPath,
       '-vf',

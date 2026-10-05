@@ -40,8 +40,10 @@ export const config = {
   /** 缩略图质量（WebP） */
   thumbQuality: { grid: 80, detail: 82 } as const,
 
-  /** 缩略图生成并发数（sharp 是 CPU/IO 混合任务，4~6 较稳） */
-  thumbConcurrency: 8,
+  /** 与当前浏览无关的后台预览图并发数；有浏览活动时暂停启动新任务 */
+  thumbConcurrency: 1,
+  /** 当前浏览触发的预览图并发数 */
+  interactiveThumbConcurrency: 2,
 
   /** 视频封面抽取时间点（秒） */
   videoPosterSeek: 1,
