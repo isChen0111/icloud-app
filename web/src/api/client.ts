@@ -120,9 +120,9 @@ export function triggerScan(): Promise<{ started: boolean }> {
  */
 const THUMB_REV = 3
 
-/** 缩略图 URL（网格/详情/占位）；带 rev 使内容变更可强制刷新浏览器缓存 */
-export function thumbUrl(id: number, size: ThumbSize = 'grid'): string {
-  return `${BASE}/thumb/${id}?size=${size}&rev=${THUMB_REV}`
+/** 缩略图 URL（网格/详情/占位）；rev 是内容版本（资产 file_mtime），内容变更后 rev 变化 → URL 变化 → 浏览器强制重拉 */
+export function thumbUrl(id: number, size: ThumbSize = 'grid', rev: number = THUMB_REV): string {
+  return `${BASE}/thumb/${id}?size=${size}&rev=${rev}`
 }
 
 /** 视频流 URL（Range 由浏览器自动带） */
@@ -130,9 +130,9 @@ export function videoStreamUrl(id: number): string {
   return `${BASE}/video/${id}/stream`
 }
 
-/** 视频封面 URL（size=detail 用于详情页播放前的大封面，版本号用于刷新长缓存） */
-export function videoPosterUrl(id: number, size: ThumbSize = 'grid'): string {
-  return `${BASE}/video/${id}/poster?size=${size}&rev=${THUMB_REV}`
+/** 视频封面 URL（size=detail 用于详情页播放前的大封面，rev 同缩略图：内容变更后强制刷新长缓存） */
+export function videoPosterUrl(id: number, size: ThumbSize = 'grid', rev: number = THUMB_REV): string {
+  return `${BASE}/video/${id}/poster?size=${size}&rev=${rev}`
 }
 
 /** 给对象 URL 加防缓存参数（本地 dev 调试用，生产可去掉） */

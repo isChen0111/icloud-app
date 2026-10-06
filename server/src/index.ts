@@ -56,6 +56,12 @@ async function main(): Promise<void> {
     if (request.method === 'OPTIONS') {
       return reply.code(allowed ? 204 : 403).send()
     }
+    // F-04 修复：副作用请求（非 GET/HEAD）带非允许 Origin → 403。
+    // 本地单机威胁模型 = 恶意网页跨站调用本机 API（删照片/触发扫描/操作失败项）；
+    // 跨站必有 Origin 且不在允许集。curl / 本地脚本 / 生产同源浏览器请求无 Origin → 放行，零影响。
+    if (origin !== undefined && !allowed && !['GET', 'HEAD'].includes(request.method)) {
+      return reply.code(403).send({ error: 'forbidden origin' })
+    }
   })
 
   // ② 路由

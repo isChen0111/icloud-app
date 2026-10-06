@@ -48,11 +48,11 @@ let infoSeq = 0
 /** 当前 id（来自路由参数） */
 const currentId = computed(() => Number(route.params.id))
 
-/** 大图 URL（detail 档） */
-const bigSrc = computed(() => (detail.value ? thumbUrl(detail.value.id, 'detail') : ''))
+/** 大图 URL（detail 档；rev 联动内容版本，覆盖后自动换新图） */
+const bigSrc = computed(() => (detail.value ? thumbUrl(detail.value.id, 'detail', detail.value.rev) : ''))
 
 /** 占位图 URL（grid 档，照片墙已生成 + 浏览器已缓存 → 秒出；detail 加载完前模糊铺底） */
-const placeholderSrc = computed(() => (detail.value ? thumbUrl(detail.value.id, 'grid') : ''))
+const placeholderSrc = computed(() => (detail.value ? thumbUrl(detail.value.id, 'grid', detail.value.rev) : ''))
 
 /** 根据类型选择展示器 */
 const isLive = computed(() => detail.value?.type === 'live')
@@ -203,7 +203,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
       <div v-if="loadError" class="center-hint">加载失败</div>
       <div v-else-if="detail">
         <!-- 实况照片：按住播放 -->
-        <LivePhoto v-if="isLive" :id="detail.id" />
+        <LivePhoto v-if="isLive" :id="detail.id" :rev="detail.rev" />
         <!-- 普通视频：原生播放器 -->
         <VideoStage v-else-if="isVideo" :id="detail.id" />
         <!-- 普通照片：大图（detail 档淡入；失败时显示占位而非破损图标） -->

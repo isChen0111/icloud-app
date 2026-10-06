@@ -14,16 +14,16 @@
 import { computed, nextTick, ref, watch } from 'vue'
 import { thumbUrl, videoStreamUrl } from '../../api/client'
 
-const props = defineProps<{ id: number }>()
+const props = defineProps<{ id: number; rev?: number }>()
 
 /**
  * 静止帧（detail 档大图）。
  * 修复（详情页连按切换验证发现）：旧实现是 setup 里的普通常量，props.id 变化
  * 后 stillSrc 不会重新计算 → 快速翻页时图片停在第一张。必须用 computed 响应 id。
  */
-const stillSrc = computed(() => thumbUrl(props.id, 'detail'))
+const stillSrc = computed(() => thumbUrl(props.id, 'detail', props.rev))
 /** 静止帧占位（grid 档秒出，detail 加载完前模糊铺底） */
-const stillPlaceholder = computed(() => thumbUrl(props.id, 'grid'))
+const stillPlaceholder = computed(() => thumbUrl(props.id, 'grid', props.rev))
 /** detail 静止帧是否加载完成（淡入覆盖占位） */
 const stillLoaded = ref(false)
 /** 实况视频 URL（首次按下才注入，避免提前拉流量） */

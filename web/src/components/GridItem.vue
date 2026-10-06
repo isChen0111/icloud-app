@@ -22,7 +22,7 @@ const props = defineProps<{ asset: AssetDto; width: number; selected: boolean }>
 const router = useRouter()
 const store = useAssetStore()
 
-const { src, rootRef, onLoadFinished } = useLazyImage(props.asset.id, 'grid')
+const { src, rootRef, onLoadFinished } = useLazyImage(props.asset.id, 'grid', props.asset.rev)
 const imageLoaded = ref(false)
 
 /** 占位底色：按 id 生成一个稳定的浅灰渐变（视觉上比纯灰更柔和） */
