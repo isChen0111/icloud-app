@@ -18,6 +18,8 @@ export interface AssetDto {
   gpsLat: number | null
   gpsLon: number | null
   thumbUrl: string
+  /** 缓存版本号（F-03 修复）：源文件 mtimeMs。文件覆盖后 rev 变化 → 缩略图 URL 变化 → 浏览器强制拉新图 */
+  rev: number
 }
 
 /** 详情项（含实况视频路径 + 前后邻居 id + 序号/总数） */
@@ -142,6 +144,8 @@ export interface MonthGroup {
   offset: number
   /** 该月代表缩略图资产 id（倒序首资产，后端 /api/dates 提供；缩略图导航条用） */
   thumbId?: number
+  /** 该月代表缩略图的缓存版本（F-03：与后端 rev 联动，覆盖后月份小图自动刷新） */
+  thumbRev?: number
 }
 
 /** 搜索结果（照片墙化分页）：匹配集视为一条倒序流，与 /api/assets?offset= 同构 */

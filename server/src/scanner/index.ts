@@ -46,6 +46,9 @@ interface RawFile {
   /** 文件名（含扩展名） */
   fileName: string
   kind: 'image' | 'video'
+  /** 源文件签名（F-03 修复）：size 字节数；mtimeMs 修改时间（毫秒，取整防抖动） */
+  size: number
+  mtimeMs: number
 }
 
 /** 已配对的资产：主资产 + 可选实况视频 */
@@ -120,8 +123,19 @@ export async function runScan(source: 'manual' | 'watcher' | 'startup' = 'manual
     const ext =
       path.extname(abs).toLowerCase() ||
       (IMAGE_EXTS.has(fileName) || VIDEO_EXTS.has(fileName) ? fileName : '')
-    if (IMAGE_EXTS.has(ext)) allFiles.push({ relPath: path.relative(config.libraryRoot, abs), absPath: abs, fileName: path.basename(abs), kind: 'image' })
-    else if (VIDEO_EXTS.has(ext)) allFiles.push({ relPath: path.relative(config.libraryRoot, abs), absPath: abs, fileName: path.basename(abs), kind: 'video' })
+    if (!IMAGE_EXTS.has(ext) && !VIDEO_EXTS.has(ext)) continue
+    // F-03 修复：收集源文件签名（size + mtimeMs）。stat 是轻量元信息查询（不读内容），
+    // 全库 2 万文件总计约 1~2 秒；stat 失败（文件瞬时不可读）跳过本文件，watcher 会再触发。
+    let size = 0
+    let mtimeMs = 0
+    try {
+      const st = fs.statSync(abs)
+      size = st.size
+      mtimeMs = Math.trunc(st.mtimeMs)
+    } catch {
+      continue
+    }
+    allFiles.push({ relPath: path.relative(config.libraryRoot, abs), absPath: abs, fileName: path.basename(abs), kind: IMAGE_EXTS.has(ext) ? 'image' : 'video', size, mtimeMs })
   }
 
   // iCloudPD 常用 YYYY/MM/DD 目录结构。优先处理目录日期较新的媒体，
@@ -154,11 +168,14 @@ export async function runScan(source: 'manual' | 'watcher' | 'startup' = 'manual
     orientation: number | null
     gpsLat: number | null
     gpsLon: number | null
+    /** F-03 修复：上次扫描记录的源文件签名（新库为 null） */
+    size: number | null
+    mtimeMs: number | null
   }
   const existingMeta = new Map<string, ExistingMeta>()
   for (const r of db
     .prepare(
-      `SELECT file_path, date_taken, width, height, duration, orientation, gps_lat, gps_lon FROM assets`,
+      `SELECT file_path, date_taken, width, height, duration, orientation, gps_lat, gps_lon, file_size, file_mtime FROM assets`,
     )
     .all() as {
     file_path: string
@@ -169,6 +186,8 @@ export async function runScan(source: 'manual' | 'watcher' | 'startup' = 'manual
     orientation: number | null
     gps_lat: number | null
     gps_lon: number | null
+    file_size: number | null
+    file_mtime: number | null
   }[]) {
     existingMeta.set(r.file_path, {
       dateTaken: r.date_taken,
@@ -178,6 +197,8 @@ export async function runScan(source: 'manual' | 'watcher' | 'startup' = 'manual
       orientation: r.orientation,
       gpsLat: r.gps_lat,
       gpsLon: r.gps_lon,
+      size: r.file_size,
+      mtimeMs: r.file_mtime,
     })
   }
 
@@ -227,14 +248,16 @@ export async function runScan(source: 'manual' | 'watcher' | 'startup' = 'manual
 
   // ③ 逐资产提取元数据 + ④ 入库
   // RETURNING id：UPSERT 后直接拿到主键，同步 FTS 索引（见下方 upsertFts）
+  // F-03 修复：DO UPDATE 同时写入 file_size/file_mtime（签名列）。
   const insert = db.prepare(`
-    INSERT INTO assets (file_path, type, filename, date_taken, width, height, duration, orientation, gps_lat, gps_lon, live_video)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO assets (file_path, type, filename, date_taken, width, height, duration, orientation, gps_lat, gps_lon, live_video, file_size, file_mtime)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(file_path) DO UPDATE SET
       type=excluded.type, filename=excluded.filename, date_taken=excluded.date_taken,
       width=excluded.width, height=excluded.height, duration=excluded.duration,
       orientation=excluded.orientation, gps_lat=excluded.gps_lat, gps_lon=excluded.gps_lon,
-      live_video=excluded.live_video
+      live_video=excluded.live_video,
+      file_size=excluded.file_size, file_mtime=excluded.file_mtime
     RETURNING id
   `)
 
@@ -246,11 +269,24 @@ export async function runScan(source: 'manual' | 'watcher' | 'startup' = 'manual
      VALUES (?, lower(?), ?, ?)`,
   )
 
+  // F-03 修复：源文件签名变化 → 缩略图状态重置 SQL（文件变了 = 新内容，清旧 error/ignored）
+  const resetThumb = db.prepare(
+    `UPDATE assets SET thumb_status='pending', thumb_error=NULL, thumb_ignored=0 WHERE id=?`,
+  )
+  // 复用分支里签名变化的 relPath（scanAll 里按 r[0] 匹配拿 id，事务内统一重置）
+  const changedRelPaths = new Set<string>()
+  const changedIds: number[] = []
+
   const scanAll = db.transaction((rows: unknown[][]) => {
     for (const r of rows) {
-      const { id } = insert.get(...r) as { id: number } // 数组展开为 11 个位置参数（注意：值不能是数组，better-sqlite3 会把数组值再展开）
+      const { id } = insert.get(...r) as { id: number } // 数组展开为 13 个位置参数（注意：值不能是数组，better-sqlite3 会把数组值再展开）
       const dateTaken = r[3] as string
       upsertFts.run(id, r[2] as string, dateTaken, dateTaken.replace(/[^0-9a-zA-Z]/g, '')) // filename → search_text（lower 由 SQL 处理），dateTaken + 紧凑日期
+      // F-03 修复：同路径源文件签名变化 → 状态置 pending（旧缩略图缓存随后统一删除）
+      if (changedRelPaths.has(r[0] as string)) {
+        resetThumb.run(id)
+        changedIds.push(id)
+      }
     }
   })
 
@@ -272,6 +308,10 @@ export async function runScan(source: 'manual' | 'watcher' | 'startup' = 'manual
     // 同时把之前因跨目录同名而漏掉的视频（现在是独立 video 或新 live）补进来。
     const exist = existingMeta.get(a.image.relPath)
     if (exist) {
+      // F-03 修复：已有签名且与当前不一致 → 该资产缩略图缓存失效重生成（收集到 scanAll 统一重置）
+      const changed =
+        exist.size !== null && (exist.size !== a.image.size || exist.mtimeMs !== a.image.mtimeMs)
+      if (changed) changedRelPaths.add(a.image.relPath)
       batch.push([
         a.image.relPath,
         type,
@@ -284,6 +324,8 @@ export async function runScan(source: 'manual' | 'watcher' | 'startup' = 'manual
         exist.gpsLat,
         exist.gpsLon,
         a.liveVideo ? a.liveVideo.relPath : null,
+        a.image.size,
+        a.image.mtimeMs,
       ])
       scanProgress.scannedFiles += fileCount
       scanProgress.assetsFound++
@@ -345,6 +387,8 @@ export async function runScan(source: 'manual' | 'watcher' | 'startup' = 'manual
       gpsLat,
       gpsLon,
       a.liveVideo ? a.liveVideo.relPath : null,
+      a.image.size,
+      a.image.mtimeMs,
     ])
     scanProgress.scannedFiles += fileCount
     scanProgress.assetsFound++
@@ -356,6 +400,18 @@ export async function runScan(source: 'manual' | 'watcher' | 'startup' = 'manual
     i++
   }
   if (batch.length > 0) scanAll(batch)
+
+  // F-03 修复：源文件签名变化 → 删除旧缩略图缓存（grid + detail）。
+  // 状态已在 scanAll 事务内置 pending；缓存不删则 ensureThumbnail 命中旧文件直接返回、
+  // 永远不重新生成。deleteAssetById 会删缓存，但这里只删缓存、保留资产行。
+  if (changedIds.length > 0) {
+    for (const id of changedIds) {
+      for (const size of ['grid', 'detail'] as const) {
+        fs.rmSync(thumbCachePath(size, id), { force: true })
+      }
+    }
+    console.log(`[scan] 源文件签名变化：${changedIds.length} 个资产的缩略图缓存已失效并重新入队`)
+  }
 
   // ⑤ 删除对账（P2+-1）：磁盘文件集合 vs DB 资产集合
   //    磁盘上已消失的文件 → 删资产记录 + FTS 索引 + 缩略图缓存，

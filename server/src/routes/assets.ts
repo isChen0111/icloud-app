@@ -35,6 +35,8 @@ export interface AssetDto {
   gpsLon: number | null
   /** 前端缩略图 URL 前缀（由前端拼 size 参数） */
   thumbUrl: string
+  /** 缓存版本号（F-03 修复）：源文件 mtimeMs。文件被覆盖后 mtime 变化 → 前端 URL rev 变化 → 浏览器强制拉取新缩略图 */
+  rev: number
 }
 
 /** 数据库行类型（assets 表，better-sqlite3 的 .all() 返回 unknown[]，需显式断言） */
@@ -49,6 +51,7 @@ export interface AssetRow {
   orientation: number | null
   gps_lat: number | null
   gps_lon: number | null
+  file_mtime: number | null
 }
 
 /** 输出给前端的资产结构（不含内部状态字段）；导出供 search 路由复用 */
@@ -65,6 +68,7 @@ export function toDto(row: AssetRow): AssetDto {
     gpsLat: row.gps_lat,
     gpsLon: row.gps_lon,
     thumbUrl: `/api/thumb/${row.id}`,
+    rev: row.file_mtime ?? 0,
   }
 }
 

@@ -32,6 +32,9 @@ export function getDb(): Database.Database {
   if (!assetColumns.has('thumb_ignored')) {
     db.exec(`ALTER TABLE assets ADD COLUMN thumb_ignored INTEGER NOT NULL DEFAULT 0`)
   }
+  // F-03 修复：源文件签名列（size + mtimeMs）——旧库补齐，新库建表已含
+  if (!assetColumns.has('file_size')) db.exec(`ALTER TABLE assets ADD COLUMN file_size INTEGER`)
+  if (!assetColumns.has('file_mtime')) db.exec(`ALTER TABLE assets ADD COLUMN file_mtime INTEGER`)
 
   const ftsCount = (db.prepare(`SELECT count(*) AS c FROM assets_fts`).get() as { c: number }).c
   const assetCount = (db.prepare(`SELECT count(*) AS c FROM assets`).get() as { c: number }).c

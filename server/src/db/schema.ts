@@ -52,6 +52,11 @@ CREATE TABLE IF NOT EXISTS assets (
   detail_status TEXT DEFAULT 'pending',
   poster_status TEXT DEFAULT 'pending',
 
+  -- 源文件签名（F-03 修复）：扫描时 stat 的 size + mtimeMs（取整）。
+  -- 同路径文件被覆盖/内容变化时签名变化 → 删旧缩略图缓存 + thumb_status 置 pending 重新生成。
+  file_size     INTEGER,
+  file_mtime    INTEGER,
+
   -- 文件校验和（预留：检测文件变化）
   checksum      TEXT
 );

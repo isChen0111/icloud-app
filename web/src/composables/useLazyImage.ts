@@ -4,13 +4,13 @@
  * 网格项进入视口附近（IntersectionObserver）后才设置缩略图 URL，
  * 滚动快速跳过的离屏图片不会发起请求。
  *
- * 用法：const { src, isVisible, rootRef } = useLazyImage(id, 'grid')
+ * 用法：const { src, isVisible, rootRef } = useLazyImage(id, 'grid', rev)
  */
 import { inject, onBeforeUnmount, ref, watch } from 'vue'
 import { thumbUrl } from '../api/client'
 import { gridThumbnailSchedulerKey } from './gridThumbnailScheduler'
 
-export function useLazyImage(assetId: number, size: 'grid' | 'detail' = 'grid') {
+export function useLazyImage(assetId: number, size: 'grid' | 'detail' = 'grid', rev: number = 0) {
   const src = ref('')
   const scheduler = size === 'grid' ? inject(gridThumbnailSchedulerKey, null) : null
 
@@ -32,7 +32,7 @@ export function useLazyImage(assetId: number, size: 'grid' | 'detail' = 'grid') 
               if (entry.isIntersecting) {
                 // 进入视口 → 触发加载；快速滚动时由网格调度器暂缓中间位置请求
                 const load = () => {
-                  src.value = thumbUrl(assetId, size)
+                  src.value = thumbUrl(assetId, size, rev)
                 }
                 cancelScheduledLoad = scheduler
                   ? scheduler.request(assetId, entry.target as HTMLElement, load)

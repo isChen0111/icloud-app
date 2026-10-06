@@ -136,7 +136,7 @@ onUnmounted(() => {
           >
             <img
               v-if="m.thumbId"
-              :src="thumbUrl(m.thumbId, 'grid')"
+              :src="thumbUrl(m.thumbId, 'grid', m.thumbRev)"
               alt=""
               loading="lazy"
               decoding="async"
