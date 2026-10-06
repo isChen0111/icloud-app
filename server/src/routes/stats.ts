@@ -174,6 +174,9 @@ export async function registerStatsRoutes(app: FastifyInstance): Promise<void> {
       totalBytes: bytes, // null = 后台计算中（前端尚未消费该字段，可安全为 null）
       totalSizeGB: bytes === null ? null : Number((bytes / 1024 ** 3).toFixed(1)),
       thumbQueue: queueSize(),
+      // 前端缩略图调度器的并发上限以此值为准（前端通过 /api/stats 读取，
+      // 避免前后端两个"8"各自硬编码、漂移后排队/浪费吞吐）
+      thumbConcurrency: config.thumbConcurrency,
       // F-02 诊断指标：运行中 / 交互运行中 / 交互等待 / 已跳过（客户端断开被拦下的请求）
       thumbQueueMetrics: getQueueMetrics(),
       thumbnails: adjustedThumbnailProgress,

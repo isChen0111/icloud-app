@@ -35,6 +35,7 @@ import { useVirtualizer } from '@tanstack/vue-virtual'
 import { useThemeStore } from '../stores/theme'
 import { formatDateRange, formatMonthRange } from '../utils/format'
 import { createGridThumbnailScheduler, gridThumbnailSchedulerKey } from '../composables/gridThumbnailScheduler'
+import { fetchStats } from '../api/client'
 import type { AssetDto, GridDataSource, MonthGroup } from '../types'
 import GridItem from './GridItem.vue'
 import DateNavPanel from './DateNavPanel.vue'
@@ -437,6 +438,15 @@ onMounted(async () => {
   // 关键：虚拟器在 setup 时初始化，当时滚动容器还没挂载（getScrollElement 返回 null），
   // 必须在元素就绪 + 数据就绪后手动 measure 一次，虚拟行才会填充
   rowVirtualizer.value.measure()
+
+  // 前端缩略图调度器并发上限以后端 /api/stats 的 thumbConcurrency 为准
+  // （后端 config 是唯一来源，防止前后端两个"8"各自硬编码后漂移）
+  try {
+    const s = await fetchStats()
+    thumbnailScheduler.setMaxConcurrentRequests(s.thumbConcurrency)
+  } catch {
+    // 后端暂不可用：保持默认值（与 config 默认一致），不影响照片墙
+  }
 })
 
 onBeforeUnmount(() => {
