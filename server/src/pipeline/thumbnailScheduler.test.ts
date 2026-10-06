@@ -194,3 +194,42 @@ describe('ThumbnailScheduler 积压计数', () => {
     await background // 已 resolve，立即返回
   })
 })
+
+describe('ThumbnailScheduler 队列指标（F-02）', () => {
+  test('interactiveRunning / interactiveWaiting 计数正确（运行中与排队中分别统计）', async () => {
+    const scheduler = new ThumbnailScheduler({ concurrency: 1, browseLeaseMs: 30_000 })
+
+    // ① 交互任务 A 用门闩保持运行中（避免瞬间完成导致断言竞态）
+    const { gate, release } = makeGate()
+    const jobA = scheduler.submit(async () => gate, 'interactive')
+    await waitFor(() => scheduler.runningCount === 1)
+    assert.equal(scheduler.metrics().interactiveRunning, 1, 'A 运行中：交互运行应为 1')
+    assert.equal(scheduler.metrics().interactiveWaiting, 0, 'A 已开始执行，不应计为等待')
+
+    // ② 交互任务 B 入队排队（concurrency=1 被 A 占满）
+    const jobB = scheduler.submit(async () => 'b', 'interactive')
+    assert.equal(scheduler.metrics().interactiveWaiting, 1, 'B 排队中：交互等待应为 1')
+    assert.equal(scheduler.metrics().interactiveRunning, 1, 'A 仍在运行：交互运行保持 1')
+
+    // ③ 释放 A → B 自动派发并完成，计数全部归零
+    release()
+    await Promise.all([jobA, jobB])
+    assert.equal(scheduler.metrics().interactiveRunning, 0, '全部完成后交互运行归零')
+    assert.equal(scheduler.metrics().interactiveWaiting, 0, '全部完成后交互等待归零')
+    assert.equal(scheduler.metrics().running, 0)
+  })
+
+  test('cancelled 累计客户端断开被跳过的请求数', async () => {
+    const scheduler = new ThumbnailScheduler({ concurrency: 8, browseLeaseMs: 30_000 })
+    assert.equal(scheduler.metrics().cancelled, 0, '初始应为 0')
+
+    scheduler.registerCancelled()
+    scheduler.registerCancelled()
+    scheduler.registerCancelled()
+    assert.equal(scheduler.metrics().cancelled, 3, '三次跳过应累计为 3')
+
+    // 只读计数不参与并发/积压统计
+    assert.equal(scheduler.runningCount, 0)
+    assert.equal(scheduler.queuedCount(), 0)
+  })
+})

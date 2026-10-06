@@ -9,13 +9,23 @@
  *     留刷新协商通道（见下方修复注释）
  *   - ETag：基于文件 mtime+size 的弱校验，省重复传输
  */
-import type { FastifyInstance } from 'fastify'
+import type { FastifyInstance, FastifyRequest } from 'fastify'
 import fs from 'node:fs'
 import { getDb } from '../db/index.js'
-import { markThumbnailBrowsing, runInteractiveThumbnail } from '../pipeline/queue.js'
+import { markThumbnailBrowsing, registerThumbnailCancelled, runInteractiveThumbnail } from '../pipeline/queue.js'
 import { ensureThumbnail, ensureSize, type ThumbSize } from '../pipeline/thumbnails.js'
 
 const VALID_SIZES = new Set<ThumbSize>(['grid', 'detail'])
+
+/**
+ * F-02 轻量版：客户端连接是否已断开。
+ * 快速滚动时虚拟列表销毁离屏图片组件，浏览器可能已中止/关闭请求连接；
+ * 任务从队列取出、真正开始生成前检查一次，断开则跳过生成（不白占队列资源）。
+ * req.raw.destroyed 在连接关闭后为 true；req.raw.aborted 兼容旧语义。
+ */
+function clientDisconnected(req: FastifyRequest): boolean {
+  return req.raw.destroyed || req.raw.aborted
+}
 
 /** 简单 ETag：由文件信息生成（无需读内容） */
 function etagFor(filePath: string): string {
@@ -46,8 +56,17 @@ export async function registerThumbRoutes(app: FastifyInstance): Promise<void> {
     if (!row) return reply.code(404).send({ error: 'asset not found' })
 
     // 懒生成（内部已处理"已存在则直接返回"）
-    const outPath = await runInteractiveThumbnail(() => ensureThumbnail(assetId, size))
+    const outPath = await runInteractiveThumbnail<string | null>(() => {
+      // F-02 轻量版：任务开始执行时客户端已断开 → 跳过生成，仅计数（快速滚动离屏请求）
+      if (clientDisconnected(req)) {
+        registerThumbnailCancelled()
+        return Promise.resolve(null)
+      }
+      return ensureThumbnail(assetId, size)
+    })
     if (!outPath || !fs.existsSync(outPath)) {
+      // 断开与真失败区分：客户端已断开时静默结束，不算生成失败（不进失败清单）
+      if (clientDisconnected(req)) return reply.raw.end()
       return reply.code(500).send({ error: 'thumbnail generation failed' })
     }
 
@@ -91,8 +110,19 @@ export async function registerThumbRoutes(app: FastifyInstance): Promise<void> {
     if (!VALID_SIZES.has(size)) {
       return reply.code(400).send({ error: `size must be one of: ${[...VALID_SIZES].join(',')}` })
     }
-    const outPath = await runInteractiveThumbnail(() => ensureThumbnail(Number(id), size))
-    if (!outPath || !fs.existsSync(outPath)) return reply.code(404).send({ error: 'poster not found' })
+    const outPath = await runInteractiveThumbnail<string | null>(() => {
+      // F-02 轻量版：任务开始执行时客户端已断开 → 跳过抽帧，仅计数
+      if (clientDisconnected(req)) {
+        registerThumbnailCancelled()
+        return Promise.resolve(null)
+      }
+      return ensureThumbnail(Number(id), size)
+    })
+    if (!outPath || !fs.existsSync(outPath)) {
+      // 断开与真失败区分：客户端已断开时静默结束，不算封面生成失败
+      if (clientDisconnected(req)) return reply.raw.end()
+      return reply.code(404).send({ error: 'poster not found' })
+    }
     // 长缓存 + ETag 协商（与缩略图同策略：封面内容修复后走 if-none-match 刷新）
     const etag = etagFor(outPath)
     if (req.headers['if-none-match'] === etag) return reply.code(304).send()

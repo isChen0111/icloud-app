@@ -86,6 +86,16 @@ export interface Stats {
   totalBytes: number
   totalSizeGB: number
   thumbQueue: number
+  thumbQueueMetrics: {
+    /** 正在运行的任务总数（后台 + 交互） */
+    running: number
+    /** 正在运行的交互任务数（浏览中照片的生成请求） */
+    interactiveRunning: number
+    /** 排队等待的交互任务数 */
+    interactiveWaiting: number
+    /** 因客户端断开被跳过的请求累计数（F-02 轻量版） */
+    cancelled: number
+  }
   thumbnails: {
     status: 'idle' | 'preparing' | 'done'
     total: number

@@ -17,7 +17,7 @@
 import { config } from '../config.js'
 import { getDb } from '../db/index.js'
 import { ensureThumbnail } from './thumbnails.js'
-import { ThumbnailScheduler } from './thumbnailScheduler.js'
+import { ThumbnailScheduler, type ThumbnailQueueMetrics } from './thumbnailScheduler.js'
 
 /** 交互与后台共享的调度器：总并发 = config.thumbConcurrency，浏览租约 30 秒 */
 const scheduler = new ThumbnailScheduler({
@@ -162,4 +162,14 @@ function recordThumbnailResult(batchId: number, succeeded: boolean): void {
 /** 队列当前积压数量（供 /api/stats 展示）：排队 + 运行 + 浏览挂起 */
 export function queueSize(): number {
   return scheduler.queuedCount()
+}
+
+/** 队列指标快照（运行中 / 交互运行中 / 交互等待 / 已跳过），供 /api/stats 展示 */
+export function getQueueMetrics(): ThumbnailQueueMetrics {
+  return scheduler.metrics()
+}
+
+/** F-02 轻量版：记录一次因客户端断开被跳过（未开始生成）的缩略图请求 */
+export function registerThumbnailCancelled(): void {
+  scheduler.registerCancelled()
 }

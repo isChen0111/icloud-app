@@ -24,6 +24,18 @@ export interface ThumbnailSchedulerOptions {
   browseLeaseMs: number
 }
 
+/** 队列指标快照（F-02 诊断用，供 /api/stats 展示） */
+export interface ThumbnailQueueMetrics {
+  /** 当前正在运行的任务总数（后台 + 交互） */
+  running: number
+  /** 正在运行的交互任务数（浏览中照片的生成请求） */
+  interactiveRunning: number
+  /** 排队等待的交互任务数 */
+  interactiveWaiting: number
+  /** 因客户端断开被跳过的请求累计数（F-02 轻量版计数） */
+  cancelled: number
+}
+
 /** 任务优先级：交互 = 急诊（插队），后台 = 普通门诊（排队） */
 const PRIORITY = {
   interactive: 10,
@@ -45,6 +57,15 @@ export class ThumbnailScheduler {
   /** 浏览期间挂起的后台任务：租约到期时统一放行入队 */
   private deferred: (() => void)[] = []
 
+  /** 正在运行的交互任务数（wrapper 执行期计数） */
+  private interactiveRunningCount = 0
+
+  /** 排队等待的交互任务数（入队 +1，开始执行 -1） */
+  private interactiveWaitingCount = 0
+
+  /** 因客户端断开被跳过（未开始生成）的请求累计数 */
+  private cancelledCount = 0
+
   constructor(options: ThumbnailSchedulerOptions) {
     this.browseLeaseMs = options.browseLeaseMs
     this.queue = new PQueue({ concurrency: options.concurrency })
@@ -57,15 +78,32 @@ export class ThumbnailScheduler {
    * 返回的 Promise 在任务真正完成时 resolve / reject（挂起任务会等到放行后执行）。
    */
   submit(job: () => Promise<unknown>, priority: 'interactive' | 'background'): Promise<unknown> {
+    // 交互计数：入队（含排队中）即 +1，真正开始执行时 -1 并转计为"运行中"。
+    // 后台任务挂起期间不计入交互指标。
+    const isInteractive = priority === 'interactive'
+    if (isInteractive) this.interactiveWaitingCount++
+
+    const wrapped = async (): Promise<unknown> => {
+      if (isInteractive) {
+        this.interactiveWaitingCount--
+        this.interactiveRunningCount++
+      }
+      try {
+        return await job()
+      } finally {
+        if (isInteractive) this.interactiveRunningCount--
+      }
+    }
+
     if (priority === 'background' && Date.now() < this.browsingUntil) {
       // 浏览活跃：挂起，租约到期后放行
       return new Promise((resolve, reject) => {
         this.deferred.push(() => {
-          this.queue.add(job, { priority: PRIORITY.background }).then(resolve, reject)
+          this.queue.add(wrapped, { priority: PRIORITY.background }).then(resolve, reject)
         })
       })
     }
-    return this.queue.add(job, { priority: PRIORITY[priority] })
+    return this.queue.add(wrapped, { priority: PRIORITY[priority] })
   }
 
   /** 标记浏览活动：刷新租约；租约内后台任务挂起，交互任务不受影响。 */
@@ -104,5 +142,20 @@ export class ThumbnailScheduler {
   /** 当前正在运行的任务数（单测断言并发不变量用） */
   get runningCount(): number {
     return this.queue.pending
+  }
+
+  /** F-02 轻量版：记录一次因客户端断开被跳过（未开始生成）的请求 */
+  registerCancelled(): void {
+    this.cancelledCount++
+  }
+
+  /** 队列指标快照（运行中 / 交互运行中 / 交互等待 / 已跳过），供 /api/stats 与诊断 */
+  metrics(): ThumbnailQueueMetrics {
+    return {
+      running: this.queue.pending,
+      interactiveRunning: this.interactiveRunningCount,
+      interactiveWaiting: this.interactiveWaitingCount,
+      cancelled: this.cancelledCount,
+    }
   }
 }
