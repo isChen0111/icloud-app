@@ -1,11 +1,11 @@
 # 项目上下文快照（供会话压缩/新会话恢复用）
 
-> 生成日期：2026-09-08；最后同步：2026-10-06（审查报告 7 项 F-01~F-07 评估 + F-01/F-02/F-05/F-06 已修复、并发来源统一 + rAF 合并、架构文档 4.12 滚动机制章节、README/快照同步）。若本会话上下文被压缩或丢失，先读本文件 + 架构设计文档 + README，即可恢复全部关键信息。
+> 生成日期：2026-09-08；最后同步：2026-10-06（审查报告 7 项 F-01~F-07 全部修复并合并推送 main：F-03/F-04 合并 6fd9dae、F-07 系列合并 505cb28；架构文档/README/审查报告按代码实测同步，rev 已动态化）。若本会话上下文被压缩或丢失，先读本文件 + 架构设计文档 + README，即可恢复全部关键信息。
 
 ## 项目目标与现状
 - 用户已用 iCloudPD 把 iCloud 照片全部拉到本地（`F:\iPhone\icloud-app\iCloudPhoto\`，源文件：**12,609 资产 = 照片 1,988 + 实况 7,442 + 视频 3,179，162.9GB，约 2 万媒体文件（scan runId 1 实测 20,051 文件）**）。
 - 目标：本地网页应用，复刻 iCloud 网页端浏览体验。前端 Vue 3 系列，后端 Node.js。
-- **当前状态：P0/P1/P2 全部完成并通过验收；代码审查 12 项稳定化修复全部完成；扫描配对修复（跨目录同名，11,009→12,591）已合并；照片墙全量骨架（C 方案）已上线：滚动条=全库双向滚动 + 吸顶日期跨度 + 月份头区间标签 + 4~12 列 + 行高抽象；详情信息面板（/api/assets/:id/info）已上线；UI 徽标刷新与详情页三级渐进已上线；P2+-1 部分落地（目录热监听 + 删除对账 + 启动同步，一键拉取 exe 待开发）；客户端删除已上线（照片墙单选/Ctrl多选 + 详情页删除 + DELETE /api/assets + 确认弹框）；2026-09-17 全项目审查完成并修复 B1~B5（删除后页缓存错位 / 实况宽高兜底 / 首屏默认浅色 / CORS 补 DELETE / 排版整理）+ 文档三件套同步；2026-09-18 采纳 Claude 审查两处高信号修复（assets store 删除与分页请求竞态：dataVersion + requestSequence/activeRequests 双校验；GridView 搜索宽度 ResizeObserver 启动）已合并；**2026-09-19 搜索照片墙化 + FTS trigram 精确性修复已合并**（匹配集虚拟滚动/月份分组/列数共享；trigram 片段 AND 误命中 → FTS 粗筛 + instr 连续子串精筛）；Git 私有仓库 + GitHub 远程（isChen0111/icloud-app，SSH 推送）版本管理。**
+- **当前状态：P0/P1/P2 全部完成并通过验收；代码审查 12 项稳定化修复全部完成；扫描配对修复（跨目录同名，11,009→12,591）已合并；照片墙全量骨架（C 方案）已上线：滚动条=全库双向滚动 + 吸顶日期跨度 + 月份头区间标签 + 4~12 列 + 行高抽象；详情信息面板（/api/assets/:id/info）已上线；UI 徽标刷新与详情页三级渐进已上线；P2+-1 部分落地（目录热监听 + 删除对账 + 启动同步，一键拉取 exe 待开发）；客户端删除已上线（照片墙单选/Ctrl多选 + 详情页删除 + DELETE /api/assets + 确认弹框）；2026-09-17 全项目审查完成并修复 B1~B5（删除后页缓存错位 / 实况宽高兜底 / 首屏默认浅色 / CORS 补 DELETE / 排版整理）+ 文档三件套同步；2026-09-18 采纳 Claude 审查两处高信号修复（assets store 删除与分页请求竞态：dataVersion + requestSequence/activeRequests 双校验；GridView 搜索宽度 ResizeObserver 启动）已合并；**2026-09-19 搜索照片墙化 + FTS trigram 精确性修复已合并**（匹配集虚拟滚动/月份分组/列数共享；trigram 片段 AND 误命中 → FTS 粗筛 + instr 连续子串精筛）；**2026-10-06 审查报告 F-01~F-07 全部修复合并推送 main**（单调度器 ≤8 并发 / F-02 断开检测 / F-03 签名失效 + rev 联动 / F-04 Origin 校验 / F-05 搜索错误态 / F-06 FTS 版本化 / F-07 ffmpeg 超时 + 失败清单系列）；Git 私有仓库 + GitHub 远程（isChen0111/icloud-app，SSH 推送）版本管理。**
 
 ## 已完成的工作
 1. **实测 iCloud 网页端机制**（浏览器操作 + 网络抓包 + JS bundle 源码分析）：
@@ -18,7 +18,7 @@
    - stats 异步体积统计 + 落盘缓存（首屏 229ms）
    - 原图宽高 11,009 条全量修正（`npm run fix-size`，fix-asset-size.ts）
    - EXIF 方向缩略图重建（`npm run fix-thumbs`，rebuild-orientation-thumbs.ts，103 张）
-   - 浏览器缩略图缓存失效链路：thumbUrl 带 `rev` 版本号（web/src/api/client.ts 的 THUMB_REV，当前 3；视频封面共用该版本）+ 响应头去 immutable（thumb.ts）
+   - 浏览器缩略图缓存失效链路：thumbUrl 带 `rev` 版本号（web/src/api/client.ts 的 THUMB_REV，当前 3；视频封面共用该版本）+ 响应头去 immutable（thumb.ts）——2026-10-06 F-03 后 rev 已动态化（= file_mtime），见「工程约定」
    - 实况按住播放带原声（LivePhoto.vue：`:muted="!playing"` + 显式 unmuted + 静音兜底）
    - 详情/搜索竞态守卫、扫描断点续跑容错
 7. **文档已同步**：README.md（目录树/命令/API/验证表/踩坑）+ 架构设计文档.html（§5 结构、§6 路线图含稳定化 + P2+ 规划）。
@@ -42,8 +42,8 @@
    - **F-05 搜索错误态（P2，5a17e8e/合并 e24600b）**：search.ts catch 分类——预期输入级错误（FTS 语法类，消息含 syntax/malformed/no such column 等）返回空结果；真异常返回 500 + 错误信息（不再伪装成"没有结果"）；前端 search store 加 `searchError`（首屏失败置错）+ GridView「搜索失败，请重试」错误态与重试按钮；滚动后续页失败仍走静默 + 滚回重试。
    - **F-06 FTS 版本化（P2，同合并）**：schema.ts 建表 DROP → `CREATE VIRTUAL TABLE IF NOT EXISTS`；db/index.ts 用 `PRAGMA user_version` 记录 `FTS_SCHEMA_VERSION=2`——版本不符才 DROP+CREATE 全量重建，正常启动只按行数差回填（**正常启动零重建**，迁移已执行：user_version 0→2，assets_fts 12,609 = assets 12,609）。
    - **Git 清理**：远程 9 分支系本地过期缓存快照（实际仅 main）；一次性清理 17 个已合并旧分支 + prune 远程 gone 分支。
-   - **F-07 FFmpeg/FFprobe 超时 + 失败清单系列（P2，2026-10-06，分支 fix/ffmpeg-timeout，待合并）**：`ffmpeg.ts` 按操作类型超时（FFprobe 30s / 抽帧、HEIC 解码 60s），超时 kill 子进程并等 close 统一收尾，错误带 stderr 尾部；新增 `ffmpeg.test.ts`（超时 kill / 不误杀 2 用例）。**附带失败清单系列修复（同分支）**：①失败项忽略/重试不再被 preparing 锁住（只锁扫描中，消除 409 死锁）；②后台挂起上限 `backgroundMaxDeferMs=60s` 强制放行（防持续浏览饿死后台）；③失败保留 `thumb_ignored` + 忽略项跳过自动重试 + 自愈日志；④浮层三态入口（失败 N / 已忽略 N / 失败 0，入口常驻）；⑤扫描缓存对账（grid 缓存存在但 DB pending → 补记 done，根治「待处理 N 卡 99% 转圈」死锁，实测待处理 2→0）；⑥命名修正：浮层「待处理」→「失败」、顶部徽标「预览图待处理」→「预览图失败」。测试 12/12 全绿 + 前端 build 通过。
-   - **F-03 源文件签名 + F-04 Origin 校验（P2，2026-10-06，分支 fix/f03-f04，待合并）**：assets 表新增 `file_size`/`file_mtime`（列检查 ALTER 迁移）；scanner 遍历收集签名（size + mtimeMs，约 1~2s 总成本），签名不一致 → 重新提取元数据 + 状态置 pending + 删旧 grid/detail 缓存 → 重建。**前端 rev 联动**：资产 DTO / `/api/dates` 返回 `rev = file_mtime`，thumbUrl/videoPosterUrl 调用点携带（GridItem/DetailView/LivePhoto/DateNavPanel/useLazyImage）——覆盖文件后 mtime 变 → URL 变 → 浏览器绕过 1 年强缓存自动换新图（F-03 完整闭环）。F-04：index.ts onRequest hook 对带非允许 Origin 的非 GET/HEAD 请求返回 403（恶意网页跨站防护；curl/本地脚本无 Origin 零影响）。验证：tsc/vue-tsc 0 错、测试 12/12、F-03 端到端（覆盖→失效→重建→前端换图）、F-04 行为 4 项全对。审查报告 7 项全部完成。
+   - **F-07 FFmpeg/FFprobe 超时 + 失败清单系列（P2，2026-10-06，分支 fix/ffmpeg-timeout → 合并 505cb28 已推送）**：`ffmpeg.ts` 按操作类型超时（FFprobe 30s / 抽帧、HEIC 解码 60s），超时 kill 子进程并等 close 统一收尾，错误带 stderr 尾部；新增 `ffmpeg.test.ts`（超时 kill / 不误杀 2 用例）。**附带失败清单系列修复（同分支）**：①失败项忽略/重试不再被 preparing 锁住（只锁扫描中，消除 409 死锁）；②后台挂起上限 `backgroundMaxDeferMs=60s` 强制放行（防持续浏览饿死后台）；③失败保留 `thumb_ignored` + 忽略项跳过自动重试 + 自愈日志；④浮层三态入口（失败 N / 已忽略 N / 失败 0，入口常驻）；⑤扫描缓存对账（grid 缓存存在但 DB pending → 补记 done，根治「待处理 N 卡 99% 转圈」死锁，实测待处理 2→0）；⑥命名修正：浮层「待处理」→「失败」、顶部徽标「预览图待处理」→「预览图失败」。测试 12/12 全绿 + 前端 build 通过。
+   - **F-03 源文件签名 + F-04 Origin 校验（P2，2026-10-06，分支 fix/f03-f04 → 合并 6fd9dae 已推送）**：assets 表新增 `file_size`/`file_mtime`（列检查 ALTER 迁移）；scanner 遍历收集签名（size + mtimeMs，约 1~2s 总成本），签名不一致 → 重新提取元数据 + 状态置 pending + 删旧 grid/detail 缓存 → 重建。**前端 rev 联动**：资产 DTO / `/api/dates` 返回 `rev = file_mtime`，thumbUrl/videoPosterUrl 调用点携带（GridItem/DetailView/LivePhoto/DateNavPanel/useLazyImage）——覆盖文件后 mtime 变 → URL 变 → 浏览器绕过 1 年强缓存自动换新图（F-03 完整闭环）。F-04：index.ts onRequest hook 对带非允许 Origin 的非 GET/HEAD 请求返回 403（恶意网页跨站防护；curl/本地脚本无 Origin 零影响）。验证：tsc/vue-tsc 0 错、测试 12/12、F-03 端到端（覆盖→失效→重建→前端换图）、F-04 行为 4 项全对。审查报告 7 项全部完成。
 
 ## 照片库实测数据（2026-09-08）
 - 结构：`YYYY/MM/DD/文件名`（iCloudPD 默认），实况配对基名归一（`_HEVC` 后缀），**无时间差校验**。⚠️ **配对必须限定同一目录**——跨目录同名文件（不同设备/编辑版本的同名，如 `2018/02/04/IMG_0040*` 与 `2021/07/27/IMG_0040*`，全库 2,363 个基名分布多目录）若只按基名配对会错配丢视频（见「已完成」第 9 条）。
@@ -73,7 +73,7 @@
 - **服务进程**：用户自启后端 8899/前端 5173，勿占用；临时验证进程用完 TaskStop。
 - **git SSH**：固定 `core.sshCommand = "C:/Windows/System32/OpenSSH/ssh.exe" -o StrictHostKeyChecking=accept-new`；日常 `git push origin main` 畅通。
 - **临时脚本**：`server/scripts/.*`（dot 开头）用完即删，已在 .gitignore 排除防误提交。
-- **缩略图缓存**：内容变更后 bump `THUMB_REV`（web/src/api/client.ts，当前 3；视频封面也使用此版本号）；`npm run fix-thumbs` 重建方向缓存。
+- **缩略图缓存**：rev 已动态化——前端缩略图 URL 带 `rev = 资产 file_mtime`（后端 AssetDto.rev / dates.thumbRev 下发），源文件变化后 URL 自动变、浏览器强制重拉（F-03 闭环）；`THUMB_REV=3` 常量仅作无 rev 场景的默认兜底，不再需要手动 bump；`npm run fix-thumbs` 已随 2026-10-06 脚本清理移除（重建走 F-03 签名失效）。
 - **sharp 0.33.5**：构造选项 `rotate:true` 不生效，必须链式 `.rotate()`。
 
 ## 待办 / 遗留（均不影响使用）
@@ -85,8 +85,8 @@
 - ✅ 2026-09-17 审查 B1~B5 修复完成（删除页缓存错位 / 实况宽高兜底 / 首屏默认浅色 / CORS DELETE / 排版整理）。
 - 🔜 P2+-1 一键拉取（exe 方案已定）待开发；P2+-3 语义搜索暂缓实现；**P2+-4 详情缓存治理已列入**（保留最近 N 月浏览的 detail 图 / 一键清空 detail 缓存，可选）。
 - ✅ **search store finally 竞态已修**（2026-09-19 审查发现，代码 finally 已有 `if (seq !== searchSeq) return` 守卫，F-05 改动时一并确认）。
-- ✅ **F-07 + 失败清单系列已完成**（2026-10-06，分支 fix/ffmpeg-timeout 待合并）：ffmpeg/ffprobe 超时 kill；失败项操作解锁（只锁扫描中）；后台挂起 60s 上限；失败保留 ignored + 忽略跳过重试 + 自愈日志；浮层三态入口；扫描缓存对账（待处理卡死根治，实测收敛）；命名修正（浮层/徽标「待处理」→「失败」）。测试 12/12。
-- ✅ **审查报告 7 项全部完成**（2026-10-06，F-03/F-04 在分支 fix/f03-f04）：F-03 源文件签名（size+mtimeMs）驱动缓存失效 + 前端 rev 联动（rev=file_mtime，URL 随内容变化强制换图）；F-04 副作用请求非允许 Origin 403。文档快照资产口径 12,609 已同步。
+- ✅ **F-07 + 失败清单系列已完成**（2026-10-06，分支 fix/ffmpeg-timeout → 合并 505cb28 推送）：ffmpeg/ffprobe 超时 kill；失败项操作解锁（只锁扫描中）；后台挂起 60s 上限；失败保留 ignored + 忽略跳过重试 + 自愈日志；浮层三态入口；扫描缓存对账（待处理卡死根治，实测收敛）；命名修正（浮层/徽标「待处理」→「失败」）。测试 12/12。
+- ✅ **审查报告 7 项全部完成**（2026-10-06，F-03/F-04 分支 fix/f03-f04 → 合并 6fd9dae 推送）：F-03 源文件签名（size+mtimeMs）驱动缓存失效 + 前端 rev 联动（rev=file_mtime，URL 随内容变化强制换图）；F-04 副作用请求非允许 Origin 403。文档快照资产口径 12,609 已同步。
 
 ## 用户偏好（与本项目相关）
 - 技术/财经类内容偏好"深度解析 + 大白话 + 结构化清单"。
