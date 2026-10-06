@@ -391,11 +391,32 @@ export async function runScan(source: 'manual' | 'watcher' | 'startup' = 'manual
   cleanOrphanThumbs(validIds)
 
   // ⑦ 扫描完成且删除对账结束后，统计真实待处理/失败预览图并启动后台队列。
+  // —— 缓存对账（F-07 系列修复）——
+  // grid 缩略图已存在但 DB 仍 pending 的资产直接标记 done：ensureThumbnail 命中缓存时
+  // 只返回文件、不写 DB，若状态曾丢失（早期生成成功但进程在写库前退出等）会永远卡在
+  // pending → beginThumbnailBatch 的 preparing 永不收敛（前端 99% 转圈）。
+  // 对账以缓存文件为权威补齐状态，再统计真正缺缓存的入队。
   const pendingThumbs = db
     .prepare(`SELECT id, file_path, type, live_video FROM assets WHERE thumb_status = 'pending'`)
     .all() as { id: number; file_path: string; type: string; live_video: string | null }[]
-  beginThumbnailBatch()
+  const reconcileDone = db.prepare(
+    `UPDATE assets SET thumb_status='done', thumb_error=NULL WHERE id=? AND thumb_status='pending'`,
+  )
+  let reconciled = 0
   for (const r of pendingThumbs) {
+    if (fs.existsSync(thumbCachePath('grid', r.id))) {
+      reconcileDone.run(r.id)
+      reconciled++
+    }
+  }
+  if (reconciled > 0) {
+    console.log(`[scan] 缓存对账：${reconciled} 个资产缩略图已存在，状态补记为 done（未入队）`)
+  }
+  const realPendingThumbs = db
+    .prepare(`SELECT id, file_path, type, live_video FROM assets WHERE thumb_status = 'pending'`)
+    .all() as { id: number; file_path: string; type: string; live_video: string | null }[]
+  beginThumbnailBatch()
+  for (const r of realPendingThumbs) {
     enqueueAsset({ id: r.id, relPath: r.file_path, type: r.type as 'photo' | 'video' | 'live', liveVideo: r.live_video })
   }
 

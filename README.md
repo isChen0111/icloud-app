@@ -105,7 +105,7 @@ npm run start
 | `npm run scan` | `server/` | 手动触发一次扫描同步 |
 | `npm run dev` | `web/` | 启动前端开发服务 |
 | `npm run build` | `web/` | 构建前端生产版本 |
-| `npm test` | `server/` | 缩略图调度器单元测试（node:test，9 用例） |
+| `npm test` | `server/` | 单元测试（node:test，12 用例：缩略图调度器 9 + ffmpeg 超时 2 + 后台挂起上限 1） |
 | `npm run fix-size` | `server/` | 维护命令：从原媒体重新读取像素尺寸 |
 | `npm run fix-thumbs` | `server/` | 维护命令：重建缩略图缓存 |
 

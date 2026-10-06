@@ -46,6 +46,16 @@ export const config = {
   /** 视频封面抽取时间点（秒） */
   videoPosterSeek: 1,
 
+  /**
+   * FFmpeg 子进程超时（毫秒，修复审查 F-07）：
+   * HEIC 解码 / 视频抽帧用；超时 kill 子进程并等待退出，防止卡死任务永久占住队列槽位。
+   * 正常解码/抽帧为秒级~10 秒级，60s 为保守上限，不会误杀正常任务。
+   */
+  ffmpegTimeoutMs: 60_000,
+
+  /** FFprobe 子进程超时（毫秒，修复审查 F-07）：读元数据/尺寸用；卡死直接 kill。 */
+  ffprobeTimeoutMs: 30_000,
+
   /** 分页默认每页条数 */
   pageSize: 100,
 

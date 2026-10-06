@@ -168,6 +168,25 @@ describe('ThumbnailScheduler 浏览租约', () => {
     assert.equal(backgroundRan, true, '刷新后的租约到期后后台应执行')
     await background // 已 resolve，立即返回
   })
+
+  test('后台挂起超上限：即使浏览租约持续续期也强制放行（防饿死，F-07 系列）', async () => {
+    const scheduler = new ThumbnailScheduler({ concurrency: 1, browseLeaseMs: 100, backgroundMaxDeferMs: 60 })
+
+    scheduler.markBrowsing() // 先激活浏览租约，后台任务随后才会挂起
+    let backgroundRan = false
+    const background = scheduler.submit(async () => {
+      backgroundRan = true
+    }, 'background')
+
+    // 持续刷新浏览租约（模拟用户活跃浏览），若没有挂起上限，后台会永远不执行
+    await delay(50) // 未超过 60ms 上限 → 仍挂起
+    assert.equal(backgroundRan, false, '未超上限时后台仍挂起')
+    scheduler.markBrowsing()
+
+    await delay(70) // 距首次挂起已 120ms > 60ms 上限，且租约又被刷新
+    assert.equal(backgroundRan, true, '挂起超过上限后即使租约仍有效也应被强制放行')
+    await background // 已 resolve，立即返回
+  })
 })
 
 describe('ThumbnailScheduler 积压计数', () => {

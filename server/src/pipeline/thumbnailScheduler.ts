@@ -22,6 +22,13 @@ export interface ThumbnailSchedulerOptions {
   concurrency: number
   /** 浏览租约时长（ms）：最后一次浏览活动后多久恢复后台补图 */
   browseLeaseMs: number
+  /**
+   * 后台任务挂起上限（ms，防饿死）：
+   * 浏览租约可被持续刷新，理论上后台任务会一直挂起。超过本时长的挂起任务
+   * 即使仍在浏览租约内也会被强制放行执行，保证残留待处理任务最终收敛
+   * （否则 progress 永远 preparing，失败项操作会被锁死——见 F-07 系列修复）。
+   */
+  backgroundMaxDeferMs?: number
 }
 
 /** 队列指标快照（F-02 诊断用，供 /api/stats 展示） */
@@ -48,14 +55,17 @@ export class ThumbnailScheduler {
 
   private readonly browseLeaseMs: number
 
+  /** 后台任务挂起上限（默认 60s）：超限即使租约内也强制放行 */
+  private readonly backgroundMaxDeferMs: number
+
   /** 浏览租约到期时间戳：此时间之前后台任务挂起不派发 */
   private browsingUntil = 0
 
   /** 恢复放行定时器（unref：不阻止进程退出） */
   private resumeTimer: NodeJS.Timeout | undefined
 
-  /** 浏览期间挂起的后台任务：租约到期时统一放行入队 */
-  private deferred: (() => void)[] = []
+  /** 浏览期间挂起的后台任务：租约到期或挂起超限时放行入队 */
+  private deferred: { run: () => void; since: number }[] = []
 
   /** 正在运行的交互任务数（wrapper 执行期计数） */
   private interactiveRunningCount = 0
@@ -68,6 +78,7 @@ export class ThumbnailScheduler {
 
   constructor(options: ThumbnailSchedulerOptions) {
     this.browseLeaseMs = options.browseLeaseMs
+    this.backgroundMaxDeferMs = options.backgroundMaxDeferMs ?? 60_000
     this.queue = new PQueue({ concurrency: options.concurrency })
   }
 
@@ -96,10 +107,13 @@ export class ThumbnailScheduler {
     }
 
     if (priority === 'background' && Date.now() < this.browsingUntil) {
-      // 浏览活跃：挂起，租约到期后放行
+      // 浏览活跃：挂起，租约到期或挂起超限时放行
       return new Promise((resolve, reject) => {
-        this.deferred.push(() => {
-          this.queue.add(wrapped, { priority: PRIORITY.background }).then(resolve, reject)
+        this.deferred.push({
+          since: Date.now(),
+          run: () => {
+            this.queue.add(wrapped, { priority: PRIORITY.background }).then(resolve, reject)
+          },
         })
       })
     }
@@ -110,7 +124,18 @@ export class ThumbnailScheduler {
   markBrowsing(leaseMs = this.browseLeaseMs): void {
     this.browsingUntil = Date.now() + leaseMs
     if (this.resumeTimer) clearTimeout(this.resumeTimer)
+    // 挂起超限的后台任务强制放行（防饿死：持续浏览会让 pending 永不收敛）
+    this.flushOverdueDeferred()
     this.scheduleResume()
+  }
+
+  /** 挂起超过上限（backgroundMaxDeferMs）的后台任务强制放行，即使仍在浏览租约内 */
+  private flushOverdueDeferred(): void {
+    const now = Date.now()
+    const overdue = this.deferred.filter((d) => now - d.since >= this.backgroundMaxDeferMs)
+    if (overdue.length === 0) return
+    this.deferred = this.deferred.filter((d) => now - d.since < this.backgroundMaxDeferMs)
+    for (const d of overdue) d.run()
   }
 
   /** 租约到期 → 放行挂起的后台任务 */
@@ -131,7 +156,7 @@ export class ThumbnailScheduler {
   private flushDeferred(): void {
     const pending = this.deferred
     this.deferred = []
-    for (const run of pending) run()
+    for (const item of pending) item.run()
   }
 
   /** 当前积压任务数 = 排队中 + 运行中 + 浏览挂起中（供 /api/stats 展示） */

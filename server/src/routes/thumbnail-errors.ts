@@ -1,6 +1,6 @@
 import type { FastifyInstance, FastifyReply } from 'fastify'
 import { getDb } from '../db/index.js'
-import { beginThumbnailBatch, enqueueAsset, getThumbnailProgress, type EnqueueItem } from '../pipeline/queue.js'
+import { beginThumbnailBatch, enqueueAsset, type EnqueueItem } from '../pipeline/queue.js'
 import { scanProgress } from '../scanner/index.js'
 
 interface Selection {
@@ -26,13 +26,18 @@ function readSelection(body: unknown): Selection | null {
   return { all: false, ids: [...new Set(input.ids as number[])] }
 }
 
+/**
+ * 失败项操作（忽略/重试）的并发锁。
+ *
+ * 修复（F-07 系列）：只锁「扫描中」——扫描对账期间资产集合变动，操作失败项可能
+ * 落到被删除/待对账的行上。**不再用「预览图 preparing」锁**：preparing 表示还有任务
+ * 待处理，而残留任务可能被浏览租约挂起较久，用它锁操作会导致用户无法忽略/重试
+ * 失败项（曾出现百分比转圈 + 操作全部 409 的死锁）。忽略/重试本身与批处理并发安全
+ * （重试 = 重新入队，忽略 = 只改标记）。
+ */
 function sendBusy(reply: FastifyReply): boolean {
   if (scanProgress.status === 'scanning') {
     void reply.code(409).send({ error: '资源扫描中，暂不能处理预览图失败项' })
-    return true
-  }
-  if (getThumbnailProgress().status === 'preparing') {
-    void reply.code(409).send({ error: '预览图正在处理中，请完成后再操作失败项' })
     return true
   }
   return false

@@ -161,6 +161,12 @@ export async function registerStatsRoutes(app: FastifyInstance): Promise<void> {
         .prepare(`SELECT COUNT(*) AS count FROM assets WHERE thumb_status = 'error' AND thumb_ignored = 0`)
         .get() as { count: number }
     ).count
+    // 已忽略失败项计数（F-07 系列）：浮层「失败 0 但有忽略项」时显示入口，忽略项始终可管理
+    const ignoredThumbnailFailures = (
+      db
+        .prepare(`SELECT COUNT(*) AS count FROM assets WHERE thumb_status = 'error' AND thumb_ignored = 1`)
+        .get() as { count: number }
+    ).count
     const adjustedThumbnailProgress = {
       ...thumbnailProgress,
       failed: activeThumbnailFailures,
@@ -180,6 +186,8 @@ export async function registerStatsRoutes(app: FastifyInstance): Promise<void> {
       // F-02 诊断指标：运行中 / 交互运行中 / 交互等待 / 已跳过（客户端断开被拦下的请求）
       thumbQueueMetrics: getQueueMetrics(),
       thumbnails: adjustedThumbnailProgress,
+      // 已忽略失败项计数（F-07 系列）：浮层入口三态展示用
+      ignoredThumbnails: ignoredThumbnailFailures,
       scan: { ...scanProgress },
     })
   })
