@@ -1,53 +1,31 @@
 /**
- * 任务队列（p-queue）
+ * 任务队列（单一调度器，F-01 修复 2026-10-06）
  *
  * 后台和交互任务共享一个总并发预算：
- * - 空闲时后台最多使用全部并发；浏览活动时停止派发新的后台任务。
- * - 后台已启动的任务不强制中断；其槽位释放后优先交给交互请求。
- * - 交互和后台任务总运行数始终不超过配置上限。
+ * - 单一 PQueue 的 concurrency 固定 = thumbConcurrency，总运行数严格 ≤ 预算
+ *   （旧实现用双队列互推并发值，8 后台运行中 + 1 交互会产生 9 个并发，见审查报告 F-01）。
+ * - 交互优先由调度器 priority 表达（交互 10 / 后台 0，排队时插队）。
+ * - 浏览活动租约：用户浏览时后台任务挂起不派发（交互独占全部槽位）；
+ *   停止活动 30 秒后后台补图恢复。已运行的任务不强制中断。
  * - 同一资产重复入队：用 Set 去重（懒生成 + 滚动浏览时同一张图可能被反复请求）。
+ *
+ * 对外接口（enqueueAsset / runInteractiveThumbnail / markThumbnailBrowsing /
+ * beginThumbnailBatch / resetThumbnailProgress / getThumbnailProgress / queueSize）
+ * 保持不变，调用方（thumb.ts / scanner / stats.ts / thumbnail-errors.ts）无需改动。
+ * 调度核心见 thumbnailScheduler.ts（纯逻辑、可单测）。
  */
-import PQueue from 'p-queue'
 import { config } from '../config.js'
 import { getDb } from '../db/index.js'
 import { ensureThumbnail } from './thumbnails.js'
+import { ThumbnailScheduler } from './thumbnailScheduler.js'
 
-const queue = new PQueue({ concurrency: config.thumbConcurrency })
-const interactiveQueue = new PQueue({ concurrency: config.thumbConcurrency })
+/** 交互与后台共享的调度器：总并发 = config.thumbConcurrency，浏览租约 30 秒 */
+const scheduler = new ThumbnailScheduler({
+  concurrency: config.thumbConcurrency,
+  browseLeaseMs: 30_000,
+})
+
 const queued = new Map<string, Set<number>>() // 去重键 → 等待该任务结果的批次
-const browsingLeaseMs = 30_000
-let browsingUntil = 0
-let resumeTimer: NodeJS.Timeout | undefined
-let concurrencyUpdateScheduled = false
-
-function updateQueueConcurrency(): void {
-  const maxConcurrency = config.thumbConcurrency
-  const backgroundConcurrency = Math.max(1, maxConcurrency - interactiveQueue.pending)
-  const interactiveConcurrency = Math.max(1, maxConcurrency - queue.pending)
-
-  queue.concurrency = backgroundConcurrency
-  interactiveQueue.concurrency = interactiveConcurrency
-
-  if (Date.now() < browsingUntil || maxConcurrency <= interactiveQueue.pending) queue.pause()
-  else void queue.start()
-
-  if (maxConcurrency <= queue.pending) interactiveQueue.pause()
-  else void interactiveQueue.start()
-}
-
-function scheduleConcurrencyUpdate(): void {
-  if (concurrencyUpdateScheduled) return
-  concurrencyUpdateScheduled = true
-  queueMicrotask(() => {
-    concurrencyUpdateScheduled = false
-    updateQueueConcurrency()
-  })
-}
-
-queue.on('active', scheduleConcurrencyUpdate)
-queue.on('next', scheduleConcurrencyUpdate)
-interactiveQueue.on('active', scheduleConcurrencyUpdate)
-interactiveQueue.on('next', scheduleConcurrencyUpdate)
 
 export interface ThumbnailProgress {
   status: 'idle' | 'preparing' | 'done'
@@ -125,37 +103,24 @@ export function getThumbnailProgress(): ThumbnailProgress {
 }
 
 /** 用户有浏览交互时暂停后台补图；当前任务完成后不再启动新的后台任务。 */
-export function markThumbnailBrowsing(leaseMs = browsingLeaseMs): void {
-  browsingUntil = Date.now() + leaseMs
-  queue.pause()
-  updateQueueConcurrency()
-  if (resumeTimer) clearTimeout(resumeTimer)
-  scheduleBackgroundResume()
-}
-
-function scheduleBackgroundResume(): void {
-  const remaining = browsingUntil - Date.now()
-  if (remaining <= 0) {
-    resumeTimer = undefined
-    updateQueueConcurrency()
-    return
-  }
-  resumeTimer = setTimeout(scheduleBackgroundResume, remaining)
-  resumeTimer.unref()
+export function markThumbnailBrowsing(leaseMs = 30_000): void {
+  scheduler.markBrowsing(leaseMs)
 }
 
 /** 将直接由浏览页面触发的任务放入共享队列，并优先于剩余后台任务执行。 */
 export function runInteractiveThumbnail<T>(task: () => Promise<T>): Promise<T> {
   markThumbnailBrowsing()
   let result: T
-  return interactiveQueue.add(async () => {
-    result = await task()
-  }).then(() => result)
+  return scheduler
+    .submit(async () => {
+      result = await task()
+    }, 'interactive')
+    .then(() => result)
 }
 
 /**
  * 提交一个资产的网格缩略图任务。
- * 调用方可并发触发多次，内部自动去重。
+ * 调用方可并发触发多次，内部自动去重（同一 key 只入队一次）。
  */
 export function enqueueAsset(item: EnqueueItem, priority: 'background' | 'user' = 'background'): void {
   if (priority === 'user') markThumbnailBrowsing()
@@ -170,9 +135,8 @@ export function enqueueAsset(item: EnqueueItem, priority: 'background' | 'user' 
   const batches = new Set<number>()
   if (thumbnailProgress.status === 'preparing') batches.add(batchId)
   queued.set(key, batches)
-  // eslint-disable-next-line @typescript-eslint/no-floating-promises
-  const targetQueue = priority === 'user' ? interactiveQueue : queue
-  targetQueue.add(() =>
+
+  const job = () =>
     ensureThumbnail(item.id, size, priority === 'background' ? 'background' : 'interactive')
       .then((result) => {
         for (const id of batches) recordThumbnailResult(id, result !== null)
@@ -181,9 +145,9 @@ export function enqueueAsset(item: EnqueueItem, priority: 'background' | 'user' 
         for (const id of batches) recordThumbnailResult(id, false)
         throw error
       })
-      .finally(() => queued.delete(key)),
-  )
-  updateQueueConcurrency()
+      .finally(() => queued.delete(key))
+  // 不 await：任务完成通过 batch 记录/缓存就绪反馈，调用方不需要本任务的 Promise。
+  void scheduler.submit(job, priority === 'user' ? 'interactive' : 'background')
 }
 
 function recordThumbnailResult(batchId: number, succeeded: boolean): void {
@@ -195,7 +159,7 @@ function recordThumbnailResult(batchId: number, succeeded: boolean): void {
   if (thumbnailProgress.pending === 0) thumbnailProgress.status = 'done'
 }
 
-/** 队列当前积压数量（供 /api/stats 展示） */
+/** 队列当前积压数量（供 /api/stats 展示）：排队 + 运行 + 浏览挂起 */
 export function queueSize(): number {
-  return queue.size + queue.pending + interactiveQueue.size + interactiveQueue.pending
+  return scheduler.queuedCount()
 }
