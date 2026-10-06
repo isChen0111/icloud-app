@@ -37,6 +37,17 @@ function sanitizeQuery(raw: string): string {
     .trim()
 }
 
+/**
+ * 预期输入级错误判定（修复审查 F-05）：
+ * 清洗后仍有极少数畸形输入（超长输入/畸形 token 组合）会让 FTS5 抛语法类错误——
+ * 这类是「输入问题」，返回空结果而非 500；其余（DB 错误、FTS 表损坏、磁盘等）
+ * 是真异常，必须返回 500，不能让真异常伪装成「没有结果」。
+ */
+function isExpectedFtsInputError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err)
+  return /(syntax error|malformed|parse error|no such column|fts5:)/i.test(msg)
+}
+
 export async function registerSearchRoutes(app: FastifyInstance): Promise<void> {
   const db = getDb()
 
@@ -140,7 +151,14 @@ export async function registerSearchRoutes(app: FastifyInstance): Promise<void> 
         )
         .all(query, ...exactArgs, limit, offset) as AssetRow[]
     } catch (err) {
-      console.warn(`[search] FTS 查询失败，返回空: ${query}`, (err as Error).message)
+      // 修复审查 F-05：分类处理——预期输入级错误返回空结果（console.warn），
+      // 真异常返回 500（console.error），不再把所有错误都伪装成「没有结果」。
+      if (isExpectedFtsInputError(err)) {
+        console.warn(`[search] FTS 输入级查询失败，返回空: ${query}`, (err as Error).message)
+      } else {
+        console.error(`[search] 搜索真异常，返回 500: ${query}`, err)
+        return reply.code(500).send({ error: 'search failed', message: (err as Error).message })
+      }
     }
 
     return reply.send({ query: q ?? '', total, months, items: rows.map(toDto), offset })
