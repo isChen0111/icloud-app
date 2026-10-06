@@ -68,6 +68,10 @@ const inFlight = new Map<string, Promise<string | null>>()
 /**
  * 确保某资产具备指定档位的缩略图；已存在则直接返回路径。
  * 这是「懒生成」的核心入口：API 请求缩略图 → 未命中 → 现场生成。
+ *
+ * 修复（F-07 系列）：grid 档且用户已忽略（thumb_status='error' + thumb_ignored=1）
+ * 的任务不再自动重试——用户已明确放弃该图，重复尝试只会白耗 ffmpeg 并反复失败。
+ * 手动「重试」会先把状态置 pending + ignored=0，走正常流程绕过此判断；detail 档不受影响。
  */
 export function ensureThumbnail(
   assetId: number,
@@ -76,6 +80,7 @@ export function ensureThumbnail(
 ): Promise<string | null> {
   const outPath = thumbCachePath(size, assetId)
   if (fs.existsSync(outPath)) return Promise.resolve(outPath)
+  if (size === 'grid' && isThumbIgnored(assetId)) return Promise.resolve(null)
 
   const key = `${assetId}:${size}`
   const pending = inFlight.get(key)
@@ -84,6 +89,14 @@ export function ensureThumbnail(
   const task = generate(assetId, size, priority).finally(() => inFlight.delete(key))
   inFlight.set(key, task)
   return task
+}
+
+/** 该资产的网格缩略图是否已被用户忽略（仅 error 状态下的忽略标记生效） */
+function isThumbIgnored(assetId: number): boolean {
+  const row = getDb()
+    .prepare(`SELECT thumb_ignored FROM assets WHERE id = ? AND thumb_status = 'error'`)
+    .get(assetId) as { thumb_ignored: number } | undefined
+  return row?.thumb_ignored === 1
 }
 
 /** 实际生成逻辑（被 ensureThumbnail 去重包装） */
@@ -152,7 +165,15 @@ async function generate(
 
     // 更新状态（detail 生成成功时也顺带记录宽高兜底）
     if (size === 'grid') {
-      db.prepare(`UPDATE assets SET thumb_status='done', thumb_error=NULL, thumb_ignored=0 WHERE id=?`).run(assetId)
+      // 先查旧状态（必须在 UPDATE 之前）：失败项重新生成成功 → 打自愈日志，解释失败清单里「项消失」的原因
+      const prev = db
+        .prepare(`SELECT thumb_status, thumb_error FROM assets WHERE id = ? AND (thumb_status = 'error' OR thumb_error IS NOT NULL)`)
+        .get(assetId) as { thumb_status: string; thumb_error: string | null } | undefined
+      // 修复（F-07 系列）：失败保留 ignored——不无条件清 0，避免「忽略 → 被浏览重试失败 → 弹回失败」反复横跳
+      db.prepare(`UPDATE assets SET thumb_status='done', thumb_error=NULL WHERE id=?`).run(assetId)
+      if (prev) {
+        console.log(`[thumb] 失败项已恢复 asset=${assetId}（重新生成成功，原错误: ${(prev.thumb_error ?? '').slice(0, 120)}）`)
+      }
     }
     if (size === 'detail') db.prepare(`UPDATE assets SET detail_status='done' WHERE id=?`).run(assetId)
     return outPath
@@ -163,7 +184,8 @@ async function generate(
     // existsSync 会把"存在"的坏文件永久当有效返回，修复后也不会重新生成
     fs.rmSync(outPath, { force: true })
     if (size === 'grid') {
-      db.prepare(`UPDATE assets SET thumb_status='error', thumb_error=?, thumb_ignored=0 WHERE id=?`)
+      // 修复（F-07 系列）：不再覆盖 thumb_ignored——忽略状态由用户显式管理，失败不清除
+      db.prepare(`UPDATE assets SET thumb_status='error', thumb_error=? WHERE id=?`)
         .run(message.slice(0, 1000), assetId)
     }
     return null

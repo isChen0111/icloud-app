@@ -64,7 +64,7 @@ const statusSummary = computed(() => {
     return `正在生成预览图 · ${percent}%`
   }
   if (scan.status === 'done' && thumbnails.status === 'done' && thumbnails.failed > 0) {
-    return `预览图待处理 · ${numberFormat.format(thumbnails.failed)} 项`
+    return `预览图失败 · ${numberFormat.format(thumbnails.failed)} 项`
   }
   if (scan.status === 'done') return '照片库已同步'
   return '照片库状态'
@@ -459,6 +459,8 @@ onBeforeUnmount(() => {
               <span>已处理 <b>{{ numberFormat.format(stats.thumbnails.processed) }} / {{ numberFormat.format(stats.thumbnails.total) }}</b></span>
               <span>已生成 <b>{{ numberFormat.format(stats.thumbnails.completed) }}</b></span>
               <span>待处理 <b>{{ numberFormat.format(stats.thumbnails.pending) }}</b></span>
+              <!-- F-07 系列三态：有未忽略失败 →「失败 N 项 >」；无失败但有忽略项 →「已忽略 N 项 >」；都没有 →「失败 0」。
+                   入口常驻保证忽略项始终可查看/取消忽略（否则 failed=0 时按钮消失，用户找不到忽略清单）。 -->
               <button
                 v-if="stats.thumbnails.failed > 0"
                 class="failure-link"
@@ -466,6 +468,14 @@ onBeforeUnmount(() => {
                 @click="openFailureDialog"
               >
                 失败 <b>{{ numberFormat.format(stats.thumbnails.failed) }}</b> 项 ›
+              </button>
+              <button
+                v-else-if="stats.ignoredThumbnails > 0"
+                class="failure-link"
+                type="button"
+                @click="openFailureDialog"
+              >
+                已忽略 <b>{{ numberFormat.format(stats.ignoredThumbnails) }}</b> 项 ›
               </button>
               <span v-else>失败 <b>0</b></span>
             </div>
@@ -546,7 +556,7 @@ onBeforeUnmount(() => {
               :class="{ selected: failureFilter === 'active' }"
               @click="failureFilter = 'active'"
             >
-              待处理 {{ numberFormat.format(failureActiveCount) }}
+              失败 {{ numberFormat.format(failureActiveCount) }}
             </button>
             <button
               type="button"
@@ -572,7 +582,7 @@ onBeforeUnmount(() => {
         <div class="failure-list" aria-live="polite">
           <p v-if="failureLoading" class="failure-empty">正在读取失败项目…</p>
           <p v-else-if="visibleFailures.length === 0" class="failure-empty">
-            {{ failureFilter === 'active' ? '没有待处理的失败项目。' : '没有已忽略的项目。' }}
+            {{ failureFilter === 'active' ? '没有失败项目。' : '没有已忽略的项目。' }}
           </p>
           <article v-for="failure in visibleFailures" v-else :key="failure.id" class="failure-item">
             <div class="failure-item-copy">
@@ -614,7 +624,7 @@ onBeforeUnmount(() => {
           </article>
         </div>
         <footer class="failure-dialog-footer">
-          忽略只会从待处理提醒中移除该项目，不会删除文件；仍可在“已忽略”中恢复提醒。
+          忽略只会从失败提醒中移除该项目，不会删除文件；仍可在“已忽略”中恢复提醒。
         </footer>
       </section>
     </div>

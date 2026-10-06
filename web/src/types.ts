@@ -106,6 +106,8 @@ export interface Stats {
     pending: number
     failed: number
   }
+  /** 已忽略失败项计数（F-07 系列）：浮层入口三态展示用 */
+  ignoredThumbnails: number
   scan: {
     status: 'idle' | 'scanning' | 'done' | 'error'
     runId: number

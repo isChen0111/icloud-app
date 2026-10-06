@@ -42,7 +42,8 @@
    - **F-05 搜索错误态（P2，5a17e8e/合并 e24600b）**：search.ts catch 分类——预期输入级错误（FTS 语法类，消息含 syntax/malformed/no such column 等）返回空结果；真异常返回 500 + 错误信息（不再伪装成"没有结果"）；前端 search store 加 `searchError`（首屏失败置错）+ GridView「搜索失败，请重试」错误态与重试按钮；滚动后续页失败仍走静默 + 滚回重试。
    - **F-06 FTS 版本化（P2，同合并）**：schema.ts 建表 DROP → `CREATE VIRTUAL TABLE IF NOT EXISTS`；db/index.ts 用 `PRAGMA user_version` 记录 `FTS_SCHEMA_VERSION=2`——版本不符才 DROP+CREATE 全量重建，正常启动只按行数差回填（**正常启动零重建**，迁移已执行：user_version 0→2，assets_fts 12,609 = assets 12,609）。
    - **Git 清理**：远程 9 分支系本地过期缓存快照（实际仅 main）；一次性清理 17 个已合并旧分支 + prune 远程 gone 分支。
-   - 剩余待修（顺序已定）：F-07（ffmpeg spawn 超时 kill）→ F-03（源文件签名 size+mtimeMs 驱动失效）→ F-04（副作用路由 Origin/Fetch Metadata 校验）。
+   - **F-07 FFmpeg/FFprobe 超时 + 失败清单系列（P2，2026-10-06，分支 fix/ffmpeg-timeout，待合并）**：`ffmpeg.ts` 按操作类型超时（FFprobe 30s / 抽帧、HEIC 解码 60s），超时 kill 子进程并等 close 统一收尾，错误带 stderr 尾部；新增 `ffmpeg.test.ts`（超时 kill / 不误杀 2 用例）。**附带失败清单系列修复（同分支）**：①失败项忽略/重试不再被 preparing 锁住（只锁扫描中，消除 409 死锁）；②后台挂起上限 `backgroundMaxDeferMs=60s` 强制放行（防持续浏览饿死后台）；③失败保留 `thumb_ignored` + 忽略项跳过自动重试 + 自愈日志；④浮层三态入口（失败 N / 已忽略 N / 失败 0，入口常驻）；⑤扫描缓存对账（grid 缓存存在但 DB pending → 补记 done，根治「待处理 N 卡 99% 转圈」死锁，实测待处理 2→0）；⑥命名修正：浮层「待处理」→「失败」、顶部徽标「预览图待处理」→「预览图失败」。测试 12/12 全绿 + 前端 build 通过。
+   - 剩余待修（顺序已定）：F-03（源文件签名 size+mtimeMs 驱动失效）→ F-04（副作用路由 Origin/Fetch Metadata 校验）。
 
 ## 照片库实测数据（2026-09-08）
 - 结构：`YYYY/MM/DD/文件名`（iCloudPD 默认），实况配对基名归一（`_HEVC` 后缀），**无时间差校验**。⚠️ **配对必须限定同一目录**——跨目录同名文件（不同设备/编辑版本的同名，如 `2018/02/04/IMG_0040*` 与 `2021/07/27/IMG_0040*`，全库 2,363 个基名分布多目录）若只按基名配对会错配丢视频（见「已完成」第 9 条）。
@@ -84,7 +85,8 @@
 - ✅ 2026-09-17 审查 B1~B5 修复完成（删除页缓存错位 / 实况宽高兜底 / 首屏默认浅色 / CORS DELETE / 排版整理）。
 - 🔜 P2+-1 一键拉取（exe 方案已定）待开发；P2+-3 语义搜索暂缓实现；**P2+-4 详情缓存治理已列入**（保留最近 N 月浏览的 detail 图 / 一键清空 detail 缓存，可选）。
 - ✅ **search store finally 竞态已修**（2026-09-19 审查发现，代码 finally 已有 `if (seq !== searchSeq) return` 守卫，F-05 改动时一并确认）。
-- 🔜 审查报告剩余待修（顺序已定，均未开工）：F-07（ffmpeg spawn 超时 + kill 子进程 + 失败清单）→ F-03（源文件签名 size+mtimeMs 驱动元数据/缓存失效）→ F-04（副作用路由校验 Origin / Fetch Metadata 或本地配对 token）→ 文档快照资产口径更新已完成（12,609）。
+- ✅ **F-07 + 失败清单系列已完成**（2026-10-06，分支 fix/ffmpeg-timeout 待合并）：ffmpeg/ffprobe 超时 kill；失败项操作解锁（只锁扫描中）；后台挂起 60s 上限；失败保留 ignored + 忽略跳过重试 + 自愈日志；浮层三态入口；扫描缓存对账（待处理卡死根治，实测收敛）；命名修正（浮层/徽标「待处理」→「失败」）。测试 12/12。
+- 🔜 审查报告剩余待修（顺序已定）：F-03（源文件签名 size+mtimeMs 驱动元数据/缓存失效）→ F-04（副作用路由校验 Origin / Fetch Metadata 或本地配对 token）。文档快照资产口径 12,609 已同步。
 
 ## 用户偏好（与本项目相关）
 - 技术/财经类内容偏好"深度解析 + 大白话 + 结构化清单"。

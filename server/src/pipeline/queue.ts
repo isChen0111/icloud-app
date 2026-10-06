@@ -19,10 +19,11 @@ import { getDb } from '../db/index.js'
 import { ensureThumbnail } from './thumbnails.js'
 import { ThumbnailScheduler, type ThumbnailQueueMetrics } from './thumbnailScheduler.js'
 
-/** 交互与后台共享的调度器：总并发 = config.thumbConcurrency，浏览租约 30 秒 */
+/** 交互与后台共享的调度器：总并发 = config.thumbConcurrency，浏览租约 30 秒，后台挂起上限 60 秒（防饿死） */
 const scheduler = new ThumbnailScheduler({
   concurrency: config.thumbConcurrency,
   browseLeaseMs: 30_000,
+  backgroundMaxDeferMs: 60_000,
 })
 
 const queued = new Map<string, Set<number>>() // 去重键 → 等待该任务结果的批次

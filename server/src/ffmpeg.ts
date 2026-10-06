@@ -82,14 +82,32 @@ function resolveToolPaths(): { ffmpegPath: string; ffprobePath: string } {
 
 const tools = resolveToolPaths()
 
-function run(binaryPath: string, args: string[], collectStdout: boolean): Promise<string> {
+export interface RunProcessOptions {
+  /** 是否收集 stdout（ffprobe -of json 需要；ffmpeg 输出不收集） */
+  collectStdout?: boolean
+  /**
+   * 子进程超时（毫秒，修复审查 F-07）：到点 kill 并等待 close 后才 reject，
+   * 防止 ffmpeg/ffprobe 卡死（损坏文件/网络盘挂起）时 Promise 永不结束、
+   * 任务永久占住队列槽位。错误信息带 "timed out ... and was killed" + stderr 尾部。
+   */
+  timeoutMs: number
+}
+
+/**
+ * 通用子进程运行（导出供单元测试直接验证超时/kill 逻辑；生产由 runFfmpeg/ffprobeJson 使用）。
+ * 返回 stdout 全文（collectStdout 时），失败/超时 reject 并附 stderr 尾部。
+ */
+export function runProcess(binaryPath: string, args: string[], options: RunProcessOptions): Promise<string> {
   return new Promise((resolve, reject) => {
     const child = spawn(binaryPath, args, { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] })
     const stdout: Buffer[] = []
     let stderrTail: Buffer<ArrayBufferLike> = Buffer.alloc(0)
+    // settled 防双 settle：error/close 只允许一次生效；timedOut 区分「超时被杀」与「正常非零退出」
+    let settled = false
+    let timedOut = false
 
     child.stdout.on('data', (chunk: Buffer) => {
-      if (collectStdout) stdout.push(chunk)
+      if (options.collectStdout) stdout.push(chunk)
     })
     child.stderr.on('data', (chunk: Buffer) => {
       const maxStderrBytes = 8 * 1024
@@ -100,29 +118,55 @@ function run(binaryPath: string, args: string[], collectStdout: boolean): Promis
         stderrTail = combined.subarray(Math.max(0, combined.length - maxStderrBytes))
       }
     })
-    child.on('error', (error) => reject(new Error(`Failed to start ${path.basename(binaryPath)}: ${error.message}`)))
+
+    const timer = setTimeout(() => {
+      if (settled) return
+      timedOut = true
+      console.warn(
+        `[ffmpeg] ${path.basename(binaryPath)} 超过 ${options.timeoutMs}ms 未退出，已 kill（防止卡死占槽）`,
+      )
+      child.kill() // Windows 下即强制终止；close 事件随后触发，由 close 统一 settle
+    }, options.timeoutMs)
+
+    child.on('error', (error) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      reject(new Error(`Failed to start ${path.basename(binaryPath)}: ${error.message}`))
+    })
     child.on('close', (code) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      const detail = stderrTail.toString('utf8').trim()
+      if (timedOut) {
+        reject(
+          new Error(
+            `${path.basename(binaryPath)} timed out after ${options.timeoutMs}ms and was killed${detail ? `: ${detail}` : ''}`,
+          ),
+        )
+        return
+      }
       if (code === 0) {
         resolve(Buffer.concat(stdout).toString('utf8'))
         return
       }
-      const detail = stderrTail.toString('utf8').trim()
       reject(new Error(`${path.basename(binaryPath)} exited with code ${code}${detail ? `: ${detail}` : ''}`))
     })
   })
 }
 
-/** 执行 FFmpeg 命令；args 不应包含可执行文件本身。 */
+/** 执行 FFmpeg 命令；args 不应包含可执行文件本身。超时由 config.ffmpegTimeoutMs 控制（F-07）。 */
 export async function runFfmpeg(args: string[]): Promise<void> {
-  await run(tools.ffmpegPath, args, false)
+  await runProcess(tools.ffmpegPath, args, { timeoutMs: config.ffmpegTimeoutMs })
 }
 
-/** 读取 FFprobe JSON 元数据。 */
+/** 读取 FFprobe JSON 元数据。超时由 config.ffprobeTimeoutMs 控制（F-07）。 */
 export async function ffprobeJson(filePath: string): Promise<FfprobeResult> {
-  const output = await run(
+  const output = await runProcess(
     tools.ffprobePath,
     ['-v', 'error', '-show_format', '-show_streams', '-of', 'json', filePath],
-    true,
+    { collectStdout: true, timeoutMs: config.ffprobeTimeoutMs },
   )
   try {
     return JSON.parse(output) as FfprobeResult
