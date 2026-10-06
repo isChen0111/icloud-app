@@ -21,7 +21,7 @@ import path from 'node:path'
 import { getDb } from '../db/index.js'
 import { config } from '../config.js'
 import { runScan, scanProgress } from '../scanner/index.js'
-import { getThumbnailProgress, queueSize } from '../pipeline/queue.js'
+import { getThumbnailProgress, getQueueMetrics, queueSize } from '../pipeline/queue.js'
 
 /** 体积缓存文件（落盘，避免每次启动重算） */
 const statsCacheFile = path.join(config.cacheDir, 'stats.json')
@@ -174,6 +174,8 @@ export async function registerStatsRoutes(app: FastifyInstance): Promise<void> {
       totalBytes: bytes, // null = 后台计算中（前端尚未消费该字段，可安全为 null）
       totalSizeGB: bytes === null ? null : Number((bytes / 1024 ** 3).toFixed(1)),
       thumbQueue: queueSize(),
+      // F-02 诊断指标：运行中 / 交互运行中 / 交互等待 / 已跳过（客户端断开被拦下的请求）
+      thumbQueueMetrics: getQueueMetrics(),
       thumbnails: adjustedThumbnailProgress,
       scan: { ...scanProgress },
     })

@@ -470,6 +470,22 @@ onBeforeUnmount(() => {
               <span v-else>失败 <b>0</b></span>
             </div>
           </template>
+
+          <!-- F-02 队列指标：快速滚动/诊断用，只读展示，不影响任何逻辑 -->
+          <div v-if="stats?.thumbQueueMetrics" class="queue-metrics">
+            <span>运行 <b>{{ stats.thumbQueueMetrics.running }}</b></span>
+            <span>交互运行 <b>{{ stats.thumbQueueMetrics.interactiveRunning }}</b></span>
+            <span>交互等待 <b>{{ stats.thumbQueueMetrics.interactiveWaiting }}</b></span>
+            <span>已跳过 <b>{{ stats.thumbQueueMetrics.cancelled }}</b></span>
+            <button
+              class="count-info"
+              type="button"
+              aria-label="队列指标口径说明"
+              data-tooltip="队列 = 缩略图生成任务；交互 = 浏览中照片的生成请求（交互运行/等待越多，说明当前浏览加载越忙）；已跳过 = 客户端断开被拦下的请求（快速滚动离屏），不会进入失败清单。"
+            >
+              !
+            </button>
+          </div>
         </section>
       </div>
 
@@ -853,6 +869,21 @@ onBeforeUnmount(() => {
 .thumbnail-stats b { color: var(--text-1); font-weight: 600; }
 .thumbnail-stats .error-message,
 .thumbnail-stats .error-message b { color: #d05245; }
+/* F-02 队列指标行：与缩略图统计对齐（margin-left 37px），上边框虚线区分 */
+.queue-metrics {
+  position: relative;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 5px 10px;
+  margin: 10px 0 0 37px;
+  padding-top: 9px;
+  border-top: 1px dashed var(--border);
+  color: var(--text-2);
+  font-size: 10px;
+}
+.queue-metrics b { color: var(--text-1); font-weight: 600; }
 .failure-link {
   padding: 0;
   border: 0;
