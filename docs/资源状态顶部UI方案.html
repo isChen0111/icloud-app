@@ -220,6 +220,7 @@
             <div id="progressTrack" class="progress-track" hidden><span></span></div>
             <div id="thumbStats" class="stats-line" hidden>
               <span>已处理 <strong>421 / 1,200</strong></span>
+              <span>已生成 <strong>419</strong></span>
               <span>待处理 <strong>779</strong></span>
               <span class="error-note">失败 <strong>1</strong></span>
             </div>
@@ -248,8 +249,9 @@
 
     <section class="proposal" aria-label="设计要点">
       <article><h2>默认态保持轻</h2><p>顶栏只放状态、一个有意义的数量和现有照片/视频总数；不用常驻第二行或进度面板。</p></article>
-      <article><h2>详细态不占布局</h2><p>点击状态后显示悬浮卡片，扫描与预览图分成两行；关闭时照片墙高度完全不变。</p></article>
+      <article><h2>详细态不占布局</h2><p>点击状态后显示悬浮卡片，扫描与预览图分成两行（后追加 F-02 队列指标第三行，见下）；关闭时照片墙高度完全不变。</p></article>
       <article><h2>百分比只用于预览图</h2><p>扫描只显示已检查文件数。扫描结束后预览图总量确定，再显示已完成、待处理、失败和进度条。</p></article>
+      <article><h2>队列指标：F-02 增量（2026-10-06）</h2><p>在原设计「扫描 + 预览图两行」之上追加<b>第三行</b>（诊断用，只读展示、不影响任何逻辑）：缩略图调度器实时指标，来源 <code>/api/stats.thumbQueueMetrics</code>——<b>运行中</b> = 当前执行任务数（含交互运行）；<b>交互运行</b> = 用户滚动触发的即时任务；<b>交互等待</b> = 排队中的交互任务；<b>已跳过</b> = 客户端已断开被取消的请求（F-02 轻量版检查点；正常情况趋近 0，为极端积压时的兜底信号）。每项均带口径悬浮提示。统计行（含已生成项）与队列指标均为实现较设计演化的结果，本文档如实记录。</p></article>
     </section>
   </main>
 

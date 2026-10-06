@@ -1,9 +1,9 @@
 # 项目上下文快照（供会话压缩/新会话恢复用）
 
-> 生成日期：2026-09-08；最后同步：2026-10-06（缩略图动态并发 + 首次启动照片墙填充 + 资源状态顶栏、预览图失败清单/重试/忽略提醒）。若本会话上下文被压缩或丢失，先读本文件 + 架构设计文档 + README，即可恢复全部关键信息。
+> 生成日期：2026-09-08；最后同步：2026-10-06（审查报告 7 项 F-01~F-07 评估 + F-01/F-02/F-05/F-06 已修复、并发来源统一 + rAF 合并、架构文档 4.12 滚动机制章节、README/快照同步）。若本会话上下文被压缩或丢失，先读本文件 + 架构设计文档 + README，即可恢复全部关键信息。
 
 ## 项目目标与现状
-- 用户已用 iCloudPD 把 iCloud 照片全部拉到本地（`F:\iPhone\icloud-app\iCloudPhoto\`，源文件：12,591 资产 = 照片 1,982 + 实况 7,434 + 视频 3,175，162.8GB，约 2 万媒体文件）。
+- 用户已用 iCloudPD 把 iCloud 照片全部拉到本地（`F:\iPhone\icloud-app\iCloudPhoto\`，源文件：**12,609 资产 = 照片 1,988 + 实况 7,442 + 视频 3,179，162.9GB，约 2 万媒体文件（scan runId 1 实测 20,051 文件）**）。
 - 目标：本地网页应用，复刻 iCloud 网页端浏览体验。前端 Vue 3 系列，后端 Node.js。
 - **当前状态：P0/P1/P2 全部完成并通过验收；代码审查 12 项稳定化修复全部完成；扫描配对修复（跨目录同名，11,009→12,591）已合并；照片墙全量骨架（C 方案）已上线：滚动条=全库双向滚动 + 吸顶日期跨度 + 月份头区间标签 + 4~12 列 + 行高抽象；详情信息面板（/api/assets/:id/info）已上线；UI 徽标刷新与详情页三级渐进已上线；P2+-1 部分落地（目录热监听 + 删除对账 + 启动同步，一键拉取 exe 待开发）；客户端删除已上线（照片墙单选/Ctrl多选 + 详情页删除 + DELETE /api/assets + 确认弹框）；2026-09-17 全项目审查完成并修复 B1~B5（删除后页缓存错位 / 实况宽高兜底 / 首屏默认浅色 / CORS 补 DELETE / 排版整理）+ 文档三件套同步；2026-09-18 采纳 Claude 审查两处高信号修复（assets store 删除与分页请求竞态：dataVersion + requestSequence/activeRequests 双校验；GridView 搜索宽度 ResizeObserver 启动）已合并；**2026-09-19 搜索照片墙化 + FTS trigram 精确性修复已合并**（匹配集虚拟滚动/月份分组/列数共享；trigram 片段 AND 误命中 → FTS 粗筛 + instr 连续子串精筛）；Git 私有仓库 + GitHub 远程（isChen0111/icloud-app，SSH 推送）版本管理。**
 
@@ -34,15 +34,24 @@
 17. **2026-09-19～2026-09-21 搜索照片墙化、审查修复与运行验证**：① 搜索照片墙化——后端 /api/search 加 offset 跳页分页 + total 真实计数 + months 匹配集月份分组；GridScroller 抽象 GridDataSource 接口（照片墙 assets store / 搜索 search store 共用，组件实例不销毁只切数据源）；列数提升到 theme store（thumbnailCols 持久化 4~12，照片墙/搜索共享）；GridView 搜索态改用 GridScroller（删除旧固定 5 列网格 + 100 条截断）。② FTS trigram 精确性——FTS 粗筛 + 每个 token `instr` 连续子串精筛，多 token AND，误匹配归零。③ 搜索 store 增加统一结果失效/重置，旧请求不会污染新查询。④ 完成后端扫描、视频 Range、统计缓存、图片信息回退、同名额外视频保留等修复，并用隔离测试库验证；`server/package.json` 的 `npm run scan` 已修正为 `src/cli-scan.ts`。
 18. **2026-09-29 依赖清理**：去掉未使用的 `heic-convert`、已停维护的 `fluent-ffmpeg` 与精简版 `ffmpeg-static`；ffmpeg 改为 `server/vendor/ffmpeg-full/` 直出 + `src/ffmpeg.ts` spawn，sharp 升至 0.35。better-sqlite3 13.0.3 的平台预编译文件随 npm 包分发；npm 11.9.0 在 `npm ci` 时若 lockfile 未保留 `gypfile:false`，会按 `binding.gyp` 自动触发 node-gyp，因此 lockfile 显式保留此字段。
 19. **2026-10-01 稳健性修复**：资产/搜索 `limit` 限制为 1–500 整数；开发 CORS 只允许本机 Vite 来源；视频封面 URL 与普通缩略图共用 `THUMB_REV=3`；修正入口扫描与实况配对注释。
+20. **2026-10-06 全项目代码审查 + F-01/F-02/F-05/F-06 修复（主线）**：
+   - 审查报告 `docs/整体审查报告-2026-10-06.md`（基线 c2a64bb）：7 项问题 F-01~F-07 全部核验属实（P1×2 + P2×5），含"六、后续执行方案"（已提交 7efbd43 / 合并 fdb946c）。
+   - **F-01 并发超限（P1，199fbc0/合并 2a8abb0）**：旧双队列（后台 8 + 交互 1 = 9 并发）合并为单一 `ThumbnailScheduler`（server/src/pipeline/thumbnailScheduler.ts）——单 p-queue、concurrency=8、交互 priority=10 / 后台 priority=0、浏览租约 30s（后台挂起、到期 flushDeferred 放行）；queue.ts 重构后对外接口不变；新增 node:test 单元测试 `thumbnailScheduler.test.ts`（7 用例，npm test）。
+   - **F-02 轻量版 + 队列指标（7b0180c/合并 e58e947）**：`/api/thumb` 与 `/api/video/poster` 任务开始执行时检查 `req.raw.destroyed/aborted`，断开则跳过生成 + 计入"已跳过"（静默结束、不进失败清单）；调度器加 3 计数器（interactiveRunning/interactiveWaiting/cancelled）→ `/api/stats.thumbQueueMetrics`；前端资源状态浮层展示队列指标（含口径悬浮提示）。测试扩至 9 用例。
+   - **并发来源统一 + rAF（608c925/合并 792cd7e）**：前端调度器并发上限（原硬编码 8）改为经 `/api/stats.thumbConcurrency` 校准（后端 config 唯一来源，防漂移）；滚动触发 pump 改 rAF 合并（每帧最多一次布局读取）；架构文档新增 §4.12「照片墙滚动 → 缩略图请求的前后端协同机制（三道闸 + F-01/F-02）」。**关键结论（已入文档）**：前端限流 ≤8 并发 → 后端交互队列几乎不排队 → F-02 轻量版日常"已跳过=0"是预期（纵深防御 + 极端积压兜底）。
+   - **F-05 搜索错误态（P2，5a17e8e/合并 e24600b）**：search.ts catch 分类——预期输入级错误（FTS 语法类，消息含 syntax/malformed/no such column 等）返回空结果；真异常返回 500 + 错误信息（不再伪装成"没有结果"）；前端 search store 加 `searchError`（首屏失败置错）+ GridView「搜索失败，请重试」错误态与重试按钮；滚动后续页失败仍走静默 + 滚回重试。
+   - **F-06 FTS 版本化（P2，同合并）**：schema.ts 建表 DROP → `CREATE VIRTUAL TABLE IF NOT EXISTS`；db/index.ts 用 `PRAGMA user_version` 记录 `FTS_SCHEMA_VERSION=2`——版本不符才 DROP+CREATE 全量重建，正常启动只按行数差回填（**正常启动零重建**，迁移已执行：user_version 0→2，assets_fts 12,609 = assets 12,609）。
+   - **Git 清理**：远程 9 分支系本地过期缓存快照（实际仅 main）；一次性清理 17 个已合并旧分支 + prune 远程 gone 分支。
+   - 剩余待修（顺序已定）：F-07（ffmpeg spawn 超时 kill）→ F-03（源文件签名 size+mtimeMs 驱动失效）→ F-04（副作用路由 Origin/Fetch Metadata 校验）。
 
 ## 照片库实测数据（2026-09-08）
 - 结构：`YYYY/MM/DD/文件名`（iCloudPD 默认），实况配对基名归一（`_HEVC` 后缀），**无时间差校验**。⚠️ **配对必须限定同一目录**——跨目录同名文件（不同设备/编辑版本的同名，如 `2018/02/04/IMG_0040*` 与 `2021/07/27/IMG_0040*`，全库 2,363 个基名分布多目录）若只按基名配对会错配丢视频（见「已完成」第 9 条）。
 - 磁盘文件口径（20,025 文件）：HEIC 8,131 / MOV 1,159+12（异常小写 "*.mov"）/ JPG 1,067 / MP4 403 / PNG 217 / M4V 19 / GIF 1；其中视频文件共 10,609（含 7,434 个实况配对视频）。
-- 修复后资产：12,591 = photo 1,982 + live 7,434 + video 3,175。
+- 修复后资产（2026-10-06 实测）：12,609 = photo 1,988 + live 7,442 + video 3,179（scan runId 1 共 20,051 文件；2026-09-08 历史口径 12,591 = 1,982 + 7,434 + 3,175）。
 - 关键统计：orientation=6 共 6,853 张（photo+live），orientation=1 共 1,905；非 HEIC + orientation 2~8 = 103 张（方向重建范围）。
 
 ## 技术选型（已定）
-- 后端：Node 24（用户 D:\nodejs）+ TypeScript + Fastify 5 + better-sqlite3 13.0.3（包内平台预编译，lockfile 需保留 `gypfile:false`）+ exifr + sharp 0.35 + vendor ffmpeg spawn（BtbN full / libheif）+ p-queue（交互与后台共享最多 8 个并发槽位；有浏览活动时暂停派发后台任务，空槽优先处理交互请求）
+- 后端：Node 24（用户 D:\nodejs）+ TypeScript + Fastify 5 + better-sqlite3 13.0.3（包内平台预编译，lockfile 需保留 `gypfile:false`）+ exifr + sharp 0.35 + vendor ffmpeg spawn（BtbN full / libheif）+ p-queue（**F-01 后为单一 ThumbnailScheduler：交互 priority=10 / 后台 priority=0、浏览租约 30s 后台挂起、总并发 config.thumbConcurrency=8 严格不超**）
 - 前端：Vue 3.5 + Vite + TS + Pinia + vue-router(hash) + @tanstack/vue-virtual + 自研 useLazyImage（IntersectionObserver；网格最多 8 个图片请求并发；拖动滚动条每 250ms 检查位移，快拖跳过中间区域、慢拖或停住时渐进加载当前视口，松开后优先派发最终视口）
 - 缩略图档：grid 320px / detail 1600px WebP；视频封面 ffmpeg 抽帧。扫描后只后台预热 grid；照片墙格子先显示底色，grid 图片加载成功后淡入；已废弃的 blur 缓存由扫描清理
 - 端口：后端 127.0.0.1:8899，前端 http://localhost:5173（Vite 绑 IPv6，勿用 127.0.0.1:5173）
@@ -74,7 +83,8 @@
 - ✅ **KeepAlive 缓存失效已补齐（2026-10-01）**：前端轮询扫描状态，扫描结束后刷新月份和已缓存页；保留滚动位置。
 - ✅ 2026-09-17 审查 B1~B5 修复完成（删除页缓存错位 / 实况宽高兜底 / 首屏默认浅色 / CORS DELETE / 排版整理）。
 - 🔜 P2+-1 一键拉取（exe 方案已定）待开发；P2+-3 语义搜索暂缓实现；**P2+-4 详情缓存治理已列入**（保留最近 N 月浏览的 detail 图 / 一键清空 detail 缓存，可选）。
-- 🔜 **search store 换词 finally 竞态**（2026-09-19 审查发现，待用户确认）：旧词请求 finally 无条件 `pageLoading.delete(p)` 可能误删新词请求的加载标记 → 偶发重复请求（数据幂等无错）。修复 = finally 加 `if (seq !== searchSeq) return`（一行）。
+- ✅ **search store finally 竞态已修**（2026-09-19 审查发现，代码 finally 已有 `if (seq !== searchSeq) return` 守卫，F-05 改动时一并确认）。
+- 🔜 审查报告剩余待修（顺序已定，均未开工）：F-07（ffmpeg spawn 超时 + kill 子进程 + 失败清单）→ F-03（源文件签名 size+mtimeMs 驱动元数据/缓存失效）→ F-04（副作用路由校验 Origin / Fetch Metadata 或本地配对 token）→ 文档快照资产口径更新已完成（12,609）。
 
 ## 用户偏好（与本项目相关）
 - 技术/财经类内容偏好"深度解析 + 大白话 + 结构化清单"。

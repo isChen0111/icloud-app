@@ -8,7 +8,8 @@
 icloud-app/
 ├── docs/
 │   ├── 架构设计文档.html
-│   └── CONTEXT-项目上下文快照.md
+│   ├── CONTEXT-项目上下文快照.md
+│   └── 整体审查报告-2026-10-06.md   # 全项目代码审查：F-01~F-07 问题与修复进度
 ├── server/                 # Fastify 后端与媒体处理流水线
 │   ├── src/
 │   ├── scripts/
@@ -104,6 +105,7 @@ npm run start
 | `npm run scan` | `server/` | 手动触发一次扫描同步 |
 | `npm run dev` | `web/` | 启动前端开发服务 |
 | `npm run build` | `web/` | 构建前端生产版本 |
+| `npm test` | `server/` | 缩略图调度器单元测试（node:test，9 用例） |
 | `npm run fix-size` | `server/` | 维护命令：从原媒体重新读取像素尺寸 |
 | `npm run fix-thumbs` | `server/` | 维护命令：重建缩略图缓存 |
 
@@ -118,20 +120,20 @@ npm run start
 | GET | /api/thumb/:id?size=grid\|detail | 缩略图（懒生成） |
 | GET | /api/video/:id/stream | 视频流（HTTP Range） |
 | GET | /api/video/:id/poster | 视频封面帧 |
-| GET | /api/stats | 库统计 + 扫描进度 + 预览图计数（扫描时只报已检查文件数；扫描结束后按数据库持久化状态提供全库总量/已处理/已生成/待处理/失败，重启后已生成进度不归零） |
+| GET | /api/stats | 库统计 + 扫描进度 + 预览图计数 + 队列指标（thumbQueueMetrics：运行/交互运行/交互等待/已跳过）+ 缩略图并发配置（thumbConcurrency）（扫描时只报已检查文件数；扫描结束后按数据库持久化状态提供全库总量/已处理/已生成/待处理/失败，重启后已生成进度不归零） |
 | GET | /api/thumbnails/failed | 预览图失败文件清单及待处理/已忽略数量 |
 | POST | /api/thumbnails/retry | 重试指定失败项或全部待处理失败项（body: `{ ids }` 或 `{ all: true }`） |
 | POST | /api/thumbnails/ignore | 忽略或恢复失败提醒（body: `{ ids, ignored }` 或 `{ all: true, ignored }`） |
 | POST | /api/thumbnails/activity | 通知后端用户正在浏览，暂停启动无关的后台预览图任务 |
 | POST | /api/scan | 触发扫描 |
 | GET | /api/dates | 年月分组：{ ym, label, count, offset, thumbId }（offset=该月首资产全局位置） |
-| GET | /api/search?q=&limit=&offset= | FTS5 全文搜索（文件名/日期子串，至少 3 字符；返回 total 真实计数 + months 匹配集月份分组 + offset 匹配流分页，搜索结果照片墙化） |
+| GET | /api/search?q=&limit=&offset= | FTS5 全文搜索（文件名/日期子串，至少 3 字符；返回 total 真实计数 + months 匹配集月份分组 + offset 匹配流分页，搜索结果照片墙化；畸形输入返回空结果，真异常返回 500） |
 | DELETE | /api/assets | 批量删除（body: `{ ids }`；会删除对应源文件，不可恢复） |
 
 ## 功能概览
 
 - 按日期浏览照片、实况照片和视频，支持搜索、日期跳转和详情浏览。
-- 照片墙采用虚拟滚动和图片懒加载；慢速滚动与滚轮操作持续加载，最多并发请求 8 张网格图；拖动滚动条时每 250ms 检查一次位移，快速跨屏时跳过中途区域，缓慢移动（每次检查不超过约 1/5 屏）或停住时渐进加载当前视口，松开后优先加载最终视口，再补邻近图片。
+- 照片墙采用虚拟滚动和图片懒加载；慢速滚动与滚轮操作持续加载，网格图并发上限以后端配置为准（默认 8，经 `/api/stats.thumbConcurrency` 同步）；拖动滚动条时每 250ms 检查一次位移，快速跨屏时跳过中途区域，缓慢移动（每次检查不超过约 1/5 屏）或停住时渐进加载当前视口，松开后优先加载最终视口，再补邻近图片。
 - 顶栏资源状态提供照片库扫描数量和预览图后台处理进度；扫描文件数与照片/视频资产数分别按文件和入库资产统计。后台补图与用户请求共享最多 8 个并发槽位：浏览时暂停启动新的后台任务，已运行任务结束后将空出的槽位优先分给当前请求；停止活动 30 秒后后台补图恢复并可使用全部槽位。失败项可点击查看原因、单项/批量重试或忽略提醒；忽略不会删除原文件，且可随时恢复提醒。
 - 实况照片可按住播放；视频支持封面预览和流式播放。
 - 照片库目录发生变化后会自动同步；删除照片是永久操作，源文件无法从应用恢复。
