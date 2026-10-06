@@ -7,6 +7,8 @@ export interface GridThumbnailScheduler {
   beginScrollbarDrag(): void
   endScrollbarDrag(): void
   prioritizeNextScroll(): void
+  /** 并发上限更新：以后端 /api/stats 的 thumbConcurrency 为准（防前后端漂移） */
+  setMaxConcurrentRequests(n: number): void
 }
 
 interface PendingThumbnail {
@@ -19,12 +21,13 @@ export const gridThumbnailSchedulerKey: InjectionKey<GridThumbnailScheduler> = S
 export function createGridThumbnailScheduler(
   getScrollElement: () => HTMLElement | null,
   getPrefetchDistance: () => number,
+  maxConcurrentRequests = 8, // 默认与后端 config.thumbConcurrency 一致；GridScroller 启动后会从 /api/stats 校准
 ): GridThumbnailScheduler {
   const pending = new Map<number, PendingThumbnail>()
   const active = new Map<number, PendingThumbnail>()
   const settleDelayMs = 180
   const dragLoadIntervalMs = 250
-  const maxConcurrentRequests = 8
+  let concurrencyLimit = maxConcurrentRequests
   let scrollbarDragging = false
   let deferUntil = 0
   let settleTimer: number | undefined
@@ -32,9 +35,26 @@ export function createGridThumbnailScheduler(
   let lastDragLoadAt = 0
   let lastDragLoadScrollTop = 0
 
+  /**
+   * rAF 合并的 pump 入口：scroll/request/complete 等高频触发源在同一帧内
+   * 只真正跑一次 pump，避免每个 scroll 事件都做 getBoundingClientRect
+   * （强制布局重算 → 快速滚动掉帧）。visibleOnly 只在拖动慢速场景使用；
+   * 同一帧内以「最宽」模式执行（出现过 false 就按 false 跑）。
+   */
+  let pumpRaf = 0
+  let pumpVisibleOnly = false
+  function requestPump(visibleOnly = false): void {
+    if (!visibleOnly) pumpVisibleOnly = false
+    if (pumpRaf !== 0) return
+    pumpRaf = requestAnimationFrame(() => {
+      pumpRaf = 0
+      pump(pumpVisibleOnly)
+    })
+  }
+
   function pump(visibleOnly = false): void {
     const scrollElement = getScrollElement()
-    if (!scrollElement || active.size >= maxConcurrentRequests) return
+    if (!scrollElement || active.size >= concurrencyLimit) return
 
     const viewport = scrollElement.getBoundingClientRect()
     const margin = visibleOnly ? 0 : getPrefetchDistance()
@@ -58,7 +78,7 @@ export function createGridThumbnailScheduler(
 
     ready.sort((a, b) => Number(b.visible) - Number(a.visible) || a.distance - b.distance)
     for (const item of ready) {
-      if (active.size >= maxConcurrentRequests) break
+      if (active.size >= concurrencyLimit) break
       const thumbnail = pending.get(item.assetId)
       if (!thumbnail) continue
       pending.delete(item.assetId)
@@ -80,7 +100,7 @@ export function createGridThumbnailScheduler(
       const scrollDistance = Math.abs(scrollElement.scrollTop - lastDragLoadScrollTop)
       lastDragLoadScrollTop = scrollElement.scrollTop
       const slowDragDistance = Math.max(96, scrollElement.clientHeight * 0.2)
-      if (scrollDistance <= slowDragDistance) pump(true)
+      if (scrollDistance <= slowDragDistance) requestPump(true)
       scheduleDragLoad()
     }, delay)
   }
@@ -89,20 +109,20 @@ export function createGridThumbnailScheduler(
     const item: PendingThumbnail = { element, load }
     pending.set(assetId, item)
     if (scrollbarDragging) scheduleDragLoad()
-    else if (deferUntil <= Date.now()) pump()
+    else if (deferUntil <= Date.now()) requestPump()
     return () => {
       if (pending.get(assetId) === item) pending.delete(assetId)
       if (active.get(assetId) === item) {
         active.delete(assetId)
         if (scrollbarDragging) scheduleDragLoad()
-        else pump()
+        else requestPump()
       }
     }
   }
 
   function onScroll(): void {
     if (scrollbarDragging) scheduleDragLoad()
-    else pump()
+    else requestPump()
   }
 
   return {
@@ -112,7 +132,7 @@ export function createGridThumbnailScheduler(
       if (active.get(assetId)?.element !== element) return
       active.delete(assetId)
       if (scrollbarDragging) scheduleDragLoad()
-      else pump()
+      else requestPump()
     },
     beginScrollbarDrag() {
       scrollbarDragging = true
@@ -132,7 +152,7 @@ export function createGridThumbnailScheduler(
       settleTimer = window.setTimeout(() => {
         settleTimer = undefined
         deferUntil = 0
-        pump()
+        requestPump()
       }, settleDelayMs)
     },
     prioritizeNextScroll() {
@@ -140,6 +160,14 @@ export function createGridThumbnailScheduler(
       deferUntil = 0
       if (settleTimer !== undefined) window.clearTimeout(settleTimer)
       settleTimer = undefined
+      requestPump()
+    },
+    setMaxConcurrentRequests(n) {
+      const next = Math.max(1, Math.floor(n))
+      if (next === concurrencyLimit) return
+      concurrencyLimit = next
+      // 上限调大后可能有余量：立即补发一轮
+      if (!scrollbarDragging) requestPump()
     },
   }
 }

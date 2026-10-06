@@ -86,6 +86,8 @@ export interface Stats {
   totalBytes: number
   totalSizeGB: number
   thumbQueue: number
+  /** 后端缩略图并发预算（config.thumbConcurrency）：前端调度器并发上限以此为源，防止前后端漂移 */
+  thumbConcurrency: number
   thumbQueueMetrics: {
     /** 正在运行的任务总数（后台 + 交互） */
     running: number
