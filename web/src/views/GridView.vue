@@ -89,6 +89,12 @@ function clearSearch(): void {
   searchStore.setQuery('')
 }
 
+/** 搜索失败重试（F-05：真异常不再伪装成无结果，明确提示可重试） */
+function retrySearch(): void {
+  searchStore.clearSearchError()
+  void searchStore.init()
+}
+
 /** Esc 退出搜索 */
 function onKeydown(e: KeyboardEvent): void {
   if (e.key === 'Escape' && searchActive.value) {
@@ -127,10 +133,15 @@ function onKeydown(e: KeyboardEvent): void {
       </button>
     </div>
 
-    <!-- 搜索态提示条：搜索中 / 无结果 / 结果计数（照片墙态隐藏） -->
+    <!-- 搜索态提示条：搜索中 / 失败 / 无结果 / 结果计数（照片墙态隐藏） -->
     <div v-if="searchActive" class="search-meta">
       <span v-if="tooShort" class="dim">请至少输入 3 个字符</span>
       <span v-else-if="!hasSearched || searchStore.loading" class="dim">搜索中…</span>
+      <!-- F-05：搜索真异常（后端 500 / 网络断）→ 显式错误态 + 重试，不再伪装成无结果 -->
+      <span v-else-if="searchStore.searchError" class="search-error">
+        搜索失败，请重试
+        <button class="search-retry" type="button" @click="retrySearch">重试</button>
+      </span>
       <span v-else-if="searchStore.totalCount === 0" class="dim">没有找到匹配「{{ query }}」的内容</span>
       <span v-else class="dim">搜索「{{ query }}」· 共 {{ searchStore.totalCount }} 项</span>
     </div>
@@ -210,6 +221,24 @@ function onKeydown(e: KeyboardEvent): void {
   background: var(--bg);
 }
 .dim { color: var(--text-2); }
+
+/* F-05 搜索失败态：错误色 + 内联重试按钮 */
+.search-error {
+  color: #d05245;
+  font-size: 12px;
+}
+.search-retry {
+  margin-left: 8px;
+  padding: 2px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-field);
+  color: var(--text-1);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+.search-retry:hover { background: var(--bg-field-hover); }
 
 .scroller { flex: 1; min-height: 0; }
 

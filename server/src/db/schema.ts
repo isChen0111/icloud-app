@@ -72,12 +72,21 @@ CREATE INDEX IF NOT EXISTS idx_assets_type ON assets(type);
 --   date_compact 去标点紧凑日期 "2024-09-13T08:40:28" → "20240913T084028"，支持搜 "202409"
 -- rowid 与 assets.id 对齐（显式指定），便于 join 与按 id 同步。
 -- 注意：FTS5 虚拟表不支持 ALTER 加列，schema 变更只能重建；
--- 这里 DROP+CREATE，每次启动由 db/index.ts 的一致性回填重建索引（11k 行毫秒级，可接受）。
-DROP TABLE IF EXISTS assets_fts;
-CREATE VIRTUAL TABLE assets_fts USING fts5(
+-- 用 CREATE VIRTUAL TABLE IF NOT EXISTS（首次建库创建，之后幂等），
+-- 结构版本由 db/index.ts 的 PRAGMA user_version 控制：版本不符才 DROP+CREATE 全量重建，
+-- 正常启动零重建（修复审查 F-06：不再每次启动 DROP+CREATE → 必触发全量回填）。
+CREATE VIRTUAL TABLE IF NOT EXISTS assets_fts USING fts5(
   search_text,
   date_taken,
   date_compact,
   tokenize = 'trigram'
 );
 `
+
+/**
+ * FTS5 表结构版本（修复审查 F-06）：
+ * 列定义（search_text / date_taken / date_compact / tokenize）变更时必须 bump 此值，
+ * db/index.ts 启动时用 PRAGMA user_version 对比：不一致才 DROP+CREATE + 全量回填，
+ * 一致时只按行数差做回填（新增资产场景），正常启动零重建。
+ */
+export const FTS_SCHEMA_VERSION = 2

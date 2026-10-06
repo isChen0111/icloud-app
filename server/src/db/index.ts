@@ -9,7 +9,7 @@ import Database from 'better-sqlite3'
 import fs from 'node:fs'
 import path from 'node:path'
 import { config } from '../config.js'
-import { SCHEMA_SQL } from './schema.js'
+import { FTS_SCHEMA_VERSION, SCHEMA_SQL } from './schema.js'
 
 let _db: Database.Database | null = null
 
@@ -33,14 +33,21 @@ export function getDb(): Database.Database {
     db.exec(`ALTER TABLE assets ADD COLUMN thumb_ignored INTEGER NOT NULL DEFAULT 0`)
   }
 
-  // —— FTS5 索引一致性回填 ——
-  // 场景：每次启动（schema DROP+CREATE 后必为空）、扫描中断等。
-  // 对比行数：不一致则全量重建（11k 行毫秒级，扫描入库后正常状态两侧相等）。
   const ftsCount = (db.prepare(`SELECT count(*) AS c FROM assets_fts`).get() as { c: number }).c
   const assetCount = (db.prepare(`SELECT count(*) AS c FROM assets`).get() as { c: number }).c
-  if (ftsCount !== assetCount) {
+  const ftsVersion = db.pragma('user_version', { simple: true }) as number
+  if (ftsVersion !== FTS_SCHEMA_VERSION) {
+    // 结构重建：DROP + CREATE（schema.ts 用 IF NOT EXISTS，此处先 DROP 强制重建）
     db.transaction(() => {
-      db.exec(`DELETE FROM assets_fts`)
+      db.exec(`DROP TABLE IF EXISTS assets_fts`)
+      db.exec(
+        `CREATE VIRTUAL TABLE assets_fts USING fts5(
+           search_text,
+           date_taken,
+           date_compact,
+           tokenize = 'trigram'
+         )`,
+      )
       db.exec(
         `INSERT INTO assets_fts(rowid, search_text, date_taken, date_compact)
          SELECT id,
@@ -49,8 +56,25 @@ export function getDb(): Database.Database {
                 replace(replace(replace(replace(date_taken, '-', ''), ':', ''), '.', ''), 'T', '')
          FROM assets`,
       )
+      db.pragma(`user_version = ${FTS_SCHEMA_VERSION}`)
     })()
-    console.log(`[db] FTS 索引已重建：${assetCount} 行`)
+    console.log(`[db] FTS 表结构 v${FTS_SCHEMA_VERSION} 已重建：${assetCount} 行`)
+  } else {
+    // 结构已是最新：行数不一致只回填（DELETE + 全量 INSERT，11k 行毫秒级）
+    if (ftsCount !== assetCount) {
+      db.transaction(() => {
+        db.exec(`DELETE FROM assets_fts`)
+        db.exec(
+          `INSERT INTO assets_fts(rowid, search_text, date_taken, date_compact)
+           SELECT id,
+                  lower(filename),
+                  date_taken,
+                  replace(replace(replace(replace(date_taken, '-', ''), ':', ''), '.', ''), 'T', '')
+           FROM assets`,
+        )
+      })()
+      console.log(`[db] FTS 索引已回填：${assetCount} 行`)
+    }
   }
 
   _db = db

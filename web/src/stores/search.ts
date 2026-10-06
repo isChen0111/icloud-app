@@ -37,6 +37,12 @@ export const useSearchStore = defineStore('search', () => {
   const loading = ref(false)
   /** 失败页起点集合（失败后静默，滚动离开再回来重试） */
   const failed = reactive(new Set<number>())
+  /**
+   * 整次搜索的显式错误（修复审查 F-05）：
+   * 首屏（offset 0）请求失败 = 搜索真异常（后端 500 / 网络断），
+   * 不能伪装成「没有结果」——GridView 提示条据此显示「搜索失败，请重试」。
+   */
+  const searchError = ref<string | null>(null)
 
   /** 搜索态不做删除：选中集合恒空（GridDataSource 接口需要） */
   const selectedIds = ref(new Set<number>())
@@ -60,6 +66,7 @@ export const useSearchStore = defineStore('search', () => {
     totalCount.value = 0
     months.value = []
     loading.value = false
+    searchError.value = null
   }
 
   /** 设置查询词并重置（GridView 防抖后调用）；不自动发请求，由 init() 驱动 */
@@ -104,12 +111,19 @@ export const useSearchStore = defineStore('search', () => {
           if (seq !== searchSeq) return // 查询词已变 → 丢弃过期响应
           pages.set(p, res.items)
           failed.delete(p)
+          if (p === 0) searchError.value = null // 首屏成功 → 清除整次搜索错误
           // 骨架数据（total/months）以最新响应为准，幂等写入
           totalCount.value = res.total
           if (res.months.length > 0) months.value = res.months
         })
-        .catch(() => {
-          if (seq === searchSeq) failed.add(p)
+        .catch((err) => {
+          if (seq !== searchSeq) return
+          failed.add(p)
+          // F-05：首屏失败 = 搜索真异常（后端 500 / 网络断）→ 显式错误态，
+          // 不再伪装成「没有结果」；滚动中后续页失败仍走静默 + 回来重试
+          if (p === 0) {
+            searchError.value = err instanceof Error ? err.message : '搜索失败，请重试'
+          }
         })
         .finally(() => {
           if (seq !== searchSeq) return // 换词后旧响应作废：不碰新请求的 pageLoading/loading
@@ -122,11 +136,17 @@ export const useSearchStore = defineStore('search', () => {
   /** 搜索态无删除/选中：noop（GridDataSource 接口需要） */
   function clearSelection(): void {}
 
+  /** 清除整次搜索错误（GridView 重试按钮调用，随后重新 init） */
+  function clearSearchError(): void {
+    searchError.value = null
+  }
+
   return {
     months,
     totalCount,
     pages,
     loading,
+    searchError,
     loadedCount,
     selectedIds,
     selectedCount,
@@ -136,5 +156,6 @@ export const useSearchStore = defineStore('search', () => {
     setQuery,
     init,
     resetResults,
+    clearSearchError,
   }
 })
