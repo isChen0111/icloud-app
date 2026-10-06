@@ -164,7 +164,6 @@ export async function registerStatsRoutes(app: FastifyInstance): Promise<void> {
     const adjustedThumbnailProgress = {
       ...thumbnailProgress,
       failed: activeThumbnailFailures,
-      completed: Math.max(0, thumbnailProgress.processed - activeThumbnailFailures),
     }
 
     return reply.send({

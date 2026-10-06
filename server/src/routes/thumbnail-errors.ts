@@ -92,12 +92,7 @@ export async function registerThumbnailErrorRoutes(app: FastifyInstance): Promis
       for (const asset of assets) update.run(asset.id)
     })()
 
-    const remainingFailed = (
-      db.prepare(`SELECT COUNT(*) AS count FROM assets WHERE thumb_status = 'error' AND thumb_ignored = 0`).get() as {
-        count: number
-      }
-    ).count
-    beginThumbnailBatch(assets.length, remainingFailed)
+    beginThumbnailBatch()
     for (const asset of assets) {
       const item: EnqueueItem = {
         id: asset.id,
@@ -125,17 +120,7 @@ export async function registerThumbnailErrorRoutes(app: FastifyInstance): Promis
       for (const asset of assets) update.run(Number(ignored), asset.id)
     })()
 
-    const counts = db
-      .prepare(
-        `SELECT thumb_status AS status, COUNT(*) AS count
-         FROM assets WHERE thumb_status = 'pending' OR (thumb_status = 'error' AND thumb_ignored = 0)
-         GROUP BY thumb_status`,
-      )
-      .all() as { status: string; count: number }[]
-    beginThumbnailBatch(
-      counts.find((row) => row.status === 'pending')?.count ?? 0,
-      counts.find((row) => row.status === 'error')?.count ?? 0,
-    )
+    beginThumbnailBatch()
     return reply.send({ updated: assets.length })
   })
 }

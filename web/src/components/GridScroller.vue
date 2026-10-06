@@ -30,10 +30,11 @@
  *   总行数      = Σ(1 + ceil(月资产数 / 列数))   ← 精确（月份分组已知）
  *   总高度      = Σ(头行 34 + 资产行行高)         ← 精确 → 滚动条真实覆盖全库
  */
-import { computed, onActivated, onDeactivated, onMounted, ref, watch } from 'vue'
+import { computed, onActivated, onBeforeUnmount, onDeactivated, onMounted, provide, ref, watch } from 'vue'
 import { useVirtualizer } from '@tanstack/vue-virtual'
 import { useThemeStore } from '../stores/theme'
 import { formatDateRange, formatMonthRange } from '../utils/format'
+import { createGridThumbnailScheduler, gridThumbnailSchedulerKey } from '../composables/gridThumbnailScheduler'
 import type { AssetDto, GridDataSource, MonthGroup } from '../types'
 import GridItem from './GridItem.vue'
 import DateNavPanel from './DateNavPanel.vue'
@@ -69,6 +70,12 @@ const itemWidth = computed(() => {
 
 /** 行高 = 格子宽 + 间距（方形缩略图） */
 const rowHeight = computed(() => itemWidth.value + GAP)
+
+const thumbnailScheduler = createGridThumbnailScheduler(
+  () => scrollEl.value,
+  () => rowHeight.value,
+)
+provide(gridThumbnailSchedulerKey, thumbnailScheduler)
 
 /** '2018-05' → '2018年5月'（月份头/吸顶指示器共用） */
 function fmtMonth(ym: string): string {
@@ -303,6 +310,8 @@ function jumpToMonth(offset: number): void {
     if (r.type === 'asset' && r.start >= rowStart) break
     top += getRowHeight(r)
   }
+  isScrollbarDragging = false
+  thumbnailScheduler.prioritizeNextScroll()
   el.scrollTop = top
   requestAnimationFrame(() => rowVirtualizer.value?.measure())
 }
@@ -328,6 +337,24 @@ function onScroll(): void {
   const el = scrollEl.value
   if (!el) return
   savedScrollTop = el.scrollTop
+  thumbnailScheduler.onScroll()
+}
+
+function onScrollPointerDown(event: PointerEvent): void {
+  const el = scrollEl.value
+  if (!el) return
+  const rect = el.getBoundingClientRect()
+  const scrollbarWidth = Math.max(12, el.offsetWidth - el.clientWidth)
+  if (event.clientX >= rect.right - scrollbarWidth) {
+    isScrollbarDragging = true
+    thumbnailScheduler.beginScrollbarDrag()
+  }
+}
+
+function onWindowPointerUp(): void {
+  if (!isScrollbarDragging) return
+  isScrollbarDragging = false
+  thumbnailScheduler.endScrollbarDrag()
 }
 
 /** 清空选中：点击空白区域（GridItem 的 click 已 stopPropagation，
@@ -343,16 +370,24 @@ function onScrollAreaClick(): void {
  * 保存 = onScroll 持续记录最后滚动位置，任何时刻离开都有准确值。
  */
 let savedScrollTop = 0
+let isScrollbarDragging = false
 
 /** Esc 清空选中（KeepAlive 下用 activated/deactivated 管理，避免详情页残留监听） */
 function onKeydown(e: KeyboardEvent): void {
   if (e.key === 'Escape') props.dataSource.clearSelection()
 }
-onDeactivated(() => window.removeEventListener('keydown', onKeydown))
+onDeactivated(() => {
+  window.removeEventListener('keydown', onKeydown)
+  window.removeEventListener('pointerup', onWindowPointerUp)
+  window.removeEventListener('pointercancel', onWindowPointerUp)
+})
 onActivated(() => {
   window.addEventListener('keydown', onKeydown)
+  window.addEventListener('pointerup', onWindowPointerUp)
+  window.addEventListener('pointercancel', onWindowPointerUp)
   const el = scrollEl.value
   if (!el) return
+  thumbnailScheduler.prioritizeNextScroll()
   el.scrollTop = savedScrollTop
   // 先等一帧：DOM 重新插入 + ResizeObserver 把真实宽度写回后，
   // measure 用真实 rowHeight 重算 measurements，再派发 scroll 更新可视窗口，
@@ -394,12 +429,20 @@ watch(
 )
 
 onMounted(async () => {
+  window.addEventListener('pointerup', onWindowPointerUp)
+  window.addEventListener('pointercancel', onWindowPointerUp)
   observeWidth()
   // 数据源初始化（照片墙：/api/dates + 首屏；搜索：匹配集骨架 + 首屏）
   await props.dataSource.init()
   // 关键：虚拟器在 setup 时初始化，当时滚动容器还没挂载（getScrollElement 返回 null），
   // 必须在元素就绪 + 数据就绪后手动 measure 一次，虚拟行才会填充
   rowVirtualizer.value.measure()
+})
+
+onBeforeUnmount(() => {
+  window.removeEventListener('keydown', onKeydown)
+  window.removeEventListener('pointerup', onWindowPointerUp)
+  window.removeEventListener('pointercancel', onWindowPointerUp)
 })
 </script>
 
@@ -441,7 +484,13 @@ onMounted(async () => {
     </div>
 
     <!-- 滚动容器：唯一真正的滚动条载体（高度 = 全量骨架，双向自由滚动） -->
-    <div ref="scrollEl" class="grid-scroll" @scroll.passive="onScroll" @click="onScrollAreaClick">
+    <div
+      ref="scrollEl"
+      class="grid-scroll"
+      @scroll.passive="onScroll"
+      @pointerdown.capture="onScrollPointerDown"
+      @click="onScrollAreaClick"
+    >
       <!-- 撑高容器：height = 全量总高度（虚拟化的"纸"） -->
       <div
         class="grid-space"

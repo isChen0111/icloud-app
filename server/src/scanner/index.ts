@@ -394,12 +394,7 @@ export async function runScan(source: 'manual' | 'watcher' | 'startup' = 'manual
   const pendingThumbs = db
     .prepare(`SELECT id, file_path, type, live_video FROM assets WHERE thumb_status = 'pending'`)
     .all() as { id: number; file_path: string; type: string; live_video: string | null }[]
-  const failedThumbs = (
-    db.prepare(`SELECT COUNT(*) AS count FROM assets WHERE thumb_status = 'error' AND thumb_ignored = 0`).get() as {
-      count: number
-    }
-  ).count
-  beginThumbnailBatch(pendingThumbs.length, failedThumbs)
+  beginThumbnailBatch()
   for (const r of pendingThumbs) {
     enqueueAsset({ id: r.id, relPath: r.file_path, type: r.type as 'photo' | 'video' | 'live', liveVideo: r.live_video })
   }

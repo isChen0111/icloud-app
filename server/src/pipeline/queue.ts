@@ -9,6 +9,7 @@
  */
 import PQueue from 'p-queue'
 import { config } from '../config.js'
+import { getDb } from '../db/index.js'
 import { ensureThumbnail } from './thumbnails.js'
 
 const queue = new PQueue({ concurrency: config.thumbConcurrency })
@@ -75,17 +76,34 @@ export interface EnqueueItem {
   liveVideo: string | null
 }
 
-/** 开始记录本轮扫描后待准备的预览图任务。已有 error 状态计入失败，不自动重试。 */
-export function beginThumbnailBatch(pending: number, failed: number): void {
+/** 从持久化资产状态初始化累计进度；重启服务不会丢失已生成数量。 */
+export function beginThumbnailBatch(): void {
   thumbnailBatchId++
-  const total = pending + failed
+  const counts = getDb()
+    .prepare(
+      `SELECT COUNT(*) AS total,
+              SUM(CASE WHEN thumb_status = 'done' THEN 1 ELSE 0 END) AS completed,
+              SUM(CASE WHEN thumb_status = 'pending' THEN 1 ELSE 0 END) AS pending,
+              SUM(CASE WHEN thumb_status = 'error' THEN 1 ELSE 0 END) AS allFailed,
+              SUM(CASE WHEN thumb_status = 'error' AND thumb_ignored = 0 THEN 1 ELSE 0 END) AS failed
+       FROM assets`,
+    )
+    .get() as {
+      total: number
+      completed: number | null
+      pending: number | null
+      allFailed: number | null
+      failed: number | null
+    }
+  const completed = counts.completed ?? 0
+  const pending = counts.pending ?? 0
   thumbnailProgress = {
     status: pending > 0 ? 'preparing' : 'done',
-    total,
-    processed: failed,
-    completed: 0,
+    total: counts.total,
+    processed: completed + (counts.allFailed ?? 0),
+    completed,
     pending,
-    failed,
+    failed: counts.failed ?? 0,
   }
 }
 

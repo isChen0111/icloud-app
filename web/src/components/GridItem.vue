@@ -22,7 +22,7 @@ const props = defineProps<{ asset: AssetDto; width: number; selected: boolean }>
 const router = useRouter()
 const store = useAssetStore()
 
-const { isVisible, src, rootRef } = useLazyImage(props.asset.id, 'grid')
+const { src, rootRef, onLoadFinished } = useLazyImage(props.asset.id, 'grid')
 const imageLoaded = ref(false)
 
 /** 占位底色：按 id 生成一个稳定的浅灰渐变（视觉上比纯灰更柔和） */
@@ -60,14 +60,17 @@ function openDetail(): void {
     <!-- 底色占位/懒加载锚点：进入视口后请求缩略图，加载完成再淡入 -->
     <div ref="rootRef" class="thumb-layer">
       <img
-        v-if="isVisible"
+        v-if="src"
         :src="src"
         class="thumb real"
         :class="{ loaded: imageLoaded }"
         alt=""
         decoding="async"
-        loading="lazy"
-        @load="imageLoaded = true"
+        @load="
+          imageLoaded = true;
+          onLoadFinished()
+        "
+        @error="onLoadFinished"
       />
     </div>
 
