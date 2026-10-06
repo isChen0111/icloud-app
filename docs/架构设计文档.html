@@ -406,7 +406,7 @@ F:\iPhone\icloud-app\
 │  │  ├─ scanner/index.ts, watcher.ts  <span class="c"># 目录扫描、实况配对（目录+基名）、UPSERT 幂等入库；chokidar 热监听（P2+-1）</span>
 │  │  ├─ pipeline/           <span class="c"># thumbnails（grid/detail 懒生成 + 失败保留 ignored + 自愈日志）+ queue（对外入队/进度/指标）+ thumbnailScheduler（F-01 单队列 priority+租约+60s 挂起上限，F-02 取消检测计数）+ thumbnailScheduler.test（12 用例）+ ffmpeg.test（超时 kill/不误杀 2 用例）+ in-flight 去重 + 扫描缓存对账</span>
 │  │  └─ routes/             <span class="c"># assets（cursor + offset 区间）/ thumb / video（Range 206）/ stats（含 /api/dates）/ search（FTS5）/ info（EXIF 详情）</span>
-│  ├─ scripts/               <span class="c"># install-ffmpeg-full.ps1（HEIC 解码）+ fix-asset-size.ts（宽高修正）+ rebuild-orientation-thumbs.ts（方向缓存重建）【注：fix-size / fix-thumbs 脚本文件当前缺失，待恢复或删除命令】</span>
+│  ├─ scripts/               <span class="c"># install-ffmpeg-full.ps1（HEIC 解码；fix-size / fix-thumbs 维护命令已于 2026-10-06 移除，脚本历史可在 git 找回）</span>
 │  ├─ vendor/                <span class="c"># BtbN ffmpeg full 版（含 libheif）</span>
 │  └─ cache/                 <span class="c"># thumbs/ 缩略图 + library.db + stats.json（可删重建）</span>
 ├─ web/
