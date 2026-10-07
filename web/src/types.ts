@@ -27,6 +27,10 @@ export interface AssetDetail extends AssetDto {
   liveVideo: string | null
   prevId: number | null
   nextId: number | null
+  /** 前一邻居的缓存版本（file_mtime），预取/预热 URL 用；无邻居为 null */
+  prevRev: number | null
+  /** 后一邻居的缓存版本（file_mtime）：详情页预取下一张大图时拼一致 URL */
+  nextRev: number | null
   /** 在全库倒序流中的序号（1-based，与照片墙滚动顺序一致） */
   position: number
   /** 全库资产总数（顶栏 "第 N / total 项"） */

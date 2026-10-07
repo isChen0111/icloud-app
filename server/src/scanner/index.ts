@@ -85,17 +85,15 @@ function walkDir(dir: string): { files: string[]; errors: string[] } {
   return result
 }
 
-/** 主扫描入口：全量扫描 + 入库。可重复调用（增量幂等）。
+/**
+ * 全量同步入口：遍历 + 配对 + 入库 + 删除对账。可重复调用（增量幂等）。
+ * @param source 触发来源：manual（手动/API）/ watcher（热监听）/ startup（启动对账）
  *
  * 容错与断点续跑（审查 P1-B1）：
  *  - 整体 try/catch：任何异常都把 scanProgress 置为 error 并上抛，
  *    不再"半途静默崩溃、状态卡在 scanning"。
- *  - 增量续跑：已入库的 file_path 直接跳过元数据提取（照片库是 iCloudPD
+ *  - 增量续跑：已入库的 file_path 直接复用元数据（照片库是 iCloudPD
  *    只读快照，文件内容不变），中断后重跑只补新文件，无需全量重来。
- */
-/**
- * 全量同步入口：遍历 + 配对 + 入库 + 删除对账。可重复调用（增量幂等）。
- * @param source 触发来源：manual（手动/API）/ watcher（热监听）/ startup（启动对账）
  */
 export async function runScan(source: 'manual' | 'watcher' | 'startup' = 'manual'): Promise<void> {
   scanProgress.source = source
@@ -291,7 +289,6 @@ export async function runScan(source: 'manual' | 'watcher' | 'startup' = 'manual
   })
 
   const batch: unknown[][] = []
-  let i = 0
   for (const a of assets) {
     const absPath = a.image.absPath
     const fileCount = 1 + Number(a.liveVideo !== null)
@@ -332,7 +329,6 @@ export async function runScan(source: 'manual' | 'watcher' | 'startup' = 'manual
       if (batch.length >= 200) {
         scanAll(batch.splice(0))
       }
-      i++
       continue
     }
 
@@ -397,7 +393,6 @@ export async function runScan(source: 'manual' | 'watcher' | 'startup' = 'manual
     if (batch.length >= 200) {
       scanAll(batch.splice(0))
     }
-    i++
   }
   if (batch.length > 0) scanAll(batch)
 
@@ -469,11 +464,11 @@ export async function runScan(source: 'manual' | 'watcher' | 'startup' = 'manual
     console.log(`[scan] 缓存对账：${reconciled} 个资产缩略图已存在，状态补记为 done（未入队）`)
   }
   const realPendingThumbs = db
-    .prepare(`SELECT id, file_path, type, live_video FROM assets WHERE thumb_status = 'pending'`)
-    .all() as { id: number; file_path: string; type: string; live_video: string | null }[]
+    .prepare(`SELECT id, file_path, type FROM assets WHERE thumb_status = 'pending'`)
+    .all() as { id: number; file_path: string; type: string }[]
   beginThumbnailBatch()
   for (const r of realPendingThumbs) {
-    enqueueAsset({ id: r.id, relPath: r.file_path, type: r.type as 'photo' | 'video' | 'live', liveVideo: r.live_video })
+    enqueueAsset({ id: r.id, relPath: r.file_path, type: r.type as 'photo' | 'video' | 'live' })
   }
 
   scanProgress.status = 'done'

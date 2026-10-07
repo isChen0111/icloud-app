@@ -103,7 +103,6 @@ export async function registerThumbnailErrorRoutes(app: FastifyInstance): Promis
         id: asset.id,
         relPath: asset.filePath,
         type: asset.type,
-        liveVideo: null,
       }
       enqueueAsset(item, 'user')
     }
@@ -117,6 +116,9 @@ export async function registerThumbnailErrorRoutes(app: FastifyInstance): Promis
       return reply.code(400).send({ error: 'body must contain all=true or ids and an ignored boolean' })
     }
     const ignored = (req.body as { ignored: boolean }).ignored
+    // getFailedAssets 第二参 = 「要查出的项当前 ignored 值」。
+    // 操作目标是把状态翻转：忽略(ignored=true)时，只处理当前未忽略(!true=false)的项；
+    // 恢复提醒(ignored=false)时，只处理当前已忽略(!false=true)的项——已在目标态的不重复处理。
     const assets = getFailedAssets(selection, !ignored)
     if (assets.length === 0) return reply.send({ updated: 0 })
 

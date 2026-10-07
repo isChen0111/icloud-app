@@ -52,12 +52,17 @@ export interface EnqueueItem {
   id: number
   relPath: string
   type: 'photo' | 'video' | 'live'
-  liveVideo: string | null
 }
 
 /** 从持久化资产状态初始化累计进度；重启服务不会丢失已生成数量。 */
 export function beginThumbnailBatch(): void {
   thumbnailBatchId++
+  // 关键（2026-10-07 体检修复）：把当前在途任务「过继」到新批次。
+  // 任务入队时关联的是当时的批次号，重建账本后它们手里还是旧号，完成时
+  // recordThumbnailResult 对不上新 batchId 会被整批丢弃 → 新批次 pending
+  // 永不减少、进度条卡死（卡死数 = 重建账本时的在途任务数，不会自愈）。
+  // 场景：后台任务在跑时用户对失败项点「忽略/重试」（本函数被调用）。
+  for (const batches of queued.values()) batches.add(thumbnailBatchId)
   const counts = getDb()
     .prepare(
       `SELECT COUNT(*) AS total,

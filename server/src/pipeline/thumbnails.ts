@@ -184,10 +184,13 @@ async function generate(
     // existsSync 会把"存在"的坏文件永久当有效返回，修复后也不会重新生成
     fs.rmSync(outPath, { force: true })
     if (size === 'grid') {
+      // grid 失败持久化 thumb_status='error' → 进失败清单（浮层可忽略/重试）。
       // 修复（F-07 系列）：不再覆盖 thumb_ignored——忽略状态由用户显式管理，失败不清除
       db.prepare(`UPDATE assets SET thumb_status='error', thumb_error=? WHERE id=?`)
         .run(message.slice(0, 1000), assetId)
     }
+    // detail 档失败有意「不进失败清单」：失败清单只管理网格预览图（照片墙入口）。
+    // detail_status 保持 pending，下次进详情页会重新懒生成；grid 已成功的资产不受影响。
     return null
   }
 }
