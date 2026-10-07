@@ -12,7 +12,7 @@
    - 网格 = 自研虚拟滚动（DOM 常驻 ~168 节点，absolute+transform，列数 3~9 滑块缩放只改 CSS）；缩略图 DerivativeImage ~415px 档 XHR→blob→objectURL；详情 OneUp 轮播 3 格 + 邻居预加载 ±2；实况照片 = 静止帧 + 隐藏 video 叠层按住播放；视频 = 原生 video + HTTP 206 Range。
 2. **行业调研**：Immich 三档缩略图、@tanstack/vue-virtual、sharp（libvips+libheif 是 Node HEIC 唯一成熟方案）、iCloudPD 输出结构（YYYY/MM/DD + `IMG_xxxx.HEIC ⇄ IMG_xxxx_HEVC.MOV`）。
 3. **P0 已落地并端到端验证**：后端 server/（Fastify + better-sqlite3 + sharp + ffmpeg）+ 前端 web/（Vue3.5+Vite+TS+Pinia 虚拟滚动/懒加载/详情轮播/实况/视频）。全量扫描 12,591 资产；HEIC 解码用 BtbN ffmpeg full 版（libheif）已固化 postinstall。
-4. **P1 已验收**：日期分组定位（月份头行 + 吸顶月份指示器 + **方案 C 日期导航面板**——工具栏「日期」按钮 → 下拉面板，左年份 + 右月份缩略图 3×4 网格，/api/dates 返回 108 个月 offset+thumbId）、缩放滑块（**默认 8 列**）、详情邻居预加载、照片墙底色占位后渐进显示 grid 缩略图、hash 深链、键盘切换、实况按住播放。遗留：内存 LRU（本地场景收益低，后置）。
+4. **P1 已验收**：日期分组定位（月份头行 + 吸顶月份指示器 + **方案 C 日期导航面板**——工具栏「日期」按钮 → 下拉面板，左年份 + 右月份缩略图 3×4 网格，/api/dates 返回 108 个月 offset+thumbId）、缩放滑块（**默认 8 列**）、详情邻居预加载、照片墙底色占位后渐进显示 grid 缩略图、hash 深链、键盘切换、实况按住播放。内存 LRU 已决定不做（2026-10-07：本地场景收益低，浏览器缓存已足够）。
 5. **P2 已验收（范围收缩）**：FTS5 trigram 搜索（文件名/日期子串，至少 3 字符，/api/search）。用户已决定不做：HEVC 按需转码缓存 / 逆地理编码 / 收藏 / 最近删除 / 下载原片；客户端批量选择已在 P2+-1 随删除功能落地。
 6. **稳定化（代码审查 5×P1 + 7×P2 = 12 项全部修复）**：
    - stats 异步体积统计 + 落盘缓存（首屏 229ms）
@@ -36,14 +36,15 @@
 19. **2026-10-01 稳健性修复**：资产/搜索 `limit` 限制为 1–500 整数；开发 CORS 只允许本机 Vite 来源；视频封面 URL 与普通缩略图共用 `THUMB_REV=3`；修正入口扫描与实况配对注释。
 20. **2026-10-06 全项目代码审查 + F-01/F-02/F-05/F-06 修复（主线）**：
    - 审查报告 `docs/整体审查报告-2026-10-06.md`（基线 c2a64bb）：7 项问题 F-01~F-07 全部核验属实（P1×2 + P2×5），含"六、后续执行方案"（已提交 7efbd43 / 合并 fdb946c）。
-   - **F-01 并发超限（P1，199fbc0/合并 2a8abb0）**：旧双队列（后台 8 + 交互 1 = 9 并发）合并为单一 `ThumbnailScheduler`（server/src/pipeline/thumbnailScheduler.ts）——单 p-queue、concurrency=8、交互 priority=10 / 后台 priority=0、浏览租约 30s（后台挂起、到期 flushDeferred 放行）；queue.ts 重构后对外接口不变；新增 node:test 单元测试 `thumbnailScheduler.test.ts`（7 用例，npm test）。
+   - **F-01 并发超限（P1，199fbc0/合并 2a8abb0）**：旧双队列（后台 8 + 交互 1 = 9 并发）合并为单一 `ThumbnailScheduler`（server/src/pipeline/thumbnailScheduler.ts）——单 p-queue、concurrency=8、交互 priority=10 / 后台 priority=0（**2026-10-07 事件让位改造后：后台始终入队、交互不足时后台填满剩余槽位，原「浏览租约 30s 挂起 + 60s 强制放行」机制已移除**）；queue.ts 重构后对外接口不变；新增 node:test 单元测试 `thumbnailScheduler.test.ts`（10 用例，npm test）。
    - **F-02 轻量版 + 队列指标（7b0180c/合并 e58e947）**：`/api/thumb` 与 `/api/video/poster` 任务开始执行时检查 `req.raw.destroyed/aborted`，断开则跳过生成 + 计入"已跳过"（静默结束、不进失败清单）；调度器加 3 计数器（interactiveRunning/interactiveWaiting/cancelled）→ `/api/stats.thumbQueueMetrics`；前端资源状态浮层展示队列指标（含口径悬浮提示）。测试扩至 9 用例。
    - **并发来源统一 + rAF（608c925/合并 792cd7e）**：前端调度器并发上限（原硬编码 8）改为经 `/api/stats.thumbConcurrency` 校准（后端 config 唯一来源，防漂移）；滚动触发 pump 改 rAF 合并（每帧最多一次布局读取）；架构文档新增 §4.12「照片墙滚动 → 缩略图请求的前后端协同机制（三道闸 + F-01/F-02）」。**关键结论（已入文档）**：前端限流 ≤8 并发 → 后端交互队列几乎不排队 → F-02 轻量版日常"已跳过=0"是预期（纵深防御 + 极端积压兜底）。
    - **F-05 搜索错误态（P2，5a17e8e/合并 e24600b）**：search.ts catch 分类——预期输入级错误（FTS 语法类，消息含 syntax/malformed/no such column 等）返回空结果；真异常返回 500 + 错误信息（不再伪装成"没有结果"）；前端 search store 加 `searchError`（首屏失败置错）+ GridView「搜索失败，请重试」错误态与重试按钮；滚动后续页失败仍走静默 + 滚回重试。
    - **F-06 FTS 版本化（P2，同合并）**：schema.ts 建表 DROP → `CREATE VIRTUAL TABLE IF NOT EXISTS`；db/index.ts 用 `PRAGMA user_version` 记录 `FTS_SCHEMA_VERSION=2`——版本不符才 DROP+CREATE 全量重建，正常启动只按行数差回填（**正常启动零重建**，迁移已执行：user_version 0→2，assets_fts 12,609 = assets 12,609）。
    - **Git 清理**：远程 9 分支系本地过期缓存快照（实际仅 main）；一次性清理 17 个已合并旧分支 + prune 远程 gone 分支。
-   - **F-07 FFmpeg/FFprobe 超时 + 失败清单系列（P2，2026-10-06，分支 fix/ffmpeg-timeout → 合并 505cb28 已推送）**：`ffmpeg.ts` 按操作类型超时（FFprobe 30s / 抽帧、HEIC 解码 60s），超时 kill 子进程并等 close 统一收尾，错误带 stderr 尾部；新增 `ffmpeg.test.ts`（超时 kill / 不误杀 2 用例）。**附带失败清单系列修复（同分支）**：①失败项忽略/重试不再被 preparing 锁住（只锁扫描中，消除 409 死锁）；②后台挂起上限 `backgroundMaxDeferMs=60s` 强制放行（防持续浏览饿死后台）；③失败保留 `thumb_ignored` + 忽略项跳过自动重试 + 自愈日志；④浮层三态入口（失败 N / 已忽略 N / 失败 0，入口常驻）；⑤扫描缓存对账（grid 缓存存在但 DB pending → 补记 done，根治「待处理 N 卡 99% 转圈」死锁，实测待处理 2→0）；⑥命名修正：浮层「待处理」→「失败」、顶部徽标「预览图待处理」→「预览图失败」。测试 12/12 全绿 + 前端 build 通过。
+   - **F-07 FFmpeg/FFprobe 超时 + 失败清单系列（P2，2026-10-06，分支 fix/ffmpeg-timeout → 合并 505cb28 已推送）**：`ffmpeg.ts` 按操作类型超时（FFprobe 30s / 抽帧、HEIC 解码 60s），超时 kill 子进程并等 close 统一收尾，错误带 stderr 尾部；新增 `ffmpeg.test.ts`（超时 kill / 不误杀 2 用例）。**附带失败清单系列修复（同分支）**：①失败项忽略/重试不再被 preparing 锁住（只锁扫描中，消除 409 死锁）；②后台挂起上限 `backgroundMaxDeferMs=60s` 强制放行（防持续浏览饿死后台；**注：该挂起机制 2026-10-07 事件让位改造中已整体移除**）；③失败保留 `thumb_ignored` + 忽略项跳过自动重试 + 自愈日志；④浮层三态入口（失败 N / 已忽略 N / 失败 0，入口常驻）；⑤扫描缓存对账（grid 缓存存在但 DB pending → 补记 done，根治「待处理 N 卡 99% 转圈」死锁，实测待处理 2→0）；⑥命名修正：浮层「待处理」→「失败」、顶部徽标「预览图待处理」→「预览图失败」。测试 12/12 全绿 + 前端 build 通过。
    - **F-03 源文件签名 + F-04 Origin 校验（P2，2026-10-06，分支 fix/f03-f04 → 合并 6fd9dae 已推送）**：assets 表新增 `file_size`/`file_mtime`（列检查 ALTER 迁移）；scanner 遍历收集签名（size + mtimeMs，约 1~2s 总成本），签名不一致 → 重新提取元数据 + 状态置 pending + 删旧 grid/detail 缓存 → 重建。**前端 rev 联动**：资产 DTO / `/api/dates` 返回 `rev = file_mtime`，thumbUrl/videoPosterUrl 调用点携带（GridItem/DetailView/LivePhoto/DateNavPanel/useLazyImage）——覆盖文件后 mtime 变 → URL 变 → 浏览器绕过 1 年强缓存自动换新图（F-03 完整闭环）。F-04：index.ts onRequest hook 对带非允许 Origin 的非 GET/HEAD 请求返回 403（恶意网页跨站防护；curl/本地脚本无 Origin 零影响）。验证：tsc/vue-tsc 0 错、测试 12/12、F-03 端到端（覆盖→失效→重建→前端换图）、F-04 行为 4 项全对。审查报告 7 项全部完成。
+21. **2026-10-07 调度器事件让位改造（fix/event-based-yield，待验收）**：替换原「浏览租约 30s 挂起 + 60s 强制放行」机制——后台任务始终入队（priority=0），交互任务 priority=10 永远先出队，PQueue 一次启动 concurrency 个任务时交互不足则用后台填满剩余槽位（零时间参数、零槽位浪费）。动机：增量更新场景（如仅新增 1 个文件）下后台任务原需白等 30s，即使槽位全空闲；60s 放行在持续浏览时也只保证「入队排队」而非「真正执行」。**结构性 trade-off**：运行中的任务不可被抢占，首次启动大量后台占满槽位时交互需等运行中的后台完成（单任务 ffmpeg 60s 超时上限，通常几百 ms）。连带删除：`/api/thumbnails/activity` 路由与前端 `notifyThumbnailBrowsing`/App.vue 浏览信号监听（6 个事件）、`markThumbnailBrowsing`、`browseLeaseMs`/`backgroundMaxDeferMs`。影响文件：thumbnailScheduler.ts / queue.ts / thumb.ts / client.ts / App.vue / thumbnailScheduler.test.ts（10 用例：并发不变量 3 + 交互优先 2 + 后台填槽 2 + 积压计数 1 + 队列指标 2）+ 文档同步。验证：server npm test 12/12、双端 tsc 0 错。
 
 ## 照片库实测数据（2026-09-08）
 - 结构：`YYYY/MM/DD/文件名`（iCloudPD 默认），实况配对基名归一（`_HEVC` 后缀），**无时间差校验**。⚠️ **配对必须限定同一目录**——跨目录同名文件（不同设备/编辑版本的同名，如 `2018/02/04/IMG_0040*` 与 `2021/07/27/IMG_0040*`，全库 2,363 个基名分布多目录）若只按基名配对会错配丢视频（见「已完成」第 9 条）。
@@ -52,14 +53,14 @@
 - 关键统计：orientation=6 共 6,853 张（photo+live），orientation=1 共 1,905；非 HEIC + orientation 2~8 = 103 张（方向重建范围）。
 
 ## 技术选型（已定）
-- 后端：Node 24（用户 D:\nodejs）+ TypeScript + Fastify 5 + better-sqlite3 13.0.3（包内平台预编译，lockfile 需保留 `gypfile:false`）+ exifr + sharp 0.35 + vendor ffmpeg spawn（BtbN full / libheif）+ p-queue（**F-01 后为单一 ThumbnailScheduler：交互 priority=10 / 后台 priority=0、浏览租约 30s 后台挂起、总并发 config.thumbConcurrency=8 严格不超**）
+- 后端：Node 24（用户 D:\nodejs）+ TypeScript + Fastify 5 + better-sqlite3 13.0.3（包内平台预编译，lockfile 需保留 `gypfile:false`）+ exifr + sharp 0.35 + vendor ffmpeg spawn（BtbN full / libheif）+ p-queue（**F-01 后为单一 ThumbnailScheduler：交互 priority=10 / 后台 priority=0、后台始终入队、交互不足时后台填满剩余槽位（事件让位，2026-10-07 移除原租约挂起）、总并发 config.thumbConcurrency=8 严格不超**）
 - 前端：Vue 3.5 + Vite + TS + Pinia + vue-router(hash) + @tanstack/vue-virtual + 自研 useLazyImage（IntersectionObserver；网格最多 8 个图片请求并发；拖动滚动条每 250ms 检查位移，快拖跳过中间区域、慢拖或停住时渐进加载当前视口，松开后优先派发最终视口）
 - 缩略图档：grid 320px / detail 1600px WebP；视频封面 ffmpeg 抽帧。扫描后只后台预热 grid；照片墙格子先显示底色，grid 图片加载成功后淡入；已废弃的 blur 缓存由扫描清理
 - 端口：后端 127.0.0.1:8899，前端 http://localhost:5173（Vite 绑 IPv6，勿用 127.0.0.1:5173）
 
 ## 实施路线（最新）
 - ✅ P0：扫描 + 虚拟滚动 + 缩放 + 缩略图懒生成 + 详情 + 实况 + 视频
-- ✅ P1：日期定位 + 邻居预取 + 渐进图片加载 + 深链 + 键盘 + 实况（剩内存 LRU 后置）
+- ✅ P1：日期定位 + 邻居预取 + 渐进图片加载 + 深链 + 键盘 + 实况（内存 LRU 已决定不做，2026-10-07）
 - ✅ P2：FTS5 搜索（HEVC 转码/收藏/最近删除/下载不做；批量选择已随客户端删除落地）
 - ✅ 稳定化：12 项修复 + GitHub 版本管理
 - ✅ **照片墙占位优化（2026-10-03）**：移除独立 blur 缩略图档及对应请求/后台生成；格子先显示底色，grid 图片加载成功后淡入。旧 `cache/thumbs/blur/` 在扫描时清理；详情页复用 grid 并用 CSS 模糊的占位效果保留。
@@ -79,13 +80,13 @@
 ## 待办 / 遗留（均不影响使用）
 - 预览图失败记录现在可在顶栏清单中查看、重试或忽略；较早的失败项没有存储原因，会显示“失败时未记录详细原因”。
 - ✅ 缩略图生成失败留 0 字节 WebP 兜底：已在 generate() catch 分支补 `fs.rmSync(outPath, {force:true})`（2026-09-08 审查后修复）。
-- `server\vendor\ffmpeg-full.zip`（163MB 安装包）保留或删除：无用户决定（.gitignore 已排除不入库）。
+- ✅ `server\vendor\ffmpeg-full.zip`（163MB 安装包）：已决定保留不删（2026-10-07，.gitignore 已排除不入库，用户自行处理）。
 - ✅ toolbar 调试信息（items/rows/virt）：已定保留（用户确认）。
 - ✅ **KeepAlive 缓存失效已补齐（2026-10-01）**：前端轮询扫描状态，扫描结束后刷新月份和已缓存页；保留滚动位置。
 - ✅ 2026-09-17 审查 B1~B5 修复完成（删除页缓存错位 / 实况宽高兜底 / 首屏默认浅色 / CORS DELETE / 排版整理）。
 - 🔜 P2+-1 一键拉取（exe 方案已定）待开发；P2+-3 语义搜索暂缓实现；**P2+-4 详情缓存治理已列入**（保留最近 N 月浏览的 detail 图 / 一键清空 detail 缓存，可选）。
 - ✅ **search store finally 竞态已修**（2026-09-19 审查发现，代码 finally 已有 `if (seq !== searchSeq) return` 守卫，F-05 改动时一并确认）。
-- ✅ **F-07 + 失败清单系列已完成**（2026-10-06，分支 fix/ffmpeg-timeout → 合并 505cb28 推送）：ffmpeg/ffprobe 超时 kill；失败项操作解锁（只锁扫描中）；后台挂起 60s 上限；失败保留 ignored + 忽略跳过重试 + 自愈日志；浮层三态入口；扫描缓存对账（待处理卡死根治，实测收敛）；命名修正（浮层/徽标「待处理」→「失败」）。测试 12/12。
+- ✅ **F-07 + 失败清单系列已完成**（2026-10-06，分支 fix/ffmpeg-timeout → 合并 505cb28 推送）：ffmpeg/ffprobe 超时 kill；失败项操作解锁（只锁扫描中）；后台挂起 60s 上限（**2026-10-07 事件让位改造中已移除**）；失败保留 ignored + 忽略跳过重试 + 自愈日志；浮层三态入口；扫描缓存对账（待处理卡死根治，实测收敛）；命名修正（浮层/徽标「待处理」→「失败」）。测试 12/12。
 - ✅ **审查报告 7 项全部完成**（2026-10-06，F-03/F-04 分支 fix/f03-f04 → 合并 6fd9dae 推送）：F-03 源文件签名（size+mtimeMs）驱动缓存失效 + 前端 rev 联动（rev=file_mtime，URL 随内容变化强制换图）；F-04 副作用请求非允许 Origin 403。文档快照资产口径 12,609 已同步。
 
 ## 用户偏好（与本项目相关）

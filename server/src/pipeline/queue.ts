@@ -1,17 +1,16 @@
 /**
- * 任务队列（单一调度器，F-01 修复 2026-10-06）
+ * 任务队列（单一调度器，F-01 修复 2026-10-06；事件让位改造 2026-10-07）
  *
  * 后台和交互任务共享一个总并发预算：
  * - 单一 PQueue 的 concurrency 固定 = thumbConcurrency，总运行数严格 ≤ 预算
  *   （旧实现用双队列互推并发值，8 后台运行中 + 1 交互会产生 9 个并发，见审查报告 F-01）。
- * - 交互优先由调度器 priority 表达（交互 10 / 后台 0，排队时插队）。
- * - 浏览活动租约：用户浏览时后台任务挂起不派发（交互独占全部槽位）；
- *   停止活动 30 秒后后台补图恢复。已运行的任务不强制中断。
+ * - 交互优先由调度器 priority 表达（交互 10 / 后台 0，排队时插队）；后台任务始终入队，
+ *   交互任务不足时用后台填满剩余槽位（事件让位：零时间参数、零槽位浪费，见 thumbnailScheduler）。
  * - 同一资产重复入队：用 Set 去重（懒生成 + 滚动浏览时同一张图可能被反复请求）。
  *
- * 对外接口（enqueueAsset / runInteractiveThumbnail / markThumbnailBrowsing /
- * beginThumbnailBatch / resetThumbnailProgress / getThumbnailProgress / queueSize）
- * 保持不变，调用方（thumb.ts / scanner / stats.ts / thumbnail-errors.ts）无需改动。
+ * 对外接口（enqueueAsset / runInteractiveThumbnail / beginThumbnailBatch /
+ * resetThumbnailProgress / getThumbnailProgress / queueSize）保持不变，
+ * 调用方（thumb.ts / scanner / stats.ts / thumbnail-errors.ts）无需改动。
  * 调度核心见 thumbnailScheduler.ts（纯逻辑、可单测）。
  */
 import { config } from '../config.js'
@@ -19,11 +18,9 @@ import { getDb } from '../db/index.js'
 import { ensureThumbnail } from './thumbnails.js'
 import { ThumbnailScheduler, type ThumbnailQueueMetrics } from './thumbnailScheduler.js'
 
-/** 交互与后台共享的调度器：总并发 = config.thumbConcurrency，浏览租约 30 秒，后台挂起上限 60 秒（防饿死） */
+/** 交互与后台共享的调度器：总并发 = config.thumbConcurrency */
 const scheduler = new ThumbnailScheduler({
   concurrency: config.thumbConcurrency,
-  browseLeaseMs: 30_000,
-  backgroundMaxDeferMs: 60_000,
 })
 
 const queued = new Map<string, Set<number>>() // 去重键 → 等待该任务结果的批次
@@ -108,14 +105,8 @@ export function getThumbnailProgress(): ThumbnailProgress {
   return { ...thumbnailProgress }
 }
 
-/** 用户有浏览交互时暂停后台补图；当前任务完成后不再启动新的后台任务。 */
-export function markThumbnailBrowsing(leaseMs = 30_000): void {
-  scheduler.markBrowsing(leaseMs)
-}
-
 /** 将直接由浏览页面触发的任务放入共享队列，并优先于剩余后台任务执行。 */
 export function runInteractiveThumbnail<T>(task: () => Promise<T>): Promise<T> {
-  markThumbnailBrowsing()
   let result: T
   return scheduler
     .submit(async () => {
@@ -129,7 +120,6 @@ export function runInteractiveThumbnail<T>(task: () => Promise<T>): Promise<T> {
  * 调用方可并发触发多次，内部自动去重（同一 key 只入队一次）。
  */
 export function enqueueAsset(item: EnqueueItem, priority: 'background' | 'user' = 'background'): void {
-  if (priority === 'user') markThumbnailBrowsing()
   const size = 'grid'
   const key = `${item.id}:${size}`
   const batchId = thumbnailBatchId

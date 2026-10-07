@@ -11,7 +11,6 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import {
   fetchStats,
   fetchThumbnailFailures,
-  notifyThumbnailBrowsing,
   retryThumbnailFailures,
   setThumbnailFailuresIgnored,
 } from './api/client'
@@ -105,7 +104,6 @@ let pollInProgress = false
 let disposed = false
 let lastScanRunId = -1
 let lastScanStatus: Stats['scan']['status'] = 'idle'
-let lastBrowsingSignalAt = 0
 
 /**
  * 拉取统计；失败则每 5 秒重试直到连上（修复审查 P1-F4）。
@@ -169,14 +167,6 @@ function closeStatusDetailsOnEscape(event: KeyboardEvent): void {
   }
 }
 
-function signalThumbnailBrowsing(): void {
-  if (document.visibilityState !== 'visible' || Date.now() - lastBrowsingSignalAt < 10_000) return
-  lastBrowsingSignalAt = Date.now()
-  void notifyThumbnailBrowsing().catch((err: unknown) => {
-    console.warn('[app] 浏览活动通知失败:', err)
-  })
-}
-
 async function loadThumbnailFailures(): Promise<void> {
   if (!failureLoaded.value) failureLoading.value = true
   failureDialogError.value = ''
@@ -236,25 +226,12 @@ watch(
 onMounted(() => {
   document.addEventListener('pointerdown', closeStatusDetailsOnOutsideClick)
   document.addEventListener('keydown', closeStatusDetailsOnEscape)
-  document.addEventListener('pointerdown', signalThumbnailBrowsing, { passive: true })
-  document.addEventListener('wheel', signalThumbnailBrowsing, { passive: true })
-  document.addEventListener('keydown', signalThumbnailBrowsing, { passive: true })
-  document.addEventListener('touchstart', signalThumbnailBrowsing, { passive: true })
-  document.addEventListener('input', signalThumbnailBrowsing, { passive: true })
-  document.addEventListener('visibilitychange', signalThumbnailBrowsing)
-  signalThumbnailBrowsing()
   void pollStats()
 })
 onBeforeUnmount(() => {
   disposed = true
   document.removeEventListener('pointerdown', closeStatusDetailsOnOutsideClick)
   document.removeEventListener('keydown', closeStatusDetailsOnEscape)
-  document.removeEventListener('pointerdown', signalThumbnailBrowsing)
-  document.removeEventListener('wheel', signalThumbnailBrowsing)
-  document.removeEventListener('keydown', signalThumbnailBrowsing)
-  document.removeEventListener('touchstart', signalThumbnailBrowsing)
-  document.removeEventListener('input', signalThumbnailBrowsing)
-  document.removeEventListener('visibilitychange', signalThumbnailBrowsing)
   if (retryTimer !== undefined) {
     window.clearTimeout(retryTimer)
     retryTimer = undefined
