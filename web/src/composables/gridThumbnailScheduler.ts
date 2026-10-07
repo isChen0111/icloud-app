@@ -18,6 +18,17 @@ interface PendingThumbnail {
 
 export const gridThumbnailSchedulerKey: InjectionKey<GridThumbnailScheduler> = Symbol('gridThumbnailScheduler')
 
+/**
+ * 网格缩略图前端调度器（三层防线之一：几何距离排队；外层有 IO 懒加载，后端有 F-02 断开跳过）。
+ *
+ * 滚动条拖拽模式（2026-10-07 优化，fix/slow-drag-prefetch）：
+ * - 慢速拖动（250ms 内位移 ≤ 20% 屏高）与普通滚动同体验：onScroll 走 rAF 合并的
+ *   requestPump（始终带预载 margin），新进视口的图下一帧即触发，视口外一行也提前预载，
+ *   不再「每 250ms 才触发 + 只加载严格可见」（旧实现导致图片慢慢追着手、松手才秒出）。
+ * - 快速拖动（250ms 内位移 > 20% 屏高）：fastDrag 置位后停止 pump，跳过快速滑过的
+ *   中间区域（防请求风暴）；250ms 轮询持续检测速度，降速即恢复。
+ * - 松手：180ms settle 缓冲后恢复正常 pump，按最终视口 + 预载区全量加载。
+ */
 export function createGridThumbnailScheduler(
   getScrollElement: () => HTMLElement | null,
   getPrefetchDistance: () => number,
@@ -26,9 +37,11 @@ export function createGridThumbnailScheduler(
   const pending = new Map<number, PendingThumbnail>()
   const active = new Map<number, PendingThumbnail>()
   const settleDelayMs = 180
-  const dragLoadIntervalMs = 250
+  const dragSpeedCheckMs = 250
   let concurrencyLimit = maxConcurrentRequests
   let scrollbarDragging = false
+  /** 快速拖动标志：250ms 轮询检测位移超阈值后置位，停止派发（跳过中间区域） */
+  let fastDrag = false
   let deferUntil = 0
   let settleTimer: number | undefined
   let dragLoadTimer: number | undefined
@@ -38,26 +51,24 @@ export function createGridThumbnailScheduler(
   /**
    * rAF 合并的 pump 入口：scroll/request/complete 等高频触发源在同一帧内
    * 只真正跑一次 pump，避免每个 scroll 事件都做 getBoundingClientRect
-   * （强制布局重算 → 快速滚动掉帧）。visibleOnly 只在拖动慢速场景使用；
-   * 同一帧内以「最宽」模式执行（出现过 false 就按 false 跑）。
+   * （强制布局重算 → 快速滚动掉帧）。
    */
   let pumpRaf = 0
-  let pumpVisibleOnly = false
-  function requestPump(visibleOnly = false): void {
-    if (!visibleOnly) pumpVisibleOnly = false
+  function requestPump(): void {
     if (pumpRaf !== 0) return
     pumpRaf = requestAnimationFrame(() => {
       pumpRaf = 0
-      pump(pumpVisibleOnly)
+      pump()
     })
   }
 
-  function pump(visibleOnly = false): void {
+  /** 遍历 pending，几何过滤：仅视口 + 预载行内的元素会真正触发 load；可见优先、距离近优先 */
+  function pump(): void {
     const scrollElement = getScrollElement()
     if (!scrollElement || active.size >= concurrencyLimit) return
 
     const viewport = scrollElement.getBoundingClientRect()
-    const margin = visibleOnly ? 0 : getPrefetchDistance()
+    const margin = getPrefetchDistance()
     const ready: { assetId: number; distance: number; visible: boolean }[] = []
 
     for (const [assetId, item] of pending) {
@@ -87,9 +98,14 @@ export function createGridThumbnailScheduler(
     }
   }
 
+  /**
+   * 拖拽速度检测轮询（250ms）：拖动期间持续判定快/慢并更新 fastDrag。
+   * 慢速拖动时带预载兜底触发 pump（覆盖 request() 新注册但未被 onScroll 触发的元素）；
+   * 快速拖动时不派发（跳过中间区域）。
+   */
   function scheduleDragLoad(): void {
     if (!scrollbarDragging || dragLoadTimer !== undefined) return
-    const delay = Math.max(0, dragLoadIntervalMs - (Date.now() - lastDragLoadAt))
+    const delay = Math.max(0, dragSpeedCheckMs - (Date.now() - lastDragLoadAt))
     dragLoadTimer = window.setTimeout(() => {
       dragLoadTimer = undefined
       if (!scrollbarDragging) return
@@ -100,7 +116,8 @@ export function createGridThumbnailScheduler(
       const scrollDistance = Math.abs(scrollElement.scrollTop - lastDragLoadScrollTop)
       lastDragLoadScrollTop = scrollElement.scrollTop
       const slowDragDistance = Math.max(96, scrollElement.clientHeight * 0.2)
-      if (scrollDistance <= slowDragDistance) requestPump(true)
+      fastDrag = scrollDistance > slowDragDistance
+      if (!fastDrag) requestPump()
       scheduleDragLoad()
     }, delay)
   }
@@ -121,8 +138,13 @@ export function createGridThumbnailScheduler(
   }
 
   function onScroll(): void {
-    if (scrollbarDragging) scheduleDragLoad()
-    else requestPump()
+    if (scrollbarDragging) {
+      // 慢速拖动 = 普通滚动体验：每帧 rAF 派发（带预载）；快速拖动等轮询判速后停止
+      if (!fastDrag) requestPump()
+      scheduleDragLoad()
+    } else {
+      requestPump()
+    }
   }
 
   return {
@@ -136,6 +158,7 @@ export function createGridThumbnailScheduler(
     },
     beginScrollbarDrag() {
       scrollbarDragging = true
+      fastDrag = false // 初始按慢速处理：拖起即加载当前位置；轮询检测到快速后才停止
       lastDragLoadAt = Date.now()
       lastDragLoadScrollTop = getScrollElement()?.scrollTop ?? 0
       deferUntil = 0
@@ -145,6 +168,7 @@ export function createGridThumbnailScheduler(
     },
     endScrollbarDrag() {
       scrollbarDragging = false
+      fastDrag = false
       if (dragLoadTimer !== undefined) window.clearTimeout(dragLoadTimer)
       dragLoadTimer = undefined
       deferUntil = Date.now() + settleDelayMs
@@ -157,6 +181,7 @@ export function createGridThumbnailScheduler(
     },
     prioritizeNextScroll() {
       scrollbarDragging = false
+      fastDrag = false
       deferUntil = 0
       if (settleTimer !== undefined) window.clearTimeout(settleTimer)
       settleTimer = undefined
