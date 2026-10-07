@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>本地 iCloud 照片浏览器 · 架构设计文档</title>
+<title>iCloud本地照片应用· 架构设计文档</title>
 <style>
   :root{
     --bg:#F6F7F9; --card:#FFFFFF; --ink:#1A1B1C; --ink2:#5A6270;
@@ -56,7 +56,7 @@
 <body>
 <div class="wrap">
 
-<h1>本地 iCloud 照片浏览器 · 架构设计文档</h1>
+<h1>iCloud本地照片应用· 架构设计文档</h1>
 <p class="sub">实测数据规模：20,051 个文件 / 162.9GB（iPhone 源文件，2026-10-06 scan runId 1）｜ 入库资产：12,609（照片 1,988 + 实况 7,442 + 视频 3,179）｜ 目标：在本地还原 iCloud 网页端的浏览体验</p>
 
 <div class="grid">
@@ -172,8 +172,8 @@
 <tr><td><b>detail</b></td><td>最长边 1600px，WebP q82</td><td>详情页大图（对标 iCloud 2048 档，本地 1600 已足够）</td><td>~250KB/张 ≈ <b>3GB</b>（可仅按需生成最近浏览的）</td></tr>
 <tr><td><b>video poster</b></td><td>ffmpeg 优先抽第 1 秒帧；短视频按时长选择片段内时间点，无帧时回退到开头 → 320px WebP</td><td>视频缩略图</td><td>~60KB × 3,179 ≈ <b>0.19GB</b></td></tr>
 </table>
-<p>生成策略：缩略图按请求惰性生成，并由后台队列补齐缓存。前端请求某张缩略图 → 后端查缓存未命中 → 生成并写入磁盘缓存（ETag 缓存到浏览器）；扫描后待生成资产只将 <code>grid</code> 档加入后台队列。后台补图与照片墙、搜索及详情触发的交互任务共享最多 8 个并发槽位：空闲时后台可使用全部槽位；浏览活动期间暂停派发新的后台任务，已启动的任务不强制中断，释放的槽位优先给交互请求；停止活动 30 秒后后台恢复。照片墙慢速滚动和滚轮操作持续懒加载，浏览器侧最多并发派发 8 个网格图请求；拖动浏览器滚动条时每 250ms 检查一次位移，仅当位移不超过约 1/5 屏时派发当前可视区请求，快速跨屏时跳过中间经过的位置，停止移动后继续派发当前位置；松开后等待 180ms，再按最终视口及一行邻近范围排序、逐张补位加载。日期导航跳转立即加载，不经过滚动条拖动延迟。扫描流程不受该调度影响。Sharp 全局并发限制为 2，视频/HEIC 后台抽帧的 FFmpeg 解码线程限制为 1（交互任务为 2）。照片墙格子接近视口时请求 grid，图片加载完成前显示稳定的底色占位，成功加载后淡入。同一资产、同一档位的并发生成由 <code>in-flight Map</code> 去重。F-03：资产表维护源文件签名（size + mtimeMs），扫描比对签名变化 → 该资产状态置待生成并删除旧缓存 → 重建，配合前端 rev（= file_mtime）联动 URL，浏览器 1 年强缓存下的旧图自动失效。</p>
-<div class="callout"><b>调度器实现（F-01/F-02 落地 2026-10-06，server/src/pipeline/thumbnailScheduler.ts）</b>：单一 p-queue 统一管理交互与后台任务——<code>priority 10 = 交互</code>（浏览中的图插队先跑）、<code>priority 0 = 后台</code>（浏览租约 30s 内挂起，到期放行；挂起超过 <code>backgroundMaxDeferMs=60s</code> 强制放行防饿死）；总并发 = <code>config.thumbConcurrency</code>（默认 8），旧双队列（后台 8 + 交互 1 = 9 并发）合并后严格 ≤ 8，单元测试 <code>thumbnailScheduler.test.ts</code> 10 用例 + <code>ffmpeg.test.ts</code> 2 用例 = 12 全绿（并发不变量 / 插队 / 租约 / 挂起上限 / 队列指标）。F-02 轻量版：<code>/api/thumb</code> 与 <code>/api/video/poster</code> 任务开始执行时检查 <code>req.raw.destroyed / aborted</code>，断开则跳过生成并计入「已跳过」（<code>cancelled</code>）。<code>/api/stats</code> 新增 <code>thumbConcurrency</code>（前端调度器并发上限的唯一来源，防前后端漂移）与 <code>thumbQueueMetrics { running, interactiveRunning, interactiveWaiting, cancelled }</code>（诊断指标）。前端调度器（web/src/composables/gridThumbnailScheduler.ts）挂载后从 <code>/api/stats</code> 校准并发上限，滚动触发经 rAF 合并。完整机制见 4.12。</div>
+<p>生成策略：缩略图按请求惰性生成，并由后台队列补齐缓存。前端请求某张缩略图 → 后端查缓存未命中 → 生成并写入磁盘缓存（ETag 缓存到浏览器）；扫描后待生成资产只将 <code>grid</code> 档加入后台队列。后台补图与照片墙、搜索及详情触发的交互任务共享最多 8 个并发槽位：后台任务始终入队（priority=0），交互任务 priority=10 永远先出队，PQueue 一次启动 8 个任务时交互不足则用后台填满剩余槽位——<b>浏览优先调度 + 后台填满空闲槽位</b>（事件让位，2026-10-07 替换原「浏览租约 30s 挂起 + 60s 强制放行」机制，零时间参数、零槽位浪费）。运行中的任务不被抢占：首次启动大量后台任务占满槽位时，新到达的交互任务需等运行中的后台任务完成（单任务有 ffmpeg 60s 超时上限，通常几百 ms），属可接受的短期等待。照片墙慢速滚动和滚轮操作持续懒加载，浏览器侧最多并发派发 8 个网格图请求；拖动浏览器滚动条时每 250ms 检查一次位移，仅当位移不超过约 1/5 屏时派发当前可视区请求，快速跨屏时跳过中间经过的位置，停止移动后继续派发当前位置；松开后等待 180ms，再按最终视口及一行邻近范围排序、逐张补位加载。日期导航跳转立即加载，不经过滚动条拖动延迟。扫描流程不受该调度影响。Sharp 全局并发限制为 2，视频/HEIC 后台抽帧的 FFmpeg 解码线程限制为 1（交互任务为 2）。照片墙格子接近视口时请求 grid，图片加载完成前显示稳定的底色占位，成功加载后淡入。同一资产、同一档位的并发生成由 <code>in-flight Map</code> 去重。F-03：资产表维护源文件签名（size + mtimeMs），扫描比对签名变化 → 该资产状态置待生成并删除旧缓存 → 重建，配合前端 rev（= file_mtime）联动 URL，浏览器 1 年强缓存下的旧图自动失效。</p>
+<div class="callout"><b>调度器实现（F-01 落地 2026-10-06 / 事件让位 2026-10-07，server/src/pipeline/thumbnailScheduler.ts）</b>：单一 p-queue 统一管理交互与后台任务——<code>priority 10 = 交互</code>（浏览中的图插队先跑）、<code>priority 0 = 后台</code>（始终入队；交互任务不足时后台填满剩余槽位，事件让位，原「浏览租约 30s 挂起 + <code>backgroundMaxDeferMs=60s</code> 强制放行」已移除）；总并发 = <code>config.thumbConcurrency</code>（默认 8），旧双队列（后台 8 + 交互 1 = 9 并发）合并后严格 ≤ 8，单元测试 <code>thumbnailScheduler.test.ts</code> 10 用例 + <code>ffmpeg.test.ts</code> 2 用例 = 12 全绿（并发不变量 / 交互插队 / 后台填槽 / 积压计数 / 队列指标）。F-02 轻量版：<code>/api/thumb</code> 与 <code>/api/video/poster</code> 任务开始执行时检查 <code>req.raw.destroyed / aborted</code>，断开则跳过生成并计入「已跳过」（<code>cancelled</code>）。<code>/api/stats</code> 新增 <code>thumbConcurrency</code>（前端调度器并发上限的唯一来源，防前后端漂移）与 <code>thumbQueueMetrics { running, interactiveRunning, interactiveWaiting, cancelled }</code>（诊断指标）。前端调度器（web/src/composables/gridThumbnailScheduler.ts）挂载后从 <code>/api/stats</code> 校准并发上限，滚动触发经 rAF 合并。完整机制见 4.12。</div>
 <div class="note"><b>性能取舍：移除独立 blur 档</b>：blur 小图虽小，生成时仍需读取、解码源媒体并缩放/编码；若与 grid 到达间隔很短，额外占位的视觉收益有限。本实现已移除独立 blur 档：后台队列只预热 grid，格子先显示底色，待 grid 图片加载成功后淡入；扫描时会清理旧的 <code>cache/thumbs/blur/</code> 缓存。详情页仍可复用 grid 图并通过 CSS 模糊作为临时占位，不会额外生成或请求 blur 文件。</div>
 
 <h3>3.5 视频播放与转码（关键风险点）</h3>
@@ -201,7 +201,6 @@ GET /api/stats                               <span class="c"># 库统计 + 扫�
 GET /api/thumbnails/failed                   <span class="c"># 失败清单：{ items, failedCount, ignoredCount }（失败/已忽略项，含原因）</span>
 POST /api/thumbnails/retry                   <span class="c"># 重试失败项（body { ids } 或 { all: true }）；仅扫描中 409</span>
 POST /api/thumbnails/ignore                  <span class="c"># 忽略/恢复失败提醒（body { ids, ignored } 或 { all, ignored }）</span>
-POST /api/thumbnails/activity                <span class="c"># 通知浏览活动，续租后台挂起 30s</span>
 POST /api/scan                               <span class="c"># 触发增量扫描（Content-Type: application/json，body {}）</span>
 DELETE /api/assets                           <span class="c"># 批量删除（body { ids }，去重限 1000；删源文件+DB+FTS+缩略图缓存，不可逆）</span>
 </pre>
@@ -254,7 +253,7 @@ CREATE VIRTUAL TABLE assets_fts USING fts5(filename, location_text);
 <tr><td>状态管理</td><td><b>Pinia</b></td><td>资产列表 / 视图状态 / 预取队列集中管理</td></tr>
 <tr><td>路由</td><td><b>vue-router 4（hash 模式）</b></td><td>复刻 <code>#/i,pz,&lt;id&gt;,&lt;index&gt;/</code> 深链：刷新/前进后退回到原位置</td></tr>
 <tr><td>虚拟滚动</td><td><b>@tanstack/vue-virtual</b>（核心）或自研</td><td>headless 虚拟滚动，适配自定义网格布局（列数可变）比 vue-virtual-scroller 更贴合；RecycleScroller 是单列列表模型，网格需二次改造</td></tr>
-<tr><td>图片加载</td><td><b>自定义 useImageLoader</b>（IntersectionObserver + 优先级队列 + 内存 LRU + blob 复用）</td><td>对标 iCloud 的 offscreeniness 调度；本地虽快，快速滚动仍需要预取窗口防闪烁</td></tr>
+<tr><td>图片加载</td><td><b>自定义 useImageLoader</b>（IntersectionObserver + 优先级队列；浏览器 HTTP 长缓存兜底；内存 LRU / blob 复用<b>未实现</b>——2026-10-07 已决定不做）</td><td>对标 iCloud 的 offscreeniness 调度；本地虽快，快速滚动仍需要预取窗口防闪烁</td></tr>
 <tr><td>视频播放</td><td><b>原生 &lt;video&gt; + 自绘控制条</b>（或 Video.js）</td><td>本地 Range 流式原生即可；控制条样式自绘可完全复刻 iCloud 外观</td></tr>
 <tr><td>UI</td><td><b>自研轻量组件</b>（不引重型 UI 库）</td><td>iCloud 风格极简；减少依赖与包体</td></tr>
 </table>
@@ -283,13 +282,13 @@ CREATE VIRTUAL TABLE assets_fts USING fts5(filename, location_text);
 <li><b>日期导航面板（方案 C，复刻 iCloud 截图布局）</b>：工具栏「日期」按钮 → 下拉面板（左侧年份列表 + 右侧月份缩略图网格 3 行×4 列，无滚动条；<code>/api/dates</code> 一次拉全约 108 个月，含每月 offset 与代表缩略图 thumbId）。点月份 → 关闭面板 + <b>滚动定位到该月首资产行</b>（不再重置数据/归零，基于精确总高度直接设 scrollTop）。面板 toggle 开/关，点击外部/Esc 关闭。</li>
 <li><b>月份面板高亮</b>：currentYm 与吸顶同口径（过滤 overscan），打开面板时高亮 = 视口首行月份。</li>
 </ul>
-<p class="muted">C 方案关键收益：总高度精确 → 滚动条无需按加载进度伸缩；滚动跳转（如跳到 2021年5月）后向上/向下双向滚动加载均自然衔接，无需「加载上一页」补丁。内存 LRU 因本地场景收益低已后置。</p>
+<p class="muted">C 方案关键收益：总高度精确 → 滚动条无需按加载进度伸缩；滚动跳转（如跳到 2021年5月）后向上/向下双向滚动加载均自然衔接，无需「加载上一页」补丁。内存 LRU 因本地场景收益低已决定不做（2026-10-07）。</p>
 
-<p class="muted">✅ 向上翻页已覆盖：C 方案全量骨架下滚动条 = 全库双向滚动，向更早月份滚动由 pages Map 区间懒加载自然衔接（P2 验收时已确认）。内存 LRU 因本地场景收益低已后置。</p>
+<p class="muted">✅ 向上翻页已覆盖：C 方案全量骨架下滚动条 = 全库双向滚动，向更早月份滚动由 pages Map 区间懒加载自然衔接（P2 验收时已确认）。内存 LRU 因本地场景收益低已决定不做（2026-10-07）。</p>
 
 <h3>4.3 图片加载器（对标 DerivativeImage）</h3>
 <ul>
-<li><b>缓存</b>：浏览器 HTTP 缓存（后端 ETag + 长缓存）为主；内存 LRU（上限 ~300MB，存最近浏览的 blob）为<b>规划未实现</b>（本地场景收益低，后置，见 §6 待办）。</li>
+<li><b>缓存</b>：浏览器 HTTP 缓存（后端 ETag + 长缓存）为主；内存 LRU（上限 ~300MB，存最近浏览的 blob）<b>已决定不做</b>（2026-10-07：本地场景收益低，浏览器一年强缓存已足够，见 §6 待办）。</li>
 <li><b>占位策略</b>：照片墙未加载完成时显示格子底色，grid 图加载后以 <code>opacity</code> 过渡淡入；详情页可复用 grid 图并施加 CSS 模糊。</li>
 <li><b>优先级</b>：视口内 &gt; 预取窗口 &gt; 后台预热；并发上限 = 后端 <code>/api/stats.thumbConcurrency</code>（默认 8，后端 config 唯一来源防漂移；本地 IO 快可调大）。滚动触发经 rAF 合并（每帧最多一次 pump），拖滚动条 250ms 节流、快速跨屏跳过中间、停稳 180ms 后补位（详见 4.12）。</li>
 <li><b>错误降级</b>：失败自动重试 1 次后显示占位图标，并在后台任务列表重排生成。</li>
@@ -355,7 +354,7 @@ CREATE VIRTUAL TABLE assets_fts USING fts5(filename, location_text);
 <li><b>扫描期间刷新</b>：前端保留每 5 秒一次的 <code>/api/stats</code> 轮询，但扫描期间不因资产数变化自动刷新照片墙，避免清空已加载页并导致格子/缩略图反复重载；用户可手动刷新查看已入库内容。扫描完成或失败后自动做一次最终刷新，并尽量保留滚动位置。为避免事件推送和高频重查带来额外复杂度，当前不使用 WebSocket/SSE。</li>
 <li><b>顶部资源状态</b>：顶栏保持单行摘要（状态 + 照片/视频数），点击后展开浮层详情，不改变照片墙布局高度。扫描中显示旋转图标、已检查媒体文件数和当前已入库资产数；扫描完成显示勾号及最终文件数；失败用警告状态和错误说明。照片和视频计数口径通过计数旁的悬浮提示说明：照片数包含普通照片和实况照片，视频数不含实况配对 MOV。</li>
 <li><b>预览图任务统计口径</b>：扫描期间不显示预览图百分比/总量，可提示浏览中的项目按需生成、其余扫描后入队。删除对账完成后，进度从资产表持久化状态初始化：全库资产数为总量，<code>thumb_status='done'</code> 为已生成，<code>pending</code> 为待处理；所有 <code>error</code> 项计入已处理，未忽略的失败计入失败提示。成功/失败的队列任务结束时递增已处理，百分比 = 已处理 / 全库总量，因此服务重启后会从数据库恢复已生成进度，新入库资产也会进入总量。忽略项不再计入待处理提醒；重试会将其重新入队。<code>/api/stats</code> 的 <code>thumbnails</code> 返回 status/total/processed/completed/pending/failed。<b>扫描结束段执行缓存对账（F-07 系列）</b>：grid 缩略图已存在但 DB 仍 <code>pending</code> 的资产直接补记 <code>done</code>（不入队），再统计真实待处理入队——根治「缓存已生成但状态未同步」导致的待处理永不收敛（99% 转圈死锁）。</li>
-<li><b>浏览优先的预览图调度</b>（F-01 修复后）：单一 p-queue 共享并发预算（默认 8），交互任务 <b>priority=10</b> 插队、后台任务 <b>priority=0</b>；前端可见时的滚动、点击、键盘、触屏及输入操作每 10 秒至多发送一次 <code>POST /api/thumbnails/activity</code>，每次续租 30 秒。租约内<b>新后台任务挂起（deferred）不派发</b>，当前正在运行的任务允许完成；挂起超过 60 秒（<code>backgroundMaxDeferMs</code>）的任务即使仍在租约内也强制放行（防持续浏览饿死后台、保证进度收敛）。用户通过照片墙、搜索、详情页触发的 grid/detail 请求走交互优先级。扫描/元数据入库流程保持原样。后台视频和 HEIC 的 ffmpeg 解码线程限制为 1（交互任务为 2）。</li>
+<li><b>浏览优先的预览图调度</b>（F-01 修复 + 事件让位 2026-10-07）：单一 p-queue 共享并发预算（默认 8），交互任务 <b>priority=10</b> 插队、后台任务 <b>priority=0</b> 始终入队；交互任务不足时后台填满剩余槽位（零时间参数、零槽位浪费）。运行中的任务不被打断：首次启动大量后台占满槽位时，新到达的交互任务需等运行中的后台任务完成（单任务 ffmpeg 60s 超时上限，通常几百 ms）。原「浏览活动信号 + 30s 租约挂起 + 60s 强制放行」机制已整体移除（含 <code>POST /api/thumbnails/activity</code> 路由与前端浏览信号监听）。用户通过照片墙、搜索、详情页触发的 grid/detail 请求走交互优先级。扫描/元数据入库流程保持原样。后台视频和 HEIC 的 ffmpeg 解码线程限制为 1（交互任务为 2）。</li>
 <li><b>顶部状态交互实现</b>：默认只显示一行摘要；详情浮层分“照片库扫描”和“预览图准备”两行。扫描中的预览图行不展示进度；扫描结束后再展示处理进度条与已处理、已生成、待处理、失败数量。<b>失败入口三态（F-07 系列）</b>：有未忽略失败显示「失败 N 项 ›」，无失败但有忽略项显示「已忽略 N 项 ›」（入口常驻，保证忽略清单始终可管理），都没有显示「失败 0」。打开失败清单可查看文件路径和失败原因、逐项或批量重试、忽略/恢复提醒。忽略仅关闭失败提醒，不会删除源文件；旧记录若没有持久化错误原因会明确显示未记录。服务重启时根据数据库中 done/pending/error 状态恢复全库累计进度；每次统计轮询按数据库当前未忽略的失败状态同步失败数，已生成数来自持久化 done 状态。没有待生成任务时显示“预览图已就绪”。</li>
 <li><b>失败记录与恢复 API</b>：<code>assets.thumb_error</code> 记录最近一次网格预览图生成失败原因（最长 1000 字符），<code>thumb_ignored</code> 持久化用户的忽略状态；既有数据库启动时通过列检查补齐字段，旧失败记录没有原因时由 UI 提示“失败时未记录详细原因”。<code>GET /api/thumbnails/failed</code> 返回失败与已忽略失败项；<code>POST /api/thumbnails/retry</code> 支持指定 ID 或全部失败项；<code>POST /api/thumbnails/ignore</code> 支持忽略或恢复提醒。<b>仅扫描中返回 409</b>（preparing 不再锁操作——忽略/重试与批处理并发安全，曾出现 preparing 被浏览租约挂起拖久导致失败项操作全部 409 的死锁）。</li>
 <li><b>临时帧回收</b>：视频/HEIC 缩略图生成时使用 <code>cache/tmp/</code> 下的 PNG 临时帧，正常完成后即时删除；后端启动时额外清理符合流水线文件名规则且超过 24 小时的残留文件。</li>
@@ -386,10 +385,10 @@ CREATE VIRTUAL TABLE assets_fts USING fts5(filename, location_text);
 <ul>
 <li><b>闸 1 · IntersectionObserver（useLazyImage.ts）</b>：每个格子挂 IO，<code>rootMargin 300px</code> 预热、threshold 0.01——格子未进入视口 300px 范围内就不设置 <code>img src</code>，<b>不发请求</b>（快速滚过的大多数图浏览器层面零请求，最有效的一道闸）。</li>
 <li><b>闸 2 · 前端调度器（gridThumbnailScheduler.ts）</b>：pending / active 两级 Map；并发上限默认 8，挂载后经 <code>/api/stats.thumbConcurrency</code> 校准（后端 config 唯一来源，防漂移）。<code>pump()</code> 排序「可见优先 → 距视口近优先」；滚动触发经 <b>rAF 合并</b>（每帧最多一次 pump，避免 scroll 风暴中每帧 <code>getBoundingClientRect</code> 强制布局重算掉帧）；拖滚动条 <b>250ms 节流</b>：位移 ≤ 1/5 视口才加载真可见格子，快速跨屏跳过中间位置；松开后 <b>180ms settle</b> 再按最终视口补位；日期跳转走 <code>prioritizeNextScroll()</code> 立即加载。格子销毁时 cancel 移除 pending / active 并补发。</li>
-<li><b>闸 3 · 后端调度器（thumbnailScheduler.ts，F-01 修复核心）</b>：单一 p-queue，concurrency = <code>config.thumbConcurrency</code>（默认 8），任务分 <b>交互 priority=10 / 后台 priority=0</b>；浏览租约 markBrowsing 起 30s 内后台任务挂起（deferred），租约到期统一放行。旧双队列（后台 8 + 交互 1 = 9 并发）合并后总并发严格 ≤ 8，交互插队先跑。</li>
+<li><b>闸 3 · 后端调度器（thumbnailScheduler.ts，F-01 修复核心 + 事件让位 2026-10-07）</b>：单一 p-queue，concurrency = <code>config.thumbConcurrency</code>（默认 8），任务分 <b>交互 priority=10 / 后台 priority=0</b>；后台任务始终入队、交互不足时后台填满剩余槽位（原「浏览租约 30s 挂起 + 60s 强制放行」已移除）。旧双队列（后台 8 + 交互 1 = 9 并发）合并后总并发严格 ≤ 8，交互插队先跑。</li>
 <li><b>F-02 检查点（轻量版）</b>：<code>/api/thumb/:id</code> 与 <code>/api/video/:id/poster</code> 的任务在「开始执行那一刻」检查 <code>req.raw.destroyed || req.raw.aborted</code>，已断开 → 跳过生成 + 计入「已跳过」（<code>cancelled</code>），静默结束、不进失败清单。局限：只拦「排队期间已断开」的请求，<b>运行中</b>断开不拦（完整版做任务撤销 / 运行中检查，暂缓）。</li>
 <li><b>协同效应与空转（重要结论）</b>：闸 2 限流（≤8 并发）→ 后端交互队列几乎永不排队 → F-02 拦截窗口（排队中断开）≈ 不存在——日常滚动「已跳过」恒为 0 是<b>预期行为</b>。F-02 定位 = 纵深防御（前端调度器异常时兜底）+ 极端积压保险（全量重建 + 浏览、慢任务占满槽位时）。诊断指标 <code>/api/stats.thumbQueueMetrics { running, interactiveRunning, interactiveWaiting, cancelled }</code> 已落地。</li>
-<li><b>浏览信号闭环</b>：App.vue 监听 pointerdown / wheel / keydown / touchstart / input → <code>notifyThumbnailBrowsing()</code>（10s 节流）→ 后端 markThumbnailBrowsing → 30s 租约；缩略图请求本身也标记浏览（双通道幂等，覆盖「人在浏览但图全缓存」场景）。</li>
+<li><b>浏览信号闭环</b>：事件让位改造（2026-10-07）后已移除——原 App.vue 监听 pointerdown / wheel / keydown / touchstart / input 发送 <code>POST /api/thumbnails/activity</code> 续租的机制已删除，后台任务不再被时间租约挂起；浏览优先改由交互任务 priority=10 插队 + 后台填满空闲槽位表达。</li>
 <li><b>缓存与失效（F-03 签名 + rev 联动）</b>：缩略图响应 <code>Cache-Control: max-age=1y</code> + ETag（mtime+size）；前端 URL 带 <code>rev</code> 版本参数 = 资产源文件 <code>file_mtime</code>（mtimeMs，经 <code>/api/assets</code> 的 AssetDto.rev 与 <code>/api/dates</code> 的 thumbRev 下发）。完整失效链路：源文件被覆盖 → watcher 触发扫描 → 签名（size + mtimeMs）比对发现变化 → 重新提取元数据 + 状态置 pending + 删除旧 grid/detail 缓存 → 重新生成 → rev 随 mtime 变化 → 前端 URL 变 → 浏览器绕过 1 年强缓存强制重新拉取。代价：服务端文件缺失时浏览器用旧缓存不自愈（强刷 / rev 变更可恢复）。</li>
 </ul>
 
@@ -408,7 +407,7 @@ F:\iPhone\icloud-app\
 │  │  ├─ db/schema.ts, index.ts  <span class="c"># SQLite 建表 + WAL 连接（better-sqlite3）；FTS 结构版本 user_version 化（F-06：正常启动零重建）</span>
 │  │  ├─ metadata/index.ts   <span class="c"># exifr（EXIF/GPS/Orientation）+ ffprobe（视频时长）</span>
 │  │  ├─ scanner/index.ts, watcher.ts  <span class="c"># 目录扫描、实况配对（目录+基名）、UPSERT 幂等入库；chokidar 热监听（P2+-1）</span>
-│  │  ├─ pipeline/           <span class="c"># thumbnails（grid/detail 懒生成 + 失败保留 ignored + 自愈日志）+ queue（对外入队/进度/指标）+ thumbnailScheduler（F-01 单队列 priority+租约+60s 挂起上限，F-02 取消检测计数）+ thumbnailScheduler.test（12 用例）+ ffmpeg.test（超时 kill/不误杀 2 用例）+ in-flight 去重 + 扫描缓存对账</span>
+│  │  ├─ pipeline/           <span class="c"># thumbnails（grid/detail 懒生成 + 失败保留 ignored + 自愈日志）+ queue（对外入队/进度/指标）+ thumbnailScheduler（F-01 单队列 priority + 事件让位 2026-10-07，F-02 取消检测计数）+ thumbnailScheduler.test（10 用例）+ ffmpeg.test（超时 kill/不误杀 2 用例）+ in-flight 去重 + 扫描缓存对账</span>
 │  │  └─ routes/             <span class="c"># assets（cursor + offset 区间）/ thumb / video（Range 206）/ stats（含 /api/dates）/ search（FTS5）/ info（EXIF 详情）/ thumbnail-errors（失败清单三态：failed/retry/ignore）</span>
 │  ├─ scripts/               <span class="c"># install-ffmpeg-full.ps1（HEIC 解码；fix-size / fix-thumbs 维护命令已于 2026-10-06 移除，脚本历史可在 git 找回）</span>
 │  ├─ vendor/                <span class="c"># BtbN ffmpeg full 版（含 libheif）</span>
@@ -431,7 +430,7 @@ F:\iPhone\icloud-app\
 <table>
 <tr><th>阶段</th><th>内容</th><th>验收标准</th><th>状态</th></tr>
 <tr><td><span class="tag blue">P0 最小可用</span></td><td>扫描入库 + 网格虚拟滚动 + grid 缩略图懒生成 + 单击进详情（detail 图）+ 视频原生播放</td><td>全部资产可见；快速滚动无白屏闪烁；视频可拖动进度</td><td><span class="tag green">✅ 已验收</span></td></tr>
-<tr><td><span class="tag green">P1 还原体验</span></td><td>缩放滑块（4~12 列）+ 详情邻居预加载 + 实况照片（按住播放）+ 渐进图片加载 + hash 深链 + 键盘切换 + 日期分组定位（月份头行 + 吸顶月份指示器 + 右侧月份快速定位条）</td><td>对标 iCloud 交互：缩放不闪、详情秒开、实况按住即动、点月份直达该月首行</td><td><span class="tag green">✅ 已验收</span><br><span class="tag orange">剩 1 项待做</span>：内存 LRU（本地场景收益低，可后置）</td></tr>
+<tr><td><span class="tag green">P1 还原体验</span></td><td>缩放滑块（4~12 列）+ 详情邻居预加载 + 实况照片（按住播放）+ 渐进图片加载 + hash 深链 + 键盘切换 + 日期分组定位（月份头行 + 吸顶月份指示器 + 右侧月份快速定位条）</td><td>对标 iCloud 交互：缩放不闪、详情秒开、实况按住即动、点月份直达该月首行</td><td><span class="tag green">✅ 已验收</span><br><span class="muted">内存 LRU 已决定不做（2026-10-07，本地场景收益低，浏览器缓存已足够）</span></td></tr>
 <tr><td><span class="tag green">照片墙全量骨架（C 方案，2026-09-08）</span></td><td>行序列全量精确生成（月份头 + 资产行）→ 滚动条 = 全库、双向滚动；store 改页区间懒加载（pages Map）；吸顶月份指示器升级为<b>日期跨度</b>（视口首末资产行，倒序直出）；月份头标签改区间（如「2021年4月-3月」）；列数范围 4~12 + 行高抽象 <code>getRowHeight</code>（原比例扩展点）</td><td>跳转 2021年5月滚动条全库可用；双向滚动加载自然衔接；吸顶跨度与可视范围一致</td><td><span class="tag green">✅ 已合并</span></td></tr>
 <tr><td><span class="tag orange">P2 增强</span></td><td>搜索（FTS5 trigram：文件名/日期子串）<span class="tag green" style="margin-left:6px">✅ 已验收</span><br><span class="muted">用户已决定不做：HEVC 按需转码缓存（本机 Chrome 已直出）/ 收藏 / 最近删除 / 下载原片 / 批量选择（本地原文件齐全，云管理类功能无必要）</span></td><td>全平台视频可播；功能完整自用</td><td><span class="tag green">✅ 已完成（范围收缩）</span></td></tr>
 <tr><td><span class="tag blue">稳定化（2026-09-08）</span></td><td>代码审查 P1×5 + P2×7 共 12 项问题全部修复：stats 异步体积统计+落盘缓存（首屏 229ms）、原图宽高 11,009 条全量修正（fix-size）、EXIF 方向缩略图重建（fix-thumbs 103 张）、浏览器缩略图缓存失效链路（thumbUrl rev 版本号 + 响应头去 immutable）、实况按住播放带原声 + id 变化重置 + 静音兜底、详情/搜索竞态守卫、扫描断点续跑容错</td><td>全量回归通过（网格/详情/实况/视频/搜索/日期定位）；git 私有仓库 + GitHub 远程（isChen0111/icloud-app），每次修复提交推送</td><td><span class="tag green">✅ 已验收</span></td></tr>
@@ -446,8 +445,9 @@ F:\iPhone\icloud-app\
 <div class="note"><b>待办 / 已知小坑</b>：
 <ul>
 <li><del>缩略图生成失败留 0 字节 WebP：generate() 的 catch 分支补 fs.rmSync(outPath, { force: true })</del> —— <b>✅ 已完成</b>（审查 #7 已落地：catch 分支删半成品 + 置 thumb_status=error，坏文件不再被 existsSync 当有效返回）。</li>
-<li>P1 遗留：内存 LRU 缩略图缓存淘汰（本地场景收益低，后置）。</li>
-<li>待用户决定：<code>server\vendor\ffmpeg-full.zip</code>（163MB 安装包）保留或删除；toolbar 调试信息（items/rows/virt）保留与否。</li>
+<li><del>P1 遗留：内存 LRU 缩略图缓存淘汰（本地场景收益低，后置）</del> —— <b>✅ 已决定不做</b>（2026-10-07：本地场景收益低，浏览器一年强缓存已足够，内存再加一层意义不大）。</li>
+<li><code>server\vendor\ffmpeg-full.zip</code>（163MB 安装包）：<b>保留不删、不提交 git</b>（.gitignore 已排除 <code>/server/vendor/ffmpeg-full.zip</code> 与 <code>/server/vendor/ffmpeg-full/</code>），由用户自行处理。</li>
+<li>toolbar 调试信息（items/rows/virt）：<b>✅ 已决定保留</b>（2026-10-07：自用虚拟滚动健康指示——items=已加载项数、rows=总行数、virt=视口实际渲染行数，virt 远小于 rows 即虚拟化生效）。</li>
 </ul></div>
 
 <h2>7. 性能预算（估算口径）</h2>
@@ -457,8 +457,8 @@ F:\iPhone\icloud-app\
 <tr><td>detail 缩略图全量</td><td><b>~3GB</b></td><td>1600px WebP ≈ 250KB；建议只按需生成近期浏览，磁盘充足可全量</td></tr>
 <tr><td>视频封面帧</td><td><b>~0.19GB</b></td><td>≈ 60KB × 3,179</td></tr>
 <tr><td>首次全量入库</td><td><b>5~15 分钟</b></td><td>约 2 万文件扫描 + EXIF（并发 8）</td></tr>
-<tr><td>缩略图全量预热</td><td><b>耗时视资源量而定</b></td><td>空闲时后台可使用最多 8 个并发槽位；浏览活动时暂停派发新后台任务，释放的槽位优先处理交互请求，空闲 30 秒后恢复后台补图。</td></tr>
-<tr><td>前端内存占用</td><td><b>&lt; 500MB 可控</b></td><td>blob LRU 上限 300MB；虚拟滚动 DOM 节点 ~200 个</td></tr>
+<tr><td>缩略图全量预热</td><td><b>耗时视资源量而定</b></td><td>空闲时后台可使用最多 8 个并发槽位；后台任务始终入队（priority=0），交互 priority=10 插队，交互不足时后台填满剩余槽位（事件让位，2026-10-07 替换原「浏览租约挂起 + 空闲 30 秒后恢复」）。</td></tr>
+<tr><td>前端内存占用</td><td><b>&lt; 500MB 可控</b></td><td>虚拟滚动 DOM 节点 ~200 个；blob LRU 未实现（2026-10-07 已决定不做）</td></tr>
 <tr><td>视频拖动响应</td><td><b>即时</b></td><td>Range 请求 + 本地磁盘，seek 延迟毫秒级</td></tr>
 </table>
 

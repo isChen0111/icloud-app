@@ -1,11 +1,11 @@
 /**
  * 缩略图调度器单元测试（node:test，零新增依赖）
  *
- * 覆盖 F-01 修复的核心不变量与行为：
+ * 覆盖 F-01 修复的核心不变量与事件让位行为（2026-10-07）：
  *  - 总运行数严格 ≤ concurrency（8 后台运行中 + 交互任务不再产生 9 个并发）
  *  - 交互任务排队插队（priority 优先于先来后到）
- *  - 浏览租约：浏览期间后台挂起不派发、交互照常、租约到期恢复
- *  - 积压计数（排队 + 运行 + 挂起）
+ *  - 后台填槽：交互任务不足时后台填满剩余槽位（零槽位浪费，原「浏览租约挂起」已移除）
+ *  - 积压计数（排队 + 运行）
  *
  * 运行：npm test（server 目录）
  */
@@ -37,7 +37,7 @@ function makeGate(): { gate: Promise<void>; release: () => void } {
 
 describe('ThumbnailScheduler 并发不变量', () => {
   test('F-01 复现：8 个后台运行中 + 交互任务 → 总运行数 ≤ 8（旧实现会到 9）', async () => {
-    const scheduler = new ThumbnailScheduler({ concurrency: 8, browseLeaseMs: 30_000 })
+    const scheduler = new ThumbnailScheduler({ concurrency: 8 })
 
     // ① 塞满 8 个后台慢任务（各自挂在一个可手动释放的门闩上）
     const gates = Array.from({ length: 8 }, () => makeGate())
@@ -59,7 +59,7 @@ describe('ThumbnailScheduler 并发不变量', () => {
   })
 
   test('批量并发：40 个任务在 concurrency=4 下最大运行数 ≤ 4', async () => {
-    const scheduler = new ThumbnailScheduler({ concurrency: 4, browseLeaseMs: 30_000 })
+    const scheduler = new ThumbnailScheduler({ concurrency: 4 })
     let running = 0
     let maxRunning = 0
     const job = async () => {
@@ -74,7 +74,7 @@ describe('ThumbnailScheduler 并发不变量', () => {
   })
 
   test('并发占满时新任务排队等待，完成后自动派发', async () => {
-    const scheduler = new ThumbnailScheduler({ concurrency: 2, browseLeaseMs: 30_000 })
+    const scheduler = new ThumbnailScheduler({ concurrency: 2 })
     const gates = Array.from({ length: 2 }, () => makeGate())
     const first = gates.map(({ gate }) => scheduler.submit(() => gate, 'background'))
     await waitFor(() => scheduler.runningCount === 2)
@@ -98,7 +98,7 @@ describe('ThumbnailScheduler 并发不变量', () => {
 
 describe('ThumbnailScheduler 交互优先', () => {
   test('后台积压时交互任务插队先执行（concurrency=1 下顺序为 A → I → B）', async () => {
-    const scheduler = new ThumbnailScheduler({ concurrency: 1, browseLeaseMs: 30_000 })
+    const scheduler = new ThumbnailScheduler({ concurrency: 1 })
     const order: string[] = []
     const { gate, release } = makeGate()
 
@@ -123,100 +123,100 @@ describe('ThumbnailScheduler 交互优先', () => {
     await Promise.all([jobA, jobI, jobB])
     assert.deepEqual(order, ['A', 'I', 'B'], '交互任务 I 应插队先于后台任务 B 执行')
   })
+
+  test('后台占满时交互插队：释放槽位后交互先于后续后台执行', async () => {
+    const scheduler = new ThumbnailScheduler({ concurrency: 2 })
+
+    // 2 个后台慢任务占满槽位
+    const gates = Array.from({ length: 2 }, () => makeGate())
+    const bg1 = gates.map(({ gate }) => scheduler.submit(() => gate, 'background'))
+    await waitFor(() => scheduler.runningCount === 2)
+
+    // 1 个后台（排队）+ 1 个交互（排队，priority 10 应排更前）
+    let bgRan = false
+    const bg2 = scheduler.submit(async () => {
+      bgRan = true
+    }, 'background')
+    let ivRan = false
+    const { gate: ivGate, release: releaseIv } = makeGate()
+    const iv = scheduler.submit(async () => {
+      ivRan = true
+      await ivGate // 挂住不完成，保证断言期间交互仍在运行
+    }, 'interactive')
+    await delay(10)
+    assert.equal(ivRan, false, '槽位未释放前交互也应排队')
+
+    // 释放一个槽位 → 交互应先执行（而非排队的后台）
+    gates[0].release()
+    await waitFor(() => ivRan === true)
+    await delay(10)
+    assert.equal(bgRan, false, '交互应插队先于后台任务执行')
+
+    releaseIv()
+    gates[1].release()
+    await Promise.all([...bg1, bg2, iv])
+    assert.equal(bgRan, true, '后台任务最终也会执行')
+  })
 })
 
-describe('ThumbnailScheduler 浏览租约', () => {
-  test('浏览期间后台挂起不派发、交互照常执行、租约到期后后台放行', async () => {
-    const scheduler = new ThumbnailScheduler({ concurrency: 1, browseLeaseMs: 100 })
-    scheduler.markBrowsing()
+describe('ThumbnailScheduler 后台填槽（事件让位）', () => {
+  test('交互任务不足时后台填满剩余槽位：1 交互 + 7 后台同时运行（零槽位浪费）', async () => {
+    const scheduler = new ThumbnailScheduler({ concurrency: 8 })
 
-    let backgroundRan = false
-    const background = scheduler.submit(async () => {
-      backgroundRan = true
-    }, 'background')
+    // 7 个后台慢任务先入队运行
+    const gates = Array.from({ length: 7 }, () => makeGate())
+    const bgJobs = gates.map(({ gate }) => scheduler.submit(() => gate, 'background'))
+    await waitFor(() => scheduler.runningCount === 7)
 
-    await delay(20)
-    assert.equal(scheduler.runningCount, 0, '浏览期间后台任务应挂起，不占用槽位')
-    assert.equal(backgroundRan, false)
+    // 1 个交互任务 → 立即用掉剩余槽位，且不排斥后台占槽
+    const { gate: ivGate, release: releaseIv } = makeGate()
+    const iv = scheduler.submit(async () => ivGate, 'interactive')
+    await waitFor(() => scheduler.runningCount === 8)
+    assert.equal(scheduler.metrics().interactiveRunning, 1, '交互运行中计数应为 1')
+    assert.equal(scheduler.runningCount, 8, '8 槽全忙：7 后台 + 1 交互，无空槽浪费')
 
-    // 浏览期间交互任务不受影响，立即执行
-    const interactive = scheduler.submit(async () => 'ok', 'interactive')
-    assert.equal(await interactive, 'ok')
-
-    // 注意：调度器内部恢复定时器是 unref 的（真实服务靠 HTTP 等句柄保持事件循环）。
-    // 测试里必须用 ref 的 delay 保持事件循环活动，等租约（100ms）到期放行后再断言。
-    await delay(120)
-    assert.equal(backgroundRan, true, '租约到期后后台任务应被放行')
-    await background // 此时 promise 已 resolve，立即返回
+    releaseIv()
+    for (const { release } of gates) release()
+    await Promise.all(bgJobs)
+    assert.equal(await iv, undefined)
+    assert.equal(scheduler.runningCount, 0)
   })
 
-  test('浏览租约可刷新：再次浏览活动延长后台挂起时间', async () => {
-    const scheduler = new ThumbnailScheduler({ concurrency: 1, browseLeaseMs: 100 })
-    scheduler.markBrowsing()
-    let backgroundRan = false
-    const background = scheduler.submit(async () => {
-      backgroundRan = true
+  test('无交互任务时后台任务立即执行，不等任何时间（原 30s 租约已移除）', async () => {
+    const scheduler = new ThumbnailScheduler({ concurrency: 2 })
+    let ran = false
+    const job = scheduler.submit(async () => {
+      ran = true
     }, 'background')
-
-    await delay(60)
-    scheduler.markBrowsing() // 刷新租约，重新计时 100ms
-
-    await delay(80) // 距首次 markBrowsing 已 140ms > 100ms，但租约已被刷新
-    assert.equal(backgroundRan, false, '刷新租约后后台仍应挂起')
-
-    await delay(120) // 保持事件循环活动，等刷新后的租约（t≈160ms）到期放行
-    assert.equal(backgroundRan, true, '刷新后的租约到期后后台应执行')
-    await background // 已 resolve，立即返回
-  })
-
-  test('后台挂起超上限：即使浏览租约持续续期也强制放行（防饿死，F-07 系列）', async () => {
-    const scheduler = new ThumbnailScheduler({ concurrency: 1, browseLeaseMs: 100, backgroundMaxDeferMs: 60 })
-
-    scheduler.markBrowsing() // 先激活浏览租约，后台任务随后才会挂起
-    let backgroundRan = false
-    const background = scheduler.submit(async () => {
-      backgroundRan = true
-    }, 'background')
-
-    // 持续刷新浏览租约（模拟用户活跃浏览），若没有挂起上限，后台会永远不执行
-    await delay(50) // 未超过 60ms 上限 → 仍挂起
-    assert.equal(backgroundRan, false, '未超上限时后台仍挂起')
-    scheduler.markBrowsing()
-
-    await delay(70) // 距首次挂起已 120ms > 60ms 上限，且租约又被刷新
-    assert.equal(backgroundRan, true, '挂起超过上限后即使租约仍有效也应被强制放行')
-    await background // 已 resolve，立即返回
+    await waitFor(() => ran === true, 500)
+    await job
+    assert.equal(ran, true, '后台任务应入队即执行，不受任何浏览/时间状态影响')
   })
 })
 
 describe('ThumbnailScheduler 积压计数', () => {
-  test('queuedCount = 排队 + 运行 + 浏览挂起', async () => {
-    const scheduler = new ThumbnailScheduler({ concurrency: 1, browseLeaseMs: 200 })
-    scheduler.markBrowsing()
+  test('queuedCount = 排队 + 运行', async () => {
+    const scheduler = new ThumbnailScheduler({ concurrency: 1 })
 
-    const background = scheduler.submit(async () => 'bg', 'background') // 挂起
-    await delay(10)
-    assert.equal(scheduler.queuedCount(), 1, '挂起的后台任务应计入积压')
-
-    // 交互任务用门闩保持运行中，避免瞬间完成导致断言竞态
+    // 交互任务用门闩保持运行中
     const { gate: interactiveGate, release: releaseInteractive } = makeGate()
-    const interactive = scheduler.submit(async () => interactiveGate, 'interactive') // 运行中
+    const interactive = scheduler.submit(async () => interactiveGate, 'interactive')
     await waitFor(() => scheduler.runningCount === 1)
-    assert.equal(scheduler.queuedCount(), 2, '运行中的交互任务 + 挂起的后台任务 = 2')
+    assert.equal(scheduler.queuedCount(), 1, '运行中的任务计入积压')
+
+    const background = scheduler.submit(async () => 'bg', 'background') // 排队
+    await delay(10)
+    assert.equal(scheduler.queuedCount(), 2, '排队 + 运行 = 2')
 
     releaseInteractive()
-    await interactive
-    assert.equal(scheduler.queuedCount(), 1, '交互完成后只剩挂起的后台任务')
-
-    await delay(220) // 保持事件循环活动，等租约（200ms）到期放行并执行完成
-    assert.equal(scheduler.queuedCount(), 0, '后台放行执行完成后积压归零')
-    await background // 已 resolve，立即返回
+    await Promise.all([interactive, background])
+    assert.equal(scheduler.queuedCount(), 0, '全部完成后积压归零')
   })
 })
 
 describe('ThumbnailScheduler 队列指标（F-02）', () => {
   test('interactiveRunning / interactiveWaiting 计数正确（运行中与排队中分别统计）', async () => {
-    const scheduler = new ThumbnailScheduler({ concurrency: 1, browseLeaseMs: 30_000 })
+    const scheduler = new ThumbnailScheduler({ concurrency: 1 })
 
     // ① 交互任务 A 用门闩保持运行中（避免瞬间完成导致断言竞态）
     const { gate, release } = makeGate()
@@ -239,7 +239,7 @@ describe('ThumbnailScheduler 队列指标（F-02）', () => {
   })
 
   test('cancelled 累计客户端断开被跳过的请求数', async () => {
-    const scheduler = new ThumbnailScheduler({ concurrency: 8, browseLeaseMs: 30_000 })
+    const scheduler = new ThumbnailScheduler({ concurrency: 8 })
     assert.equal(scheduler.metrics().cancelled, 0, '初始应为 0')
 
     scheduler.registerCancelled()

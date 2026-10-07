@@ -1,5 +1,5 @@
 /**
- * 缩略图任务调度器（F-01 修复，2026-10-06）
+ * 缩略图任务调度器（F-01 修复 2026-10-06；事件让位改造 2026-10-07）
  *
  * 单一全局闸门：后台与交互任务共享一个总并发预算，总运行数严格 ≤ concurrency。
  *
@@ -8,11 +8,22 @@
  *   concurrency。两个队列都保留「至少 1 个执行位」时，8 个后台运行中 + 1 个交互任务
  *   会同时运行 9 个任务，超过预算（F-01，审查报告 2026-10-06）。
  * - 新实现：单一 PQueue 的 concurrency 固定为预算值，从结构上保证总运行数不可能超限；
- *   交互优先改用 p-queue 原生 priority 表达（数字越大越先出队），
- *   浏览活动时后台任务挂起（不派发），交互独占全部槽位。
+ *   交互优先用 p-queue 原生 priority 表达（数字越大越先出队）。
+ *
+ * 事件让位（2026-10-07，替换原「浏览租约挂起」机制）：
+ * - 旧机制：用户浏览时按时间（browseLeaseMs=30s 租约）挂起全部后台任务，另加
+ *   backgroundMaxDeferMs=60s 强制放行兜底。问题：增量更新场景（如只新增 1 个文件）
+ *   即使没有交互任务、槽位全空闲，后台任务也要白等 30s；60s 兜底在持续浏览时
+ *   只保证「入队排队」而非「真正执行」，形同虚设。
+ * - 新机制：后台任务始终入队（priority=0），交互任务 priority=10 永远先出队；
+ *   PQueue 一次启动 concurrency 个任务时，交互不足则用后台任务填满剩余槽位——
+ *   「浏览优先调度 + 后台填满空闲槽位」，零时间参数、零槽位浪费。
+ * - 结构性 trade-off：运行中的任务不可被抢占；首次启动大量后台任务占满槽位时，
+ *   新到达的交互任务需等运行中的后台任务完成（单任务有 ffmpeg 60s 超时上限，
+ *   通常几百 ms），属可接受的短期等待；交互任务一旦开始执行即按 priority 持续占优。
  *
  * 本模块不依赖数据库与缩略图生成（job 由调用方提供），因此可独立单测：
- * 并发不变量 / 交互插队 / 浏览租约 / 积压计数见 thumbnailScheduler.test.ts。
+ * 并发不变量 / 交互插队 / 后台填槽 / 积压计数见 thumbnailScheduler.test.ts。
  */
 import PQueue from 'p-queue'
 
@@ -20,15 +31,6 @@ import PQueue from 'p-queue'
 export interface ThumbnailSchedulerOptions {
   /** 总并发预算（后台 + 交互同时运行的任务总数上限） */
   concurrency: number
-  /** 浏览租约时长（ms）：最后一次浏览活动后多久恢复后台补图 */
-  browseLeaseMs: number
-  /**
-   * 后台任务挂起上限（ms，防饿死）：
-   * 浏览租约可被持续刷新，理论上后台任务会一直挂起。超过本时长的挂起任务
-   * 即使仍在浏览租约内也会被强制放行执行，保证残留待处理任务最终收敛
-   * （否则 progress 永远 preparing，失败项操作会被锁死——见 F-07 系列修复）。
-   */
-  backgroundMaxDeferMs?: number
 }
 
 /** 队列指标快照（F-02 诊断用，供 /api/stats 展示） */
@@ -53,20 +55,6 @@ export class ThumbnailScheduler {
   /** 单一执行队列：concurrency 固定，总运行数天然 ≤ 预算 */
   private readonly queue: PQueue
 
-  private readonly browseLeaseMs: number
-
-  /** 后台任务挂起上限（默认 60s）：超限即使租约内也强制放行 */
-  private readonly backgroundMaxDeferMs: number
-
-  /** 浏览租约到期时间戳：此时间之前后台任务挂起不派发 */
-  private browsingUntil = 0
-
-  /** 恢复放行定时器（unref：不阻止进程退出） */
-  private resumeTimer: NodeJS.Timeout | undefined
-
-  /** 浏览期间挂起的后台任务：租约到期或挂起超限时放行入队 */
-  private deferred: { run: () => void; since: number }[] = []
-
   /** 正在运行的交互任务数（wrapper 执行期计数） */
   private interactiveRunningCount = 0
 
@@ -77,20 +65,17 @@ export class ThumbnailScheduler {
   private cancelledCount = 0
 
   constructor(options: ThumbnailSchedulerOptions) {
-    this.browseLeaseMs = options.browseLeaseMs
-    this.backgroundMaxDeferMs = options.backgroundMaxDeferMs ?? 60_000
     this.queue = new PQueue({ concurrency: options.concurrency })
   }
 
   /**
    * 提交一个任务。
-   * - interactive：直接入队（priority 高，插队先执行），并刷新浏览租约。
-   * - background：浏览租约未到期时挂起，到期后放行入队；到期则直接入队。
-   * 返回的 Promise 在任务真正完成时 resolve / reject（挂起任务会等到放行后执行）。
+   * - interactive：priority 10，先于后台出队（插队）。
+   * - background：priority 0，始终入队；交互任务不足时用后台任务填满剩余槽位。
+   * 返回的 Promise 在任务真正完成时 resolve / reject。
    */
   submit(job: () => Promise<unknown>, priority: 'interactive' | 'background'): Promise<unknown> {
     // 交互计数：入队（含排队中）即 +1，真正开始执行时 -1 并转计为"运行中"。
-    // 后台任务挂起期间不计入交互指标。
     const isInteractive = priority === 'interactive'
     if (isInteractive) this.interactiveWaitingCount++
 
@@ -106,62 +91,12 @@ export class ThumbnailScheduler {
       }
     }
 
-    if (priority === 'background' && Date.now() < this.browsingUntil) {
-      // 浏览活跃：挂起，租约到期或挂起超限时放行
-      return new Promise((resolve, reject) => {
-        this.deferred.push({
-          since: Date.now(),
-          run: () => {
-            this.queue.add(wrapped, { priority: PRIORITY.background }).then(resolve, reject)
-          },
-        })
-      })
-    }
     return this.queue.add(wrapped, { priority: PRIORITY[priority] })
   }
 
-  /** 标记浏览活动：刷新租约；租约内后台任务挂起，交互任务不受影响。 */
-  markBrowsing(leaseMs = this.browseLeaseMs): void {
-    this.browsingUntil = Date.now() + leaseMs
-    if (this.resumeTimer) clearTimeout(this.resumeTimer)
-    // 挂起超限的后台任务强制放行（防饿死：持续浏览会让 pending 永不收敛）
-    this.flushOverdueDeferred()
-    this.scheduleResume()
-  }
-
-  /** 挂起超过上限（backgroundMaxDeferMs）的后台任务强制放行，即使仍在浏览租约内 */
-  private flushOverdueDeferred(): void {
-    const now = Date.now()
-    const overdue = this.deferred.filter((d) => now - d.since >= this.backgroundMaxDeferMs)
-    if (overdue.length === 0) return
-    this.deferred = this.deferred.filter((d) => now - d.since < this.backgroundMaxDeferMs)
-    for (const d of overdue) d.run()
-  }
-
-  /** 租约到期 → 放行挂起的后台任务 */
-  private scheduleResume(): void {
-    const remaining = this.browsingUntil - Date.now()
-    if (remaining <= 0) {
-      this.resumeTimer = undefined
-      this.flushDeferred()
-      return
-    }
-    this.resumeTimer = setTimeout(() => {
-      this.resumeTimer = undefined
-      this.scheduleResume()
-    }, remaining)
-    this.resumeTimer.unref()
-  }
-
-  private flushDeferred(): void {
-    const pending = this.deferred
-    this.deferred = []
-    for (const item of pending) item.run()
-  }
-
-  /** 当前积压任务数 = 排队中 + 运行中 + 浏览挂起中（供 /api/stats 展示） */
+  /** 当前积压任务数 = 排队中 + 运行中（供 /api/stats 展示） */
   queuedCount(): number {
-    return this.queue.size + this.queue.pending + this.deferred.length
+    return this.queue.size + this.queue.pending
   }
 
   /** 当前正在运行的任务数（单测断言并发不变量用） */

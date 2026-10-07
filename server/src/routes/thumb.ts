@@ -3,8 +3,6 @@
  *
  * GET /api/thumb/:id?size=grid|detail
  *   - 懒生成：缓存不存在 → 现场生成（sharp/ffmpeg）→ 写盘
- * POST /api/thumbnails/activity
- *   - 标记用户浏览活动，暂缓启动无关的后台预览图任务
  *   - 长缓存：缩略图路径含资产 id，可安全长缓存（max-age 1 年）；不用 immutable，
  *     留刷新协商通道（见下方修复注释）
  *   - ETag：基于文件 mtime+size 的弱校验，省重复传输
@@ -12,7 +10,7 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify'
 import fs from 'node:fs'
 import { getDb } from '../db/index.js'
-import { markThumbnailBrowsing, registerThumbnailCancelled, runInteractiveThumbnail } from '../pipeline/queue.js'
+import { registerThumbnailCancelled, runInteractiveThumbnail } from '../pipeline/queue.js'
 import { ensureThumbnail, ensureSize, type ThumbSize } from '../pipeline/thumbnails.js'
 
 const VALID_SIZES = new Set<ThumbSize>(['grid', 'detail'])
@@ -35,11 +33,6 @@ function etagFor(filePath: string): string {
 
 export async function registerThumbRoutes(app: FastifyInstance): Promise<void> {
   const db = getDb()
-
-  app.post('/api/thumbnails/activity', async (_req, reply) => {
-    markThumbnailBrowsing()
-    return reply.code(204).send()
-  })
 
   app.get('/api/thumb/:id', async (req, reply) => {
     const { id } = req.params as { id: string }
