@@ -322,7 +322,7 @@ onBeforeUnmount(() => {
                         ? '等待扫描启动'
                       : stats?.scan.status === 'done'
                         ? stats.thumbnails.status === 'preparing'
-                          ? '照片库已同步'
+                          ? '正在生成预览图'
                           : '照片库已同步'
                         : '正在连接照片库'
                 }}

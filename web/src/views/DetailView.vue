@@ -75,10 +75,13 @@ async function load(id: number): Promise<void> {
     const data = await fetchAsset(id)
     if (seq !== loadSeq) return // 过期响应：丢弃，不覆盖新数据
     detail.value = data
-    // 预取下一个邻居的大图（隐藏 Image 预热，切换时直接命中浏览器缓存）
+    // 预取下一个邻居的大图（隐藏 Image 预热，切换时直接命中浏览器缓存）。
+    // 必须带 next 的 mtime：URL 与详情页实际加载一致，预取才能命中
+    // （2026-10-07 体检修复：旧实现没传 rev，预取 URL 落到默认版本号，
+    // 与详情 URL 不同 → 浏览器缓存键不同 → 预取永不命中，白白发请求）。
     if (data.nextId) {
       const img = new Image()
-      img.src = thumbUrl(data.nextId, 'detail')
+      img.src = thumbUrl(data.nextId, 'detail', data.nextRev ?? 0)
     }
   } catch {
     if (seq !== loadSeq) return
@@ -204,8 +207,8 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
       <div v-else-if="detail">
         <!-- 实况照片：按住播放 -->
         <LivePhoto v-if="isLive" :id="detail.id" :rev="detail.rev" />
-        <!-- 普通视频：原生播放器 -->
-        <VideoStage v-else-if="isVideo" :id="detail.id" />
+        <!-- 普通视频：原生播放器（传 rev：封面 poster 随源视频覆盖刷新） -->
+        <VideoStage v-else-if="isVideo" :id="detail.id" :rev="detail.rev" />
         <!-- 普通照片：大图（detail 档淡入；失败时显示占位而非破损图标） -->
         <div v-else class="photo-stage">
           <img :src="placeholderSrc" class="photo-placeholder" alt="" draggable="false" />

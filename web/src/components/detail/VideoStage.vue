@@ -9,17 +9,17 @@
  */
 import { videoPosterUrl, videoStreamUrl } from '../../api/client'
 
-const props = defineProps<{ id: number }>()
+const props = defineProps<{ id: number; rev?: number }>()
 </script>
 
 <template>
   <div class="video-stage">
-    <!-- 封面占位（grid 档秒出；poster 未就绪前模糊铺底） -->
-    <img :src="videoPosterUrl(props.id, 'grid')" class="poster-placeholder" alt="" draggable="false" />
+    <!-- 封面占位（grid 档秒出；poster 未就绪前模糊铺底）。rev 传资产 mtime：源视频覆盖后强制刷新封面 -->
+    <img :src="videoPosterUrl(props.id, 'grid', props.rev ?? 0)" class="poster-placeholder" alt="" draggable="false" />
     <video
       class="player"
       :src="videoStreamUrl(props.id)"
-      :poster="videoPosterUrl(props.id, 'detail')"
+      :poster="videoPosterUrl(props.id, 'detail', props.rev ?? 0)"
       controls
       playsinline
       preload="metadata"

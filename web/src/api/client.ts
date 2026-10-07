@@ -117,12 +117,28 @@ export function triggerScan(): Promise<{ started: boolean }> {
  *    但浏览器旧横图被一年强缓存锁定，bump 强制重新拉取）
  *  - v3 2026-09-21：保留输入媒体 ICC 色彩配置，避免广色域照片转 WebP 后
  *    颜色变淡；服务端同步重建缩略图缓存
+ *
+ * 注意：此常量只表达「生成链路版本」，单个源文件被覆盖由其 file_mtime 表达。
+ * 最终 URL 的 rev 参数由 revParam() 拼成 "内容版本-文件mtime"（见下），
+ * 二者任一变化都会使 URL 变化——不要让调用点直接传 THUMB_REV 覆盖 mtime
+ * （2026-10-07 体检修复：旧实现两套逻辑并存，漏传的调用点悄悄降级为默认值，
+ * 导致详情预取永不命中、视频封面与内容 bump 机制失效）。
  */
 const THUMB_REV = 3
 
-/** 缩略图 URL（网格/详情/占位）；rev 是内容版本（资产 file_mtime），内容变更后 rev 变化 → URL 变化 → 浏览器强制重拉 */
-export function thumbUrl(id: number, size: ThumbSize = 'grid', rev: number = THUMB_REV): string {
-  return `${BASE}/thumb/${id}?size=${size}&rev=${rev}`
+/**
+ * 拼缓存版本参数：格式 "内容版本-文件mtime"，如 "3-1700000000123"。
+ * - 内容版本 bump（生成参数/解码链路变化）→ 全部资产 URL 变化
+ * - 文件 mtime 变化（源文件被覆盖）→ 该资产 URL 变化
+ * 后端不读 rev（thumb.ts 只按 id+size 出图），rev 纯粹是浏览器缓存键。
+ */
+function revParam(mtime: number): string {
+  return `${THUMB_REV}-${mtime}`
+}
+
+/** 缩略图 URL（网格/详情/占位）；mtime = 资产 file_mtime（未知时传 0） */
+export function thumbUrl(id: number, size: ThumbSize = 'grid', mtime: number = 0): string {
+  return `${BASE}/thumb/${id}?size=${size}&rev=${revParam(mtime)}`
 }
 
 /** 视频流 URL（Range 由浏览器自动带） */
@@ -130,9 +146,9 @@ export function videoStreamUrl(id: number): string {
   return `${BASE}/video/${id}/stream`
 }
 
-/** 视频封面 URL（size=detail 用于详情页播放前的大封面，rev 同缩略图：内容变更后强制刷新长缓存） */
-export function videoPosterUrl(id: number, size: ThumbSize = 'grid', rev: number = THUMB_REV): string {
-  return `${BASE}/video/${id}/poster?size=${size}&rev=${rev}`
+/** 视频封面 URL（size=detail 用于详情页播放前的大封面；mtime 同缩略图机制：源视频覆盖后强制刷新长缓存） */
+export function videoPosterUrl(id: number, size: ThumbSize = 'grid', mtime: number = 0): string {
+  return `${BASE}/video/${id}/poster?size=${size}&rev=${revParam(mtime)}`
 }
 
 /** 给对象 URL 加防缓存参数（本地 dev 调试用，生产可去掉） */

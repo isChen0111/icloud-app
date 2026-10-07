@@ -54,6 +54,11 @@ export interface AssetRow {
   file_mtime: number | null
 }
 
+/** 详情查询行：列表字段 + 实况视频路径（详情接口 SELECT *，全字段） */
+interface AssetDetailRow extends AssetRow {
+  live_video: string | null
+}
+
 /** 输出给前端的资产结构（不含内部状态字段）；导出供 search 路由复用 */
 export function toDto(row: AssetRow): AssetDto {
   return {
@@ -100,7 +105,9 @@ export async function registerAssetRoutes(app: FastifyInstance): Promise<void> {
       return reply.code(400).send({ error: 'limit must be an integer between 1 and 500' })
     }
     const cursor = decodeCursor(query.cursor)
-    const offset = Number(query.offset ?? 0) || 0
+    // offset 校验（与 search 路由同口径）：非数字/负数归 0、非整数向下取整。
+    // 旧实现只做 Number(...)||0，?offset=1.5 之类非整数绑定到 SQLite OFFSET 可能报错 500。
+    const offset = Math.max(0, Math.floor(Number(query.offset ?? 0))) || 0
 
     // 优先游标模式（滚动续载）；提供 offset 时走跳页模式（日期定位）
     const rows = (
@@ -133,32 +140,31 @@ export async function registerAssetRoutes(app: FastifyInstance): Promise<void> {
   /** 单个资产详情 + 前后邻居 id */
   app.get('/api/assets/:id', async (req, reply) => {
     const { id } = req.params as { id: string }
-    const row = db.prepare(`SELECT * FROM assets WHERE id = ?`).get(Number(id)) as
-      | (ReturnType<typeof toDto> extends never ? never : Record<string, unknown> & { id: number; date_taken: string })
-      | undefined
+    const row = db.prepare(`SELECT * FROM assets WHERE id = ?`).get(Number(id)) as AssetDetailRow | undefined
 
     if (!row) {
       return reply.code(404).send({ error: 'asset not found' })
     }
 
-    // 前一张 = 更新的一张；(date_taken, id) 字典序更大
+    // 前一张 = 更新的一张；(date_taken, id) 字典序更大。
+    // 同时取邻居的 file_mtime：前端详情页预取/预热大图需要拼与详情一致的 rev URL。
     const prev = db
       .prepare(
-        `SELECT id FROM assets WHERE (date_taken > ?) OR (date_taken = ? AND id > ?)
+        `SELECT id, file_mtime FROM assets WHERE (date_taken > ?) OR (date_taken = ? AND id > ?)
          ORDER BY date_taken ASC, id ASC LIMIT 1`,
       )
-      .get(row.date_taken as string, row.date_taken as string, row.id) as { id: number } | undefined
+      .get(row.date_taken, row.date_taken, row.id) as { id: number; file_mtime: number | null } | undefined
 
     // 后一张 = 更旧的一张
     const next = db
       .prepare(
-        `SELECT id FROM assets WHERE (date_taken < ?) OR (date_taken = ? AND id < ?)
+        `SELECT id, file_mtime FROM assets WHERE (date_taken < ?) OR (date_taken = ? AND id < ?)
          ORDER BY date_taken DESC, id DESC LIMIT 1`,
       )
-      .get(row.date_taken as string, row.date_taken as string, row.id) as { id: number } | undefined
+      .get(row.date_taken, row.date_taken, row.id) as { id: number; file_mtime: number | null } | undefined
 
     // 实况照片的播放视频相对路径（供前端拼 /api/video/stream）
-    const liveVideo = (row.live_video as string | null) ?? null
+    const liveVideo = row.live_video ?? null
 
     // 序号 / 总数（顶栏 "第 N / total 项"）：照片墙按 (date_taken DESC, id DESC) 倒序流，
     // 排在该资产之前（更新）的数量 = 序号 - 1。走 idx_assets_date 索引，毫秒级。
@@ -167,13 +173,16 @@ export async function registerAssetRoutes(app: FastifyInstance): Promise<void> {
       .prepare(
         `SELECT COUNT(*) AS c FROM assets WHERE (date_taken > ?) OR (date_taken = ? AND id > ?)`,
       )
-      .get(row.date_taken as string, row.date_taken as string, row.id) as { c: number }).c
+      .get(row.date_taken, row.date_taken, row.id) as { c: number }).c
 
     return reply.send({
-      ...toDto(row as never),
+      ...toDto(row),
       liveVideo,
       prevId: prev?.id ?? null,
       nextId: next?.id ?? null,
+      // 邻居缓存版本（file_mtime）：前端预取大图 URL 与详情实际 URL 保持一致
+      prevRev: prev?.file_mtime ?? null,
+      nextRev: next?.file_mtime ?? null,
       position: before + 1,
       total,
     })
