@@ -62,7 +62,7 @@ export async function registerSearchRoutes(app: FastifyInstance): Promise<void> 
     if (!Number.isInteger(limit) || limit < 1 || limit > 500) {
       return reply.code(400).send({ error: 'limit must be an integer between 1 and 500' })
     }
-    const offset = Math.max(0, Number(offsetRaw ?? 0) || 0)
+    const offset = Math.min(1_000_000, Math.max(0, Math.floor(Number(offsetRaw ?? 0) || 0)))
     const query = sanitizeQuery(q ?? '')
 
     // trigram 最小 3 字符；不足时无法走索引，直接返回空（不降级为 LIKE 全扫）
@@ -98,47 +98,53 @@ export async function registerSearchRoutes(app: FastifyInstance): Promise<void> 
     let months: { ym: string; label: string; count: number; offset: number; thumbId: number | null }[] = []
     let rows: AssetRow[] = []
     try {
-      // ① 真实匹配总数（前端「共 N 项」+ 滚动条长度数据源）
-      const row = db
-        .prepare(
-          `SELECT COUNT(*) AS total FROM assets_fts f
-           JOIN assets a ON a.id = f.rowid
-           WHERE assets_fts MATCH ? AND ${exactConds}`,
-        )
-        .get(query, ...exactArgs) as { total: number }
-      total = row.total
-
-      // ② 匹配集月份分组（与 /api/dates 同构：窗口函数取每月最新资产做代表缩略图）
-      const groups = db
-        .prepare(
-          `SELECT ym, COUNT(*) AS cnt,
-                  MAX(CASE WHEN rn = 1 THEN id END) AS thumb_id
-           FROM (
-             SELECT substr(a.date_taken, 1, 7) AS ym, a.id,
-                    ROW_NUMBER() OVER (
-                      PARTITION BY substr(a.date_taken, 1, 7)
-                      ORDER BY a.date_taken DESC, a.id DESC
-                    ) AS rn
-             FROM assets_fts f
+      // 性能优化（审查）：total/months 只在首屏（offset=0）计算——
+      // 滚动分页拉取时无需重算全匹配集的 COUNT + 窗口函数分组，节省每页一次聚合成本。
+      // 前端 search store 只在首屏（p===0）覆盖 totalCount，months 仅非空覆盖，故后续页
+      // 返回 total:0 / months:[] 不会污染前端骨架数据。
+      if (offset === 0) {
+        // ① 真实匹配总数（前端「共 N 项」+ 滚动条长度数据源）
+        const row = db
+          .prepare(
+            `SELECT COUNT(*) AS total FROM assets_fts f
              JOIN assets a ON a.id = f.rowid
-             WHERE assets_fts MATCH ? AND ${exactConds}
-           )
-           GROUP BY ym ORDER BY ym DESC`,
-        )
-        .all(query, ...exactArgs) as { ym: string; cnt: number; thumb_id: number | null }[]
+             WHERE assets_fts MATCH ? AND ${exactConds}`,
+          )
+          .get(query, ...exactArgs) as { total: number }
+        total = row.total
 
-      let acc = 0
-      months = groups.map((g) => {
-        const item = {
-          ym: g.ym,
-          label: `${Number(g.ym.slice(0, 4))}年${Number(g.ym.slice(5))}月`,
-          count: g.cnt,
-          offset: acc,
-          thumbId: g.thumb_id,
-        }
-        acc += g.cnt
-        return item
-      })
+        // ② 匹配集月份分组（与 /api/dates 同构：窗口函数取每月最新资产做代表缩略图）
+        const groups = db
+          .prepare(
+            `SELECT ym, COUNT(*) AS cnt,
+                    MAX(CASE WHEN rn = 1 THEN id END) AS thumb_id
+             FROM (
+               SELECT substr(a.date_taken, 1, 7) AS ym, a.id,
+                      ROW_NUMBER() OVER (
+                        PARTITION BY substr(a.date_taken, 1, 7)
+                        ORDER BY a.date_taken DESC, a.id DESC
+                      ) AS rn
+               FROM assets_fts f
+               JOIN assets a ON a.id = f.rowid
+               WHERE assets_fts MATCH ? AND ${exactConds}
+             )
+             GROUP BY ym ORDER BY ym DESC`,
+          )
+          .all(query, ...exactArgs) as { ym: string; cnt: number; thumb_id: number | null }[]
+
+        let acc = 0
+        months = groups.map((g) => {
+          const item = {
+            ym: g.ym,
+            label: `${Number(g.ym.slice(0, 4))}年${Number(g.ym.slice(5))}月`,
+            count: g.cnt,
+            offset: acc,
+            thumbId: g.thumb_id,
+          }
+          acc += g.cnt
+          return item
+        })
+      }
 
       // ③ 当前页（匹配流倒序切片；LIMIT/OFFSET 均为整数参数，无注入面）
       rows = db

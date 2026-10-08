@@ -112,8 +112,10 @@ export const useSearchStore = defineStore('search', () => {
           pages.set(p, res.items)
           failed.delete(p)
           if (p === 0) searchError.value = null // 首屏成功 → 清除整次搜索错误
-          // 骨架数据（total/months）以最新响应为准，幂等写入
-          totalCount.value = res.total
+          // 骨架数据（total/months）以首屏响应为准：后端仅 offset=0 时计算聚合
+          // （审查优化），后续页 total=0/months=[] 不再覆盖首屏值，避免滚动条长度/
+          // 「共 N 项」/月份分组被清零。
+          if (p === 0) totalCount.value = res.total
           if (res.months.length > 0) months.value = res.months
         })
         .catch((err) => {
