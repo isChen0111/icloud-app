@@ -44,6 +44,16 @@ const searchActive = computed(() => query.value.trim().length > 0 || hasSearched
 /** 搜索词是否过短（trigram 需要至少 3 字符） */
 const tooShort = computed(() => query.value.trim().length > 0 && query.value.trim().length < 3)
 
+/** 搜索无结果（墙区中央空态条件；「未搜索」初始态不算空结果） */
+const emptyResult = computed(
+  () =>
+    searchActive.value &&
+    hasSearched.value &&
+    !searchStore.loading &&
+    !searchStore.searchError &&
+    searchStore.totalCount === 0,
+)
+
 /** 输入监听：防抖 300ms 后执行（对标搜索框"边输边出"体验） */
 watch(query, (q) => {
   window.clearTimeout(debounceTimer)
@@ -117,6 +127,9 @@ function onKeydown(e: KeyboardEvent): void {
         spellcheck="false"
       />
       <button v-if="searchActive" class="search-clear" title="清除并退出搜索" @click="clearSearch">✕</button>
+      <!-- 搜索态行内反馈（不新增行）：过短提示 / 加载中 spinner，替代原独立提示条 -->
+      <span v-if="searchActive && tooShort" class="search-hint">请至少输入 3 个字符</span>
+      <span v-else-if="searchActive && searchStore.loading" class="search-spinner" title="搜索中" />
       <!-- 删除按钮（仅照片墙态显示）：无选中灰禁，选中亮蓝；位置=搜索栏一行 -->
       <span v-if="!searchActive && assetStore.selectedCount > 0" class="sel-count">已选 {{ assetStore.selectedCount }} 项</span>
       <button
@@ -133,21 +146,20 @@ function onKeydown(e: KeyboardEvent): void {
       </button>
     </div>
 
-    <!-- 搜索态提示条：搜索中 / 失败 / 无结果 / 结果计数（照片墙态隐藏） -->
-    <div v-if="searchActive" class="search-meta">
-      <span v-if="tooShort" class="dim">请至少输入 3 个字符</span>
-      <span v-else-if="!hasSearched || searchStore.loading" class="dim">搜索中…</span>
-      <!-- F-05：搜索真异常（后端 500 / 网络断）→ 显式错误态 + 重试，不再伪装成无结果 -->
-      <span v-else-if="searchStore.searchError" class="search-error">
-        搜索失败，请重试
-        <button class="search-retry" type="button" @click="retrySearch">重试</button>
-      </span>
-      <span v-else-if="searchStore.totalCount === 0" class="dim">没有找到匹配「{{ query }}」的内容</span>
-      <span v-else class="dim">搜索「{{ query }}」· 共 {{ searchStore.totalCount }} 项</span>
-    </div>
-
     <!-- 照片墙 / 搜索结果：同一 GridScroller，数据源切换（组件不销毁，照片墙状态保留） -->
-    <GridScroller :data-source="searchActive ? searchStore : assetStore" class="scroller" />
+    <div class="grid-wrap">
+      <GridScroller :data-source="searchActive ? searchStore : assetStore" class="scroller" />
+      <!-- 搜索态空态 / 错误态（墙区中央，替代原独立提示行）：覆盖层不拦截照片墙滚动 -->
+      <div v-if="emptyResult" class="search-state">
+        <div class="search-state-box">没有匹配「{{ query }}」的内容</div>
+      </div>
+      <div v-else-if="searchActive && searchStore.searchError" class="search-state">
+        <div class="search-state-box">
+          <span>搜索失败，请重试</span>
+          <button class="search-retry" type="button" @click="retrySearch">重试</button>
+        </div>
+      </div>
+    </div>
 
     <!-- 删除确认弹框（照片墙多选删除） -->
     <DeleteConfirm
@@ -212,21 +224,27 @@ function onKeydown(e: KeyboardEvent): void {
 }
 .search-clear:hover { background: var(--bg-hover-strong); }
 
-/* 搜索态提示条（吸顶日期上方，轻量信息） */
-.search-meta {
+/* 搜索态行内反馈（不新增行，位于搜索栏行内） */
+.search-hint {
+  font-size: 12px;
+  color: var(--text-2);
+  white-space: nowrap;
   flex-shrink: 0;
-  padding: 6px 16px;
-  font-size: 12px;
-  border-bottom: 1px solid var(--border);
-  background: var(--bg);
 }
-.dim { color: var(--text-2); }
+.search-spinner {
+  width: 14px;
+  height: 14px;
+  border: 2px solid var(--border);
+  border-top-color: #0a84ff;
+  border-radius: 50%;
+  animation: search-spin 0.7s linear infinite;
+  flex-shrink: 0;
+}
+@keyframes search-spin {
+  to { transform: rotate(360deg); }
+}
 
-/* F-05 搜索失败态：错误色 + 内联重试按钮 */
-.search-error {
-  color: #d05245;
-  font-size: 12px;
-}
+/* F-05 搜索失败态：错误色 + 内联重试按钮（墙区中央空态） */
 .search-retry {
   margin-left: 8px;
   padding: 2px 10px;
@@ -241,6 +259,34 @@ function onKeydown(e: KeyboardEvent): void {
 .search-retry:hover { background: var(--bg-field-hover); }
 
 .scroller { flex: 1; min-height: 0; }
+
+/* 墙区容器（相对定位，供空态/错误态覆盖层定位） */
+.grid-wrap {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+}
+/* 搜索态中央状态层：不拦截照片墙滚动，仅内部卡片可交互（重试按钮） */
+.search-state {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+}
+.search-state-box {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 20px;
+  border-radius: 10px;
+  background: var(--bg-field);
+  color: var(--text-2);
+  font-size: 13px;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.08);
+  pointer-events: auto;
+}
 
 /* 删除按钮（搜索栏行右侧）：无选中灰禁，选中后图标+底亮蓝（iCloud 风格） */
 .del-btn {
