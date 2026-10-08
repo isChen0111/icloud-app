@@ -240,8 +240,13 @@ CREATE TABLE IF NOT EXISTS assets (
 );
 CREATE INDEX idx_assets_date ON assets(date_taken DESC);
 CREATE INDEX idx_assets_type ON assets(type);
-<span class="c">-- 可选搜索</span>
-CREATE VIRTUAL TABLE assets_fts USING fts5(filename, location_text);
+<span class="c">-- 搜索索引（FTS5 trigram，三列：小写文件名 / 原始ISO / 去标点紧凑日期，见 §4.8）</span>
+CREATE VIRTUAL TABLE assets_fts USING fts5(
+  search_text,
+  date_taken,
+  date_compact,
+  tokenize = 'trigram'
+);
 </pre>
 
 <h2>4. 前端设计（Vue 3）</h2>
