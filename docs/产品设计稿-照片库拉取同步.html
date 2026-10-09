@@ -1,0 +1,624 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>产品设计稿 · iCloudPD 照片库拉取同步</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect width='24' height='24' rx='6' fill='%230a84ff'/%3E%3Ccircle cx='12' cy='10' r='4.5' fill='none' stroke='white' stroke-width='1.8'/%3E%3Cpath d='M7 20c1.2-3.2 3-5 5-5s3.8 1.8 5 5' fill='none' stroke='white' stroke-width='1.8' stroke-linecap='round'/%3E%3C/svg%3E">
+<style>
+:root{
+  --bg:#f2f4f7; --panel:#fff; --border:#e3e6eb; --border2:#d5dae1;
+  --text:#1c1f26; --text2:#5d6775; --text3:#9aa3af;
+  --accent:#0a84ff; --accent2:#eaf2ff; --ok:#2fae5d; --ok2:#e8f7ee;
+  --warn:#e8871a; --warn2:#fef4e6; --danger:#ff3b30; --danger2:#ffefee;
+  --shadow:0 6px 24px rgba(15,23,42,.08);
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);font-family:system-ui,-apple-system,"Segoe UI","Microsoft YaHei",sans-serif;line-height:1.55}
+/* ===== 顶部工具条 ===== */
+.topbar{position:sticky;top:0;z-index:50;background:rgba(255,255,255,.92);backdrop-filter:blur(8px);border-bottom:1px solid var(--border)}
+.topbar-in{max-width:1180px;margin:0 auto;padding:12px 20px;display:flex;align-items:center;gap:16px;flex-wrap:wrap}
+.brand{display:flex;align-items:center;gap:10px;font-size:15px;font-weight:700}
+.brand .logo{width:26px;height:26px;border-radius:7px;background:var(--accent);display:flex;align-items:center;justify-content:center;color:#fff}
+.tabs{display:flex;gap:6px;margin-left:auto;flex-wrap:wrap}
+.tab{padding:6px 14px;border-radius:8px;font-size:14px;cursor:pointer;color:var(--text2);border:1px solid transparent;user-select:none}
+.tab:hover{background:#f0f2f5}
+.tab.on{background:var(--accent2);color:var(--accent);font-weight:600;border-color:#c4ddfa}
+.topmeta{max-width:1180px;margin:0 auto;padding:6px 20px 0;font-size:12px;color:var(--text3)}
+/* ===== 画布 ===== */
+.stage{max-width:1180px;margin:24px auto 80px;padding:0 20px}
+.view{display:none}
+.view.on{display:block}
+.view-head{margin-bottom:14px}
+.view-head h2{font-size:18px}
+.view-head p{font-size:13px;color:var(--text2);margin-top:4px}
+/* 设计稿画布：模拟应用窗口 */
+.appwin{border:1px solid var(--border2);border-radius:14px;background:var(--panel);box-shadow:var(--shadow);overflow:hidden}
+.apptitle{display:flex;align-items:center;gap:8px;padding:7px 14px;background:#f7f8fa;border-bottom:1px solid var(--border);font-size:12px;color:var(--text3)}
+.dot{width:10px;height:10px;border-radius:50%;background:#d8dce3}
+/* ===== 通用 UI 组件（模拟应用内元素） ===== */
+.tlbar{display:flex;align-items:center;gap:12px;padding:10px 16px;border-bottom:1px solid var(--border);background:#fff}
+.tl-brand{display:flex;align-items:center;gap:8px;font-size:14px;font-weight:700}
+.tl-brand svg{color:var(--accent)}
+.tl-spacer{flex:1}
+.icon-btn{width:32px;height:32px;border-radius:8px;border:1px solid var(--border);background:#fff;display:flex;align-items:center;justify-content:center;cursor:pointer;color:var(--text2)}
+.icon-btn:hover{border-color:var(--accent);color:var(--accent);background:var(--accent2)}
+.tl-status{position:relative}
+.tl-status .trig{display:flex;align-items:center;gap:6px;padding:6px 11px;border-radius:8px;border:1px solid var(--border);background:#fff;font-size:12.5px;cursor:pointer}
+.tl-status .trig:hover{border-color:var(--accent)}
+.badge-dot{width:7px;height:7px;border-radius:50%;background:var(--ok)}
+.pill{display:inline-flex;align-items:center;gap:4px;font-size:11px;padding:1px 8px;border-radius:9px;font-weight:600}
+.pill.ok{background:var(--ok2);color:var(--ok)}
+.pill.warn{background:var(--warn2);color:var(--warn)}
+.pill.danger{background:var(--danger2);color:var(--danger)}
+.pill.neu{background:#eef0f3;color:var(--text2)}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;padding:8px 16px;border-radius:9px;border:1px solid transparent;font-size:13px;font-weight:600;cursor:pointer;user-select:none;min-height:44px}
+.btn-primary{background:var(--accent);color:#fff}
+.btn-primary:hover{background:#0a75e6}
+.btn-primary:disabled{background:#b9d5f6;color:#e8f1fc;cursor:not-allowed}
+.btn-ghost{background:#fff;border-color:var(--border2);color:var(--text)}
+.btn-ghost:hover{border-color:var(--accent);color:var(--accent)}
+.btn-danger{background:var(--danger2);color:var(--danger);border-color:#f5c6c2}
+.btn-danger:hover{background:#ffe4e1}
+.btn-sm{padding:5px 10px;font-size:12px;border-radius:7px}
+.field label{display:block;font-size:12.5px;color:var(--text2);margin-bottom:5px;font-weight:600}
+.field input{width:100%;padding:9px 12px;border:1px solid var(--border2);border-radius:9px;font-size:13.5px;outline:none}
+.field input:focus{border-color:var(--accent);box-shadow:0 0 0 3px rgba(10,132,255,.14)}
+.field input:disabled{background:#f5f6f8;color:var(--text3)}
+/* ===== 视图1：首次引导 ===== */
+.guide-body{min-height:420px;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:44px 20px 36px;background:linear-gradient(180deg,#fbfcfe 0%,#f2f6fc 100%)}
+.guide-card{width:min(520px,100%);background:#fff;border:1px solid var(--border);border-radius:16px;box-shadow:var(--shadow);padding:34px 34px 28px;text-align:center}
+.guide-icon{width:58px;height:58px;border-radius:16px;background:var(--accent2);display:flex;align-items:center;justify-content:center;margin:0 auto 14px;color:var(--accent)}
+.guide-card h3{font-size:19px;margin-bottom:6px}
+.guide-card .sub{font-size:13px;color:var(--text2);margin-bottom:22px}
+.steps{display:flex;gap:8px;margin-bottom:22px}
+.step{flex:1;text-align:center;position:relative}
+.step .num{width:24px;height:24px;border-radius:50%;margin:0 auto 5px;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;background:#eef0f3;color:var(--text3)}
+.step .num.done{background:var(--accent);color:#fff}
+.step .num.cur{background:var(--accent2);color:var(--accent);border:1.5px solid var(--accent)}
+.step .lbl{font-size:11.5px;color:var(--text2)}
+.guide-form{text-align:left;margin-top:4px}
+.guide-form .btn{width:100%;margin-top:14px;padding:11px}
+.guide-note{font-size:11.5px;color:var(--text3);margin-top:14px;line-height:1.5}
+/* ===== 视图2：认证 ===== */
+.auth-body{min-height:440px;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:36px 20px;background:#f6f8fb}
+.auth-card{width:min(430px,100%);background:#fff;border:1px solid var(--border);border-radius:14px;box-shadow:var(--shadow);padding:26px 28px}
+.auth-head{display:flex;align-items:center;gap:10px;margin-bottom:18px;padding-bottom:14px;border-bottom:1px solid var(--border)}
+.auth-logo{width:36px;height:36px;border-radius:9px;background:#0a84ff;color:#fff;display:flex;align-items:center;justify-content:center;flex-shrink:0}
+.auth-head .t{font-size:15px;font-weight:700}
+.auth-head .s{font-size:11.5px;color:var(--text3)}
+.auth-steps{display:flex;gap:6px;margin-bottom:18px;align-items:center;font-size:11px;color:var(--text3)}
+.auth-steps .as{display:flex;align-items:center;gap:5px}
+.auth-steps .as.on{color:var(--accent);font-weight:600}
+.auth-steps .ln{width:16px;height:1.5px;background:var(--border2)}
+.mfa-hint{font-size:12px;color:var(--text2);background:var(--accent2);border:1px solid #c4ddfa;border-radius:8px;padding:9px 12px;margin:14px 0}
+.mfa-hint b{color:var(--accent)}
+.auth-actions{margin-top:16px;display:flex;flex-direction:column;gap:10px}
+.auth-actions .btn{width:100%;padding:10px}
+.auth-foot{font-size:11.5px;color:var(--text3);text-align:center;margin-top:16px}
+/* ===== 设计说明 ===== */
+.design-note{margin-top:16px;background:#fbfcfe;border:1px dashed #c9d6e8;border-radius:10px;padding:14px 16px;font-size:12.5px;color:var(--text2)}
+.design-note b{color:var(--text)}
+.design-note ul{margin:6px 0 0 18px}
+.design-note li{margin:3px 0}
+.design-note code{background:#eef1f5;padding:0 4px;border-radius:3px;font-size:11.5px}
+/* ===== toast ===== */
+#toast{position:fixed;left:50%;bottom:28px;transform:translateX(-50%) translateY(80px);background:#1c232e;color:#fff;font-size:13px;padding:10px 18px;border-radius:10px;opacity:0;transition:all .25s;z-index:99;pointer-events:none;box-shadow:0 8px 24px rgba(0,0,0,.18)}
+#toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+@media (max-width:640px){
+  .tabs{width:100%;justify-content:flex-start}
+  .stage{padding:0 10px}
+  .guide-card,.auth-card{padding:22px 18px}
+}
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <div class="topbar-in">
+    <div class="brand"><span class="logo">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="9.5" r="4"/><path d="M6.5 20c1.3-3.4 3.1-5.3 5.5-5.3s4.2 1.9 5.5 5.3"/></svg>
+    </span>iCloud 本地照片 · 产品设计稿</div>
+    <div class="tabs" id="tabs">
+      <div class="tab on" data-v="guide">① 首次引导</div>
+      <div class="tab" data-v="auth">② 认证流程</div>
+      <div class="tab" data-v="main">③ 主界面·多库</div>
+      <div class="tab" data-v="settings">④ 设置中心</div>
+    </div>
+  </div>
+  <div class="topmeta">P0 产品设计稿 · 基于《iCloudPD 照片库拉取同步·架构功能设计》· 交互为演示态，未接入真实后端</div>
+</div>
+
+<div class="stage">
+
+<!-- ===== 视图① 首次启动引导 ===== -->
+<div class="view on" id="v-guide">
+  <div class="view-head"><h2>① 首次启动引导（无照片库状态）</h2><p>后端启动后无任何已注册库 → 主页中央出现引导卡，引导创建 → 链接 → 全量拉取。</p></div>
+  <div class="appwin">
+    <div class="apptitle"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span style="margin-left:8px">localhost:5173</span></div>
+    <div class="tlbar">
+      <div class="tl-brand">
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="9.5" r="4"/><path d="M6.5 20c1.3-3.4 3.1-5.3 5.5-5.3s4.2 1.9 5.5 5.3"/></svg>
+        iCloud本地照片
+      </div>
+      <div class="tl-spacer"></div>
+      <div class="icon-btn" title="主题"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3a9 9 0 1 0 9 9c0-1.2-.8-2-2-2h-1.5a1.8 1.8 0 0 1-1.8-1.8A1.6 1.6 0 0 1 17 6.5c.6-.5 1-1 1-1.6A9 9 0 0 0 12 3z"/></svg></div>
+      <div class="icon-btn" title="设置"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3.2"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1 1.55V21a2 2 0 1 1-4 0v-.09a1.7 1.7 0 0 0-1-1.55 1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.7 1.7 0 0 0 .34-1.87 1.7 1.7 0 0 0-1.55-1H3a2 2 0 1 1 0-4h.09a1.7 1.7 0 0 0 1.55-1 1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.7 1.7 0 0 0 1.87.34h.08a1.7 1.7 0 0 0 1-1.55V3a2 2 0 1 1 4 0v.09a1.7 1.7 0 0 0 1 1.55 1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.7 1.7 0 0 0-.34 1.87v.08a1.7 1.7 0 0 0 1.55 1H21a2 2 0 1 1 0 4h-.09a1.7 1.7 0 0 0-1.55 1z"/></svg></div>
+    </div>
+    <div class="guide-body">
+      <div class="guide-card">
+        <div class="guide-icon">
+          <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3v18M3 12h18"/><circle cx="12" cy="12" r="9"/></svg>
+        </div>
+        <h3>创建你的照片库</h3>
+        <div class="sub">链接 iCloud 照片库，把云端照片全量拉到本地浏览</div>
+        <div class="steps">
+          <div class="step"><div class="num cur">1</div><div class="lbl">设置库名</div></div>
+          <div class="step"><div class="num">2</div><div class="lbl">链接 iCloud</div></div>
+          <div class="step"><div class="num">3</div><div class="lbl">全量拉取<br><span style="font-weight:400;font-size:10.5px;color:var(--text3)">（手动触发）</span></div></div>
+        </div>
+        <div class="guide-form">
+          <div class="field"><label>照片库名称</label><input id="libName" type="text" placeholder="例如：我的相册" value="我的相册"></div>
+          <button class="btn btn-primary" id="guideMainBtn" data-act="链接 iCloud 照片库" onclick="next('auth')">链接 iCloud 照片库</button>
+        </div>
+        <div class="guide-note">链接需要 AppleID 账号与验证码，仅用于本次认证，凭据保存在本机 cookie 中，不会上传。</div>
+      </div>
+    </div>
+  </div>
+  <div class="design-note">
+    <b>规格要点（对应文档 §4.1）</b>
+    <ul>
+      <li>触发：<code>GET /api/libraries</code> 返回空 → 显示本引导卡</li>
+      <li>库名校验：非空、≤32 字符、唯一；失败在输入框下方提示</li>
+      <li>「链接 iCloud 照片库」→ <code>POST /api/libraries</code> 建库（状态 pending）→ 进入认证视图（②）</li>
+      <li>认证成功（<code>linked</code>）后返回本视图，按钮变「开始全量拉取」——<b>不会自动拉取</b>，拉取有运行代价，由用户决定何时执行</li>
+      <li>点击「开始全量拉取」→ <code>POST /api/library/:id/sync {kind: full}</code>，进入主界面显示进度</li>
+    </ul>
+  </div>
+</div>
+
+<!-- ===== 视图② 认证流程 ===== -->
+<div class="view" id="v-auth">
+  <div class="view-head"><h2>② 认证流程（自绘认证面板 · 后端管道交互）</h2><p>应用自绘认证 UI（不再嵌入官方 webui 页面），后端与 icloudpd 子进程通过管道交互：密码、验证码由后端喂给进程。</p></div>
+  <div class="appwin">
+    <div class="apptitle"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span style="margin-left:8px">认证面板 · iCloud 登录（自绘）</span></div>
+    <div class="auth-body">
+      <div class="auth-card">
+        <div class="auth-head">
+          <div class="auth-logo">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 7.5h14v11H5z"/><path d="M8 7.5V6a4 4 0 0 1 8 0v1.5"/></svg>
+          </div>
+          <div><div class="t">iCloud 照片库登录</div><div class="s">ichen***@foxmail.com · 中国大陆区（.cn）</div></div>
+        </div>
+        <div class="auth-steps">
+          <span class="as on"><span class="pill neu">1</span> 密码</span><span class="ln"></span>
+          <span class="as"><span class="pill neu">2</span> 验证码</span><span class="ln"></span>
+          <span class="as"><span class="pill neu">3</span> 完成</span>
+        </div>
+        <div class="field"><label>AppleID 密码</label><input type="password" placeholder="输入密码" value="••••••••" disabled></div>
+        <div class="auth-actions">
+          <button class="btn btn-primary" data-act="验证密码" onclick="simMfa()">登录</button>
+        </div>
+        <div class="mfa-hint" id="mfaHint" style="display:none"><b>双重验证</b>：Apple 已向您的受信任设备发送 6 位验证码，请输入后继续。</div>
+        <div class="auth-actions" id="mfaActions" style="display:none">
+          <div class="field"><label>验证码</label><input type="text" placeholder="6 位验证码" maxlength="6"></div>
+          <button class="btn btn-primary" data-act="提交验证码" onclick="simDone()">验证并登录</button>
+        </div>
+        <div class="auth-foot">认证完成后自动返回应用 · 会话约 2 个月有效，过期后需重新链接</div>
+      </div>
+    </div>
+  </div>
+  <div class="design-note">
+    <b>规格要点（对应文档 §3.1.1，自绘方案）</b>
+    <ul>
+      <li>后端 spawn <code>icloudpd --username &lt;邮箱&gt; --password-provider console --mfa-provider console --domain cn --auth-only</code>；密码、验证码由前端两步输入经 <code>POST /api/library/:id/auth/input</code> 写入子进程 stdin</li>
+      <li>状态机：<code>pending → waiting_input → linked / failed</code>；成功判据 = 进程退出 + cookie 落盘</li>
+      <li>密码/验证码仅驻留内存、不进后端日志；10 分钟无进展 → kill 并提示重试</li>
+      <li>官方 webui 方案（<code>--password-provider webui</code>，已实测可用）保留为备选</li>
+    </ul>
+  </div>
+</div>
+
+<!-- ===== 视图③ 主界面·多库 ===== -->
+<div class="view" id="v-main">
+  <div class="view-head"><h2>③ 主界面（多照片库版）</h2><p>顶栏改造：左上状态组件内加「全量拉取 / 增量同步」，右上角加库切换下拉 + 设置入口。</p></div>
+  <div class="appwin">
+    <div class="apptitle"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span style="margin-left:8px">localhost:5173 — 我的相册</span></div>
+    <div class="tlbar" style="position:relative;flex-wrap:wrap">
+      <div class="tl-brand">
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="9.5" r="4"/><path d="M6.5 20c1.3-3.4 3.1-5.3 5.5-5.3s4.2 1.9 5.5 5.3"/></svg>
+        iCloud本地照片
+      </div>
+
+      <!-- 同步状态组件（可展开） -->
+      <div class="tl-status" id="statusPop">
+        <div class="trig" onclick="togglePop('statusPop')">
+          <span class="badge-dot"></span> 同步完成
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M6 9l6 6 6-6"/></svg>
+        </div>
+        <div class="pop" style="display:none;position:absolute;top:40px;left:0;width:410px;background:#fff;border:1px solid var(--border2);border-radius:12px;box-shadow:var(--shadow);padding:15px 16px 13px;z-index:30">
+          <!-- ===== 对齐原版 popover-heading：标题 + 说明行（改放同步单按钮）+ 右侧计数 ===== -->
+          <div style="display:flex;align-items:flex-start;gap:10px;padding-bottom:12px;border-bottom:1px solid var(--border)">
+            <span style="width:18px;height:18px;color:var(--accent);flex-shrink:0;margin-top:1px" aria-hidden="true">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M6.5 17a4 4 0 0 1-.8-7.9A5.5 5.5 0 0 1 17 8.6a3.5 3.5 0 0 1-.5 8.4"/><path d="m9.5 13 2.5 2.5 2.5-2.5M12 15.5v-6"/></svg>
+            </span>
+            <div style="flex:1;min-width:0">
+              <strong style="font-size:13px;font-weight:650">照片库已同步</strong>
+              <!-- 原「共检查 2,277 个媒体文件。」说明行位置 → iCloud 同步单按钮（全量/增量合并，执行/取消合并） -->
+              <div style="position:relative;margin-top:7px">
+                <button class="sync-btn" id="mainBtn" onclick="mainBtnClick()">
+                  <span class="spinner" id="mainSpin" style="display:none"></span>
+                  <span id="mainBtnText">同步</span>
+                  <svg class="chev" width="11" height="11" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="2"><path d="m3 4.5 3 3 3-3"/></svg>
+                </button>
+                <div class="sync-menu" id="mainMenu" style="display:none">
+                  <div class="sync-menu-item" onclick="mainPick('full')">全量拉取</div>
+                  <div class="sync-menu-item" onclick="mainPick('inc')">增量同步</div>
+                </div>
+              </div>
+            </div>
+            <div style="flex-shrink:0;color:var(--text2);font-size:10px;line-height:1.65;text-align:right;white-space:nowrap">
+              <b style="color:var(--text);font-size:11px;font-weight:650">1,138</b> 张照片<br><b style="color:var(--text);font-size:11px;font-weight:650">157</b> 个视频
+            </div>
+          </div>
+
+          <!-- ===== 原版 status-row：照片库扫描完成 ===== -->
+          <div style="display:flex;align-items:flex-start;gap:10px;margin-top:13px">
+            <span style="width:18px;height:18px;color:var(--text3);flex-shrink:0;margin-top:1px" aria-hidden="true">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="3" y="4" width="13" height="10" rx="1.6"/><path d="M7 17h11a.7.7 0 0 0 .7-.7V9"/><circle cx="7" cy="8" r=".9"/><path d="m4.5 12.5 3-2.6 2 1.6 2.2-2 2.3 2.2"/></svg>
+            </span>
+            <div style="flex:1;min-width:0">
+              <strong style="font-size:12.5px;font-weight:650">照片库扫描完成</strong>
+              <div style="font-size:11px;color:var(--text2);margin-top:2px">共检查 2,277 个媒体文件</div>
+            </div>
+            <span style="flex-shrink:0;font-size:11px;font-weight:600;color:var(--ok);display:flex;align-items:center;gap:4px">
+              <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"><path d="m3.1 8.1 3.1 3.1 6.7-6.7"/></svg>完成
+            </span>
+          </div>
+
+          <!-- ===== 原版 status-row：预览图 ===== -->
+          <div style="display:flex;align-items:flex-start;gap:10px;margin-top:11px">
+            <span style="width:18px;height:18px;color:var(--text3);flex-shrink:0;margin-top:1px" aria-hidden="true">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="3.5" y="3.5" width="17" height="17" rx="2.4"/><circle cx="9" cy="9" r="1.6"/><path d="m5 16.5 4.2-4.2 3 2.8 2.1-2.1 3.4 3.5"/></svg>
+            </span>
+            <div style="flex:1;min-width:0">
+              <strong style="font-size:12.5px;font-weight:650">预览图已就绪</strong>
+              <div style="font-size:11px;color:var(--text2);margin-top:2px">无需生成的项目会直接跳过</div>
+            </div>
+            <span style="flex-shrink:0;font-size:11px;font-weight:600;color:var(--ok);display:flex;align-items:center;gap:4px">
+              <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"><path d="m3.1 8.1 3.1 3.1 6.7-6.7"/></svg>完成
+            </span>
+          </div>
+
+          <!-- ===== 原版 thumbnail-stats + queue-metrics（对齐缩进 37px） ===== -->
+          <div style="display:flex;flex-wrap:wrap;gap:5px 12px;margin:12px 0 0 37px;color:var(--text2);font-size:10px">
+            <span>已处理 <b style="color:var(--text);font-weight:650">1,295 / 1,295</b></span>
+            <span>已生成 <b style="color:var(--text);font-weight:650">1,295</b></span>
+            <span>待处理 <b style="color:var(--text);font-weight:650">0</b></span>
+            <span>失败 <a style="color:var(--danger);cursor:pointer" onclick="toast('演示：打开失败清单')">0</a></span>
+          </div>
+          <div style="display:flex;flex-wrap:wrap;align-items:center;gap:5px 12px;margin:9px 0 0 37px;padding-top:9px;border-top:1px dashed var(--border);color:var(--text2);font-size:10px">
+            <span>运行 <b style="color:var(--text);font-weight:650">0</b></span>
+            <span>交互运行 <b style="color:var(--text);font-weight:650">0</b></span>
+            <span>交互等待 <b style="color:var(--text);font-weight:650">0</b></span>
+            <span>已跳过 <b style="color:var(--text);font-weight:650">0</b></span>
+            <span style="display:inline-grid;width:14px;height:14px;place-items:center;border:1px solid var(--text3);border-radius:50%;color:var(--text2);font-size:9px;cursor:help;margin-left:auto" title="队列 = 缩略图生成任务；交互 = 浏览中照片的生成请求；已跳过 = 客户端断开被拦下的请求（快速滚动离屏），不会进入失败清单。">!</span>
+          </div>
+        </div>
+      </div>
+
+      <div style="font-size:12.5px;color:var(--text2)">已处理 <b>12,610</b> 项</div>
+      <div class="tl-spacer"></div>
+
+      <!-- 库切换下拉 -->
+      <div class="tl-status" id="libPop">
+        <div class="trig" onclick="togglePop('libPop')">
+          我的相册
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M6 9l6 6 6-6"/></svg>
+        </div>
+        <div class="pop" style="display:none;position:absolute;top:40px;right:0;width:210px;background:#fff;border:1px solid var(--border2);border-radius:11px;box-shadow:var(--shadow);padding:8px;z-index:30">
+          <div style="font-size:11px;color:var(--text3);font-weight:700;padding:4px 8px">照片库</div>
+          <div style="display:flex;align-items:center;gap:8px;padding:8px 9px;border-radius:8px;background:var(--accent2);font-size:13px;cursor:pointer"><span style="color:var(--accent);font-weight:700">✓</span> 我的相册</div>
+          <div style="display:flex;align-items:center;gap:8px;padding:8px 9px;border-radius:8px;font-size:13px;cursor:pointer" onclick="toast('演示：切换到旅行相册（整页初始化）')">旅行相册</div>
+          <div style="height:1px;background:var(--border);margin:6px 0"></div>
+          <div style="display:flex;align-items:center;gap:8px;padding:8px 9px;border-radius:8px;font-size:13px;cursor:pointer;color:var(--accent)" onclick="switchView('guide')"><span style="font-weight:700">+</span> 新建照片库</div>
+        </div>
+      </div>
+
+      <div class="icon-btn" title="主题"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3a9 9 0 1 0 9 9c0-1.2-.8-2-2-2h-1.5a1.8 1.8 0 0 1-1.8-1.8A1.6 1.6 0 0 1 17 6.5c.6-.5 1-1 1-1.6A9 9 0 0 0 12 3z"/></svg></div>
+      <div class="icon-btn" title="设置" onclick="switchView('settings')"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3.2"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1 1.55V21a2 2 0 1 1-4 0v-.09a1.7 1.7 0 0 0-1-1.55 1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.7 1.7 0 0 0 .34-1.87 1.7 1.7 0 0 0-1.55-1H3a2 2 0 1 1 0-4h.09a1.7 1.7 0 0 0 1.55-1 1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.7 1.7 0 0 0 1.87.34h.08a1.7 1.7 0 0 0 1-1.55V3a2 2 0 1 1 4 0v.09a1.7 1.7 0 0 0 1 1.55 1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.7 1.7 0 0 0-.34 1.87v.08a1.7 1.7 0 0 0 1.55 1H21a2 2 0 1 1 0 4h-.09a1.7 1.7 0 0 0-1.55 1z"/></svg></div>
+    </div>
+
+    <div style="padding:14px 16px;border-bottom:1px solid var(--border);font-size:12px;color:var(--text2);background:#fbfcfe;display:flex;gap:8px;align-items:center">
+      <span class="pill ok">已链接</span> 我的相册 · 12,610 项 · 最近同步今天 13:02
+    </div>
+
+    <div style="padding:16px;background:#f6f7f9">
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(92px,1fr));gap:6px" id="thumbGrid"></div>
+      <div style="text-align:center;font-size:11.5px;color:var(--text3);margin-top:10px">照片缩略图（示意占位）</div>
+    </div>
+  </div>
+  <div class="design-note">
+    <b>规格要点（对应文档 §4.2 / §4.3）</b>
+    <ul>
+      <li>同步操作区在<b>现有 resource-status 下拉组件内扩展</b>，不重构既有 UI；全量/增量二选一互斥，选择后出现「执行 / 取消」，执行中带状态动画，可中途取消</li>
+      <li>每库同时仅 1 个下载任务；认证过期时此处变「需要重新链接」入口（<code>expired</code>）</li>
+      <li>右上角「我的相册 ▾」：点击列出全部库、点击切换；<b>切库 = 整页初始化</b>（滚动位置/已加载状态全清，用户决策）</li>
+      <li>切换后端流程：停当前库任务 → 关连接 → 激活新库 → 前端刷新（切换事务，防串库）</li>
+    </ul>
+  </div>
+</div>
+
+<!-- ===== 视图④ 设置中心 ===== -->
+<div class="view" id="v-settings">
+  <div class="view-head"><h2>④ 设置中心（照片库管理 + icloudpd 参数）</h2><p>右上角齿轮进入；左侧导航，右侧内容面板。</p></div>
+  <div class="appwin">
+    <div class="apptitle"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span style="margin-left:8px">设置</span></div>
+    <div style="display:flex;min-height:340px">
+      <div style="width:150px;flex-shrink:0;border-right:1px solid var(--border);padding:14px 10px">
+        <div style="font-size:12px;color:var(--text3);font-weight:700;padding:4px 10px;margin-bottom:4px">照片库</div>
+        <div style="padding:7px 10px;border-radius:8px;background:var(--accent2);color:var(--accent);font-size:12.5px;font-weight:600;cursor:pointer">照片库管理</div>
+        <div style="padding:7px 10px;border-radius:8px;font-size:12.5px;color:var(--text2);cursor:pointer" onclick="toast('演示：切到下载与同步')">下载与同步</div>
+        <div style="padding:7px 10px;border-radius:8px;font-size:12.5px;color:var(--text2);cursor:pointer" onclick="toast('演示：打开关于')">关于</div>
+      </div>
+      <div style="flex:1;padding:18px 22px">
+        <div style="font-size:15px;font-weight:700;margin-bottom:4px">照片库管理</div>
+        <div style="font-size:12px;color:var(--text2);margin-bottom:14px">每库独立照片目录、缩略图缓存、数据库与会话</div>
+
+        <div style="border:1px solid var(--border);border-radius:11px;padding:13px 15px;margin-bottom:10px;background:#fff">
+          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+            <div style="font-size:13.5px;font-weight:700">我的相册</div>
+            <span class="pill" style="background:var(--accent2);color:var(--accent)">当前</span>
+            <span class="pill ok">已链接</span>
+            <span class="pill neu">12,610 项</span>
+            <div style="margin-left:auto;display:flex;gap:6px">
+              <button class="btn btn-ghost btn-sm" onclick="toast('演示：重新链接（重新认证）')">重新链接</button>
+              <button class="btn btn-danger btn-sm" onclick="simDelete()">删除</button>
+            </div>
+          </div>
+          <div style="font-size:12px;color:var(--text2);margin-top:8px;line-height:1.8">
+            账号：<code>ichen***@foxmail.com</code> · 目录：<code>E:\libraries\my-photos</code><br>
+            缓存：<code>E:\libraries\my-photos\.cache</code> · 会话：<code>…\my-photos\cookies</code> · 最近同步：今天 13:02
+          </div>
+          <!-- 每库同步：与主界面同款单按钮（全量/增量合并，执行/取消合并），全局状态同步 -->
+          <div style="display:flex;align-items:center;gap:10px;margin-top:10px;padding-top:10px;border-top:1px dashed var(--border)">
+            <div style="position:relative">
+              <button class="sync-btn" id="sBtn" onclick="libBtnClick('我的相册')">
+                <span class="spinner" id="sSpin" style="display:none"></span>
+                <span id="sBtnText">同步</span>
+                <svg class="chev" width="11" height="11" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="2"><path d="m3 4.5 3 3 3-3"/></svg>
+              </button>
+              <div class="sync-menu" id="sMenu" style="display:none">
+                <div class="sync-menu-item" onclick="libPick('我的相册','full')">全量拉取</div>
+                <div class="sync-menu-item" onclick="libPick('我的相册','inc')">增量同步</div>
+              </div>
+            </div>
+            <span class="sync-note" id="sNote">上次：今天 13:02</span>
+          </div>
+        </div>
+
+        <div style="border:1px solid var(--border);border-radius:11px;padding:13px 15px;margin-bottom:10px;background:#fff">
+          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+            <div style="font-size:13.5px;font-weight:700">旅行相册</div>
+            <span class="pill ok">已链接</span>
+            <span class="pill neu">3,204 项</span>
+            <div style="margin-left:auto;display:flex;gap:6px">
+              <button class="btn btn-ghost btn-sm" onclick="toast('演示：重新链接（重新认证）')">重新链接</button>
+              <button class="btn btn-danger btn-sm" onclick="simDelete()">删除</button>
+            </div>
+          </div>
+          <div style="font-size:12px;color:var(--text2);margin-top:8px;line-height:1.8">
+            账号：<code>ichen***@foxmail.com</code> · 目录：<code>E:\libraries\travel</code> · 最近同步：昨天 20:11
+          </div>
+          <div style="display:flex;align-items:center;gap:10px;margin-top:10px;padding-top:10px;border-top:1px dashed var(--border)">
+            <div style="position:relative">
+              <button class="sync-btn" id="tBtn" onclick="libBtnClick('旅行相册')">
+                <span class="spinner" id="tSpin" style="display:none"></span>
+                <span id="tBtnText">同步</span>
+                <svg class="chev" width="11" height="11" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="2"><path d="m3 4.5 3 3 3-3"/></svg>
+              </button>
+              <div class="sync-menu" id="tMenu" style="display:none">
+                <div class="sync-menu-item" onclick="libPick('旅行相册','full')">全量拉取</div>
+                <div class="sync-menu-item" onclick="libPick('旅行相册','inc')">增量同步</div>
+              </div>
+            </div>
+            <span class="sync-note" id="tNote">上次：昨天 20:11</span>
+          </div>
+        </div>
+
+        <div style="border:1px dashed var(--border2);border-radius:11px;padding:13px 15px;color:var(--text2);font-size:12.5px;display:flex;align-items:center;gap:8px">
+          <span style="color:var(--accent);font-weight:700">+</span> 添加照片库（新建库 → 链接 → 全量拉取）
+        </div>
+
+        <div style="height:1px;background:var(--border);margin:16px 0"></div>
+        <div style="font-size:13px;font-weight:700;margin-bottom:4px">下载与同步（icloudpd 参数 · 按照片库独立保存）</div>
+        <div style="font-size:11.5px;color:var(--text3);margin-bottom:10px">当前版本：按官方默认值全部锁死不可编辑，代码预留，后续按需放开</div>
+        <div style="display:flex;flex-direction:column;gap:9px;font-size:12.5px">
+          <div style="display:flex;align-items:center;gap:10px;opacity:.72"><span style="width:110px;color:var(--text2)">文件夹结构</span><code style="background:#eef1f5;padding:3px 8px;border-radius:5px">%Y/%m/%d</code><span class="pill neu" style="font-size:10.5px">固定 · 代码依赖</span></div>
+          <div style="display:flex;align-items:center;gap:10px;opacity:.72"><span style="width:110px;color:var(--text2)">跳过视频</span><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="10" width="16" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/><circle cx="12" cy="15" r="1.5"/></svg><span style="color:var(--text3)">--skip-videos（默认 false）</span></div>
+          <div style="display:flex;align-items:center;gap:10px;opacity:.72"><span style="width:110px;color:var(--text2)">下载规格</span><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="10" width="16" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/><circle cx="12" cy="15" r="1.5"/></svg><span style="color:var(--text3)">original（原图）</span></div>
+          <div style="display:flex;align-items:center;gap:10px;opacity:.72"><span style="width:110px;color:var(--text2)">增量深度</span><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="10" width="16" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/><circle cx="12" cy="15" r="1.5"/></svg><span style="color:var(--text3)">--until-found 20（默认）</span></div>
+          <div style="display:flex;align-items:center;gap:10px;opacity:.72"><span style="width:110px;color:var(--text2)">演练模式</span><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="10" width="16" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/><circle cx="12" cy="15" r="1.5"/></svg><span style="color:var(--text3)">--dry-run（默认 false，调试用）</span></div>
+        </div>
+        <div style="display:flex;gap:8px;margin-top:16px">
+          <button class="btn btn-primary btn-sm" onclick="toast('演示：保存成功')">保存更改</button>
+          <button class="btn btn-ghost btn-sm" onclick="toast('演示：取消')">取消</button>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="design-note">
+    <b>规格要点（对应文档 §4.4）</b>
+    <ul>
+      <li>库列表带「当前」标识（当前激活库）；每库卡片提供全量/增量同步操作，与主界面同款「二选一 → 执行/取消 → 状态动画」</li>
+      <li><b>一次仅一个库执行同步</b>：已有库执行中时，其他库点执行 → 显示「等待执行（当前：xx 同步中）」，队列顺序执行</li>
+      <li>删除库 = 移除注册 + 停 watcher + 释放连接；<b>不删除照片文件</b>（二次确认，演示中可触发确认态）</li>
+      <li>下载/同步配置<b>与照片库绑定、按官方默认值全部锁死</b>（同文件夹结构），代码预留、暂不可编辑；删除类参数（--auto-delete / --keep-icloud-recent-days）<b>不提供</b></li>
+      <li>参数按库保存（<code>libraries.icloudpd_args</code>），切库后各库配置独立</li>
+    </ul>
+  </div>
+</div>
+
+<div id="toast"></div>
+<style>
+.switch{width:34px;height:20px;border-radius:10px;background:#e3e6eb;position:relative;display:inline-block;cursor:pointer;transition:background .2s}
+.switch.on{background:var(--ok)}
+.switch .knob{position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:50%;background:#fff;transition:left .2s}
+.switch.on .knob{left:16px}
+.pop{animation:popin .15s ease}
+@keyframes popin{from{opacity:0;transform:translateY(-4px)}to{opacity:1;transform:none}}
+.spinner{width:14px;height:14px;border-radius:50%;border:2px solid rgba(10,132,255,.25);border-top-color:var(--accent);animation:spin .8s linear infinite;flex-shrink:0}
+.spinner.spin{border-color:rgba(10,132,255,.3);border-top-color:var(--accent)}
+@keyframes spin{to{transform:rotate(360deg)}}
+.syncopt.selected,.libopt.selected{background:var(--accent);border-color:var(--accent);color:#fff}
+/* 同步单按钮：全量/增量合并一个按钮，执行/取消合并一个按钮（多态切换 + 动画） */
+.sync-btn{display:inline-flex;align-items:center;justify-content:center;gap:5px;padding:3px 12px;min-width:138px;border:1px solid var(--border2);border-radius:7px;background:#fff;color:var(--text);font-size:11px;font-weight:600;cursor:pointer;transition:all .18s ease;user-select:none}
+.sync-btn:hover{border-color:var(--accent);color:var(--accent)}
+.sync-btn.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+.sync-btn.primary:hover{background:#0a75e6}
+.sync-btn.run{background:var(--accent2);border-color:var(--accent);color:var(--accent)}
+.sync-btn.warn{background:var(--warn2);border-color:#f2c48c;color:var(--warn)}
+.sync-btn .chev{transition:transform .18s ease}
+.sync-btn.open .chev{transform:rotate(180deg)}
+.sync-btn .spinner{width:12px;height:12px;border:2px solid rgba(10,132,255,.25);border-top-color:var(--accent);border-radius:50%;animation:spin .8s linear infinite}
+.sync-menu{position:absolute;top:calc(100% + 4px);left:0;min-width:138px;background:#fff;border:1px solid var(--border2);border-radius:8px;box-shadow:0 6px 18px rgba(15,23,42,.14);z-index:31;padding:4px;font-size:11px;animation:popin .12s ease}
+.sync-menu-item{padding:6px 10px;border-radius:6px;cursor:pointer;color:var(--text);white-space:nowrap}
+.sync-menu-item:hover{background:var(--accent2);color:var(--accent)}
+.sync-note{font-size:10px;color:var(--text3)}
+</style>
+<script>
+function toast(msg){var t=document.getElementById('toast');t.textContent=msg;t.classList.add('show');setTimeout(function(){t.classList.remove('show')},1800)}
+function switchView(v){
+  document.querySelectorAll('.view').forEach(function(x){x.classList.remove('on')});
+  document.querySelectorAll('.tab').forEach(function(x){x.classList.toggle('on',x.getAttribute('data-v')===v)});
+  var el=document.getElementById('v-'+v);if(el)el.classList.add('on');
+  window.scrollTo(0,0);
+  if(v==='main')renderMain(); if(v==='settings')renderSettings();
+}
+document.getElementById('tabs').addEventListener('click',function(e){
+  var t=e.target.closest('.tab');if(t)switchView(t.getAttribute('data-v'));
+});
+function next(v){switchView(v)}
+function togglePop(id){var el=document.getElementById(id);if(!el)return;var pop=el.querySelector('.pop');pop.style.display=pop.style.display==='none'?'block':'none'}
+function simMfa(){toast('演示：密码校验通过，触发 Apple 双重验证');document.getElementById('mfaHint').style.display='block';document.getElementById('mfaActions').style.display='block'}
+function simDone(){
+  toast('演示：认证成功（cookie 已落盘）→ 返回引导卡');
+  var b=document.getElementById('guideMainBtn');
+  if(b){b.textContent='开始全量拉取';b.onclick=function(){switchView('main')};b.style.background='var(--ok)'}
+  switchView('guide')
+}
+/* ===== 同步：单按钮状态机，全局单一状态（主界面与设置中心共享，实时同步） =====
+   syncState = { lib, kind, status: 'idle' | 'picked' | 'running' }
+   按钮四态：同步▾（展开菜单）→ 执行·全量/增量 → ⟳执行中·点击取消 → 回到同步 */
+var syncState={lib:null,kind:null,status:'idle'};
+var syncTimer=null;
+var queuedLib=null; // 等待执行的库（演示：一次仅一个库同步）
+
+function libKindLabel(k){return k==='full'?'全量拉取':'增量同步'}
+
+/* 单按钮点击分流：idle=展开/收起菜单；picked(本库)=执行；running(本库)=取消 */
+function mainBtnClick(){
+  if(syncState.status==='idle'){toggleMenu('mainMenu','mainBtn');return}
+  if(syncState.status==='picked'&&syncState.lib==='我的相册'){execSync();return}
+  if(syncState.status==='running'&&syncState.lib==='我的相册'){cancelSync();return}
+  toast('演示：当前有其他任务执行中，不能重复启动');
+}
+function libBtnClick(lib){
+  var menuId=lib==='我的相册'?'sMenu':'tMenu';
+  var btnId=lib==='我的相册'?'sBtn':'tBtn';
+  if(syncState.status==='idle'||(syncState.status==='picked'&&syncState.lib!==lib)){
+    toggleMenu(menuId,btnId);return;
+  }
+  if(syncState.status==='picked'&&syncState.lib===lib){execSync();return}
+  if(syncState.status==='running'&&syncState.lib===lib){cancelSync();return}
+  toast('演示：当前有其他任务执行中，该库进入等待队列');
+}
+function toggleMenu(menuId,btnId){
+  var m=document.getElementById(menuId),b=document.getElementById(btnId);
+  if(!m||!b)return;
+  var open=m.style.display==='none';
+  closeMenus();
+  m.style.display=open?'block':'none';
+  b.classList.toggle('open',open);
+}
+function closeMenus(){
+  ['mainMenu','sMenu','tMenu'].forEach(function(id){var m=document.getElementById(id);if(m)m.style.display='none'});
+  ['mainBtn','sBtn','tBtn'].forEach(function(id){var b=document.getElementById(id);if(b)b.classList.remove('open')});
+}
+/* 选择（关闭菜单，进入 picked） */
+function mainPick(kind){
+  closeMenus();
+  syncState={lib:'我的相册',kind:kind,status:'picked'};
+  renderSync();
+}
+function libPick(lib,kind){
+  closeMenus();
+  if(syncState.status==='running'){
+    if(syncState.lib===lib){toast('演示：该库已有任务执行中');return}
+    queuedLib={lib:lib,kind:kind};
+    renderSync();
+    toast('演示：已加入等待队列，当前任务结束后自动执行');
+    return;
+  }
+  syncState={lib:lib,kind:kind,status:'picked'};
+  renderSync();
+}
+/* 执行 / 取消（同一按钮承载） */
+function execSync(){
+  syncState.status='running';
+  renderSync();
+  toast('演示：'+syncState.lib+' '+libKindLabel(syncState.kind)+' 已启动（再次点击按钮可取消）');
+  clearTimeout(syncTimer);
+  syncTimer=setTimeout(function(){
+    syncState={lib:null,kind:null,status:'idle'};
+    if(queuedLib){var q=queuedLib;queuedLib=null;syncState={lib:q.lib,kind:q.kind,status:'running'};renderSync();toast('演示：'+q.lib+' 等待结束，开始'+libKindLabel(q.kind));clearTimeout(syncTimer);syncTimer=setTimeout(function(){syncState={lib:null,kind:null,status:'idle'};renderSync();toast('演示：'+q.lib+' 同步完成')},2600);return}
+    renderSync();
+    toast('演示：同步完成');
+  },2600);
+}
+function cancelSync(){
+  clearTimeout(syncTimer);
+  syncState={lib:null,kind:null,status:'idle'};
+  queuedLib=null;
+  closeMenus();
+  renderSync();
+  toast('演示：任务已取消');
+}
+/* 渲染：三处按钮（主界面 / 设置中心两库）统一由全局状态驱动 */
+function btnCfg(lib){
+  var st=syncState;
+  if(st.status==='idle')
+    return queuedLib&&queuedLib.lib===lib?{text:'已排队',cls:'warn',spin:false}:{text:'同步',cls:'',spin:false};
+  if(st.status==='picked'&&st.lib===lib)return {text:'执行 · '+libKindLabel(st.kind),cls:'primary',spin:false};
+  if(st.status==='running'){
+    if(st.lib===lib)return {text:libKindLabel(st.kind)+'执行中 · 点击取消',cls:'run',spin:true};
+    return {text:'等待执行（当前：'+st.lib+'）',cls:'warn',spin:false};
+  }
+  return {text:'同步',cls:'',spin:false};
+}
+function setBtn(btnId,spinId,textId,cfg){
+  var b=document.getElementById(btnId);if(!b)return;
+  b.className='sync-btn'+(cfg.cls?' '+cfg.cls:'');
+  b.classList.remove('open');
+  var sp=document.getElementById(spinId);if(sp)sp.style.display=cfg.spin?'inline-block':'none';
+  var tx=document.getElementById(textId);if(tx)tx.textContent=cfg.text;
+}
+function renderSync(){
+  var c1=btnCfg('我的相册'),c2=btnCfg('旅行相册');
+  setBtn('mainBtn','mainSpin','mainBtnText',c1);
+  setBtn('sBtn','sSpin','sBtnText',c1);
+  setBtn('tBtn','tSpin','tBtnText',c2);
+}
+function simDelete(){toast('演示：删除需二次确认（仅移除注册，不删照片文件）')}
+function toggleSw(el){el.classList.toggle('on')}
+function renderMain(){
+  var grid=document.getElementById('thumbGrid');if(!grid||grid.children.length)return;
+  var hues=[205,25,150,40,260,190,10,330,90,215,300,60,180,280,120,225,350,170,45,210,20,145,265,80];
+  var s='';
+  for(var i=0;i<24;i++){var h=hues[i%hues.length];s+='<div style="aspect-ratio:1;border-radius:8px;background:linear-gradient(135deg,hsl('+h+',45%,72%),hsl('+(h+22)+',55%,58%));min-height:0"></div>'}
+  grid.innerHTML=s;
+}
+function renderSettings(){}
+</script>
+</body>
+</html>
