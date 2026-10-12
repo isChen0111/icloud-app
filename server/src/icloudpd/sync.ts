@@ -105,9 +105,12 @@ function spawnOnce(lib: LibraryRow, kind: 'full' | 'inc'): void {
   // 测试限量（ICLOUDPD_RECENT>0 时只处理最近 N 张；正式功能不设置）
   if (config.icloudpdRecent > 0) args.push('--recent', String(config.icloudpdRecent))
 
-  // windowsHide: 默认隐藏命令行窗口；ICLOUDPD_SHOW_WINDOW=1 时显示（调试观察 icloudpd 输出用）
+  // windowsHide: 默认隐藏命令行窗口；ICLOUDPD_SHOW_WINDOW=1 时显示（调试观察 icloudpd 输出用）。
+  // 显示窗口必须同时 detached:true——后端在终端里跑时，不带 detached 的子进程会共享父控制台，
+  // windowsHide:false 也不会弹出独立窗口（Windows CREATE_NEW_CONSOLE 行为）。
   const child = spawn(config.icloudpdExe, args, {
     stdio: ['pipe', 'pipe', 'pipe'],
+    detached: config.icloudpdShowWindow,
     windowsHide: !config.icloudpdShowWindow,
   })
   proc = child
