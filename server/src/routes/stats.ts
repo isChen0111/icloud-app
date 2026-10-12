@@ -203,6 +203,7 @@ export async function registerStatsRoutes(app: FastifyInstance): Promise<void> {
       })(),
       sync: {
         status: syncState.status,
+        libraryId: syncState.libraryId,
         kind: syncState.kind,
         message: syncState.message,
         downloaded: syncState.downloaded,
