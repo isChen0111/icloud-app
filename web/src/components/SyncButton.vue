@@ -10,10 +10,10 @@
 -->
 <template>
   <div class="sync-btn-wrap">
-    <!-- 执行中：点击取消 -->
-    <button v-if="busy" class="sync-btn run" type="button" @click="$emit('cancel')">
+    <!-- 执行中：按钮回归操作本质，只显示「取消」；具体状态由按钮下方状态行展示 -->
+    <button v-if="busy" class="sync-btn cancel" type="button" @click="$emit('cancel')">
       <span class="spinner" />
-      <span>{{ runningLabel }}</span>
+      <span>取消</span>
     </button>
     <div v-if="busy" class="sync-prog" aria-hidden="true" />
 
@@ -102,10 +102,6 @@ const emit = defineEmits<{
 
 const menuOpen = ref(false)
 
-const runningLabel = computed(() =>
-  `${props.kind === 'inc' ? '增量同步' : '全量拉取'}执行中 · 点击取消`,
-)
-
 function choose(kind: 'full' | 'inc'): void {
   menuOpen.value = false
   emit('pick', kind)
@@ -144,7 +140,22 @@ function choose(kind: 'full' | 'inc'): void {
 .sync-btn .chev.open { transform: rotate(180deg); }
 .sync-btn.primary { border-color: #4384ee; background: #4384ee; color: #fff; }
 .sync-btn.primary:hover { background: #3577dc; color: #fff; }
-.sync-btn.run { background: rgb(67 132 238 / 10%); border-color: #4384ee; color: #4384ee; }
+.sync-btn.cancel {
+  min-width: 64px;
+  background: rgb(208 82 69 / 8%);
+  border-color: #d05245;
+  color: #d05245;
+}
+.sync-btn.cancel:hover {
+  background: #d05245;
+  border-color: #d05245;
+  color: #fff;
+  box-shadow: 0 2px 6px rgb(208 82 69 / 20%);
+}
+.sync-btn.cancel .spinner {
+  border-color: rgb(208 82 69 / 25%);
+  border-top-color: #d05245;
+}
 .sync-btn.wait { border-color: var(--border); color: var(--text-2); opacity: 0.8; cursor: default; }
 .sync-btn .spinner {
   display: inline-block;

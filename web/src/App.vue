@@ -156,19 +156,44 @@ const thumbnailPercent = computed(() => {
 
 /* ---------- P0 同步按钮（视觉/状态机统一在共享组件 SyncButton.vue） ---------- */
 const syncRunning = computed(() => stats.value?.sync.status === 'running' || stats.value?.sync.status === 'waiting_retry')
-/** 同步完成/失败后的临时提示（轮询 5s 内自然回落） */
-const syncStatusText = computed(() => {
+
+/** 等待重试倒计时（后端 60 秒后自动重试，前端倒数让用户知道还要等多久） */
+const retryCountdown = ref(0)
+let syncRetryTimer: number | undefined
+watch(() => stats.value?.sync.status, (status, prev) => {
+  if (status === 'waiting_retry' && prev !== 'waiting_retry') {
+    retryCountdown.value = 60
+    syncRetryTimer = window.setInterval(() => {
+      retryCountdown.value = Math.max(0, retryCountdown.value - 1)
+      if (retryCountdown.value <= 0 && syncRetryTimer) window.clearInterval(syncRetryTimer)
+    }, 1000)
+  } else if (status !== 'waiting_retry' && syncRetryTimer) {
+    window.clearInterval(syncRetryTimer)
+    retryCountdown.value = 0
+  }
+})
+
+/** 状态行文案：直接显示后端人话 message，done/cancelled 给本地总结 */
+const syncDisplayText = computed(() => {
   const s = stats.value?.sync
-  if (!s || s.status === 'idle' || s.status === 'running' || s.status === 'waiting_retry') return ''
+  if (!s || s.status === 'idle') return ''
   if (s.status === 'done') return `同步完成，本次下载 ${s.downloaded} 项`
   if (s.status === 'cancelled') return '已取消'
-  if (s.status === 'error') return s.message || '同步失败'
-  return ''
+  if (s.status === 'waiting_retry' && retryCountdown.value > 0) {
+    return `${s.message} · ${retryCountdown.value} 秒后继续`
+  }
+  return s.message || ''
 })
-const syncProgressText = computed(() => {
-  const s = stats.value?.sync
-  if (!s || s.downloaded <= 0) return ''
-  return `已下载 ${s.downloaded} 项`
+/** 状态行颜色：蓝=进行中 黄=等待 绿=完成 红=失败 */
+const syncStatusClass = computed(() => {
+  switch (stats.value?.sync.status) {
+    case 'running': return 'info'
+    case 'waiting_retry': return 'warn'
+    case 'done': return 'ok'
+    case 'error': return 'err'
+    case 'cancelled': return 'muted'
+    default: return ''
+  }
 })
 /** 认证状态文案 */
 const authText = computed(() => {
@@ -470,10 +495,10 @@ onBeforeUnmount(() => {
                   @cancel="cancelSyncRun"
                 />
               </div>
-                <!-- 状态/提示行：按钮下方独立一行（不跟按钮横向挤），认证过期时并列「重新链接」 -->
+                <!-- 状态/提示行：按钮下方独立一行，直接显示后端人话 message，按状态着色 -->
                 <div class="sync-meta">
-                  <span v-if="syncStatusText || syncProgressText || syncError" class="sync-note">
-                    {{ syncError || syncStatusText || syncProgressText }}
+                  <span v-if="syncDisplayText" class="sync-note" :class="syncStatusClass">
+                    {{ syncDisplayText }}
                   </span>
                   <button
                     v-if="authNeedsLink && stats?.library"
@@ -1249,6 +1274,12 @@ onBeforeUnmount(() => {
   white-space: nowrap;
 }
 .sync-meta:empty { display: none; }
+/* 状态行颜色：蓝=进行中 黄=等待重试 绿=完成 红=失败 */
+.sync-note.info { color: #4384ee; }
+.sync-note.warn { color: #d97706; }
+.sync-note.ok { color: #16a34a; }
+.sync-note.err { color: #d05245; }
+.sync-note.muted { color: var(--text-3); }
 
 /* ===== P0 认证过期入口（同步按钮旁，仅 expired 显示） ===== */
 .relink-btn {

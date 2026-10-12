@@ -95,6 +95,14 @@ function thisLibBusy(id: number): boolean {
 function otherBusy(id: number): boolean {
   return globalBusy() && props.stats?.sync.libraryId !== id
 }
+/** 状态行颜色：蓝=进行中 黄=等待 绿=完成 红=失败 */
+function syncStatusClass(status?: string): string {
+  if (status === 'running') return 'info'
+  if (status === 'waiting_retry') return 'warn'
+  if (status === 'done') return 'ok'
+  if (status === 'error') return 'err'
+  return ''
+}
 
 async function loadLibraries(): Promise<void> {
   loading.value = true
@@ -251,9 +259,13 @@ onBeforeUnmount(() => {
                   @run="runSync(lib.id)"
                   @cancel="cancelSyncRun(lib.id)"
                 />
-                <span v-if="syncError && (pick[lib.id] || starting[lib.id] || thisLibBusy(lib.id))" class="sync-note">{{ syncError }}</span>
-                <span v-else-if="props.stats?.sync.status === 'done' && props.stats.sync.libraryId === lib.id" class="sync-note">
+                <span v-if="syncError && (pick[lib.id] || starting[lib.id] || thisLibBusy(lib.id))" class="sync-note err">{{ syncError }}</span>
+                <span v-else-if="thisLibBusy(lib.id)" class="sync-note" :class="syncStatusClass(props.stats!.sync.status)">{{ props.stats!.sync.message }}</span>
+                <span v-else-if="props.stats?.sync.status === 'done' && props.stats.sync.libraryId === lib.id" class="sync-note ok">
                   同步完成，本次下载 {{ props.stats.sync.downloaded }} 项
+                </span>
+                <span v-else-if="otherBusy(lib.id) && pick[lib.id]" class="sync-note warn">
+                  其他库同步中，请等待完成后再执行
                 </span>
               </div>
               <!-- icloudpd 运行日志（该库任务输出，按钮下方独立整行，随 stats 轮询更新） -->
@@ -536,6 +548,10 @@ onBeforeUnmount(() => {
 
 /* 同步按钮本体样式统一在共享组件 SyncButton.vue（scoped），此处仅保留提示行 */
 .sync-note { color: var(--text-2); font-size: 11px; }
+.sync-note.info { color: #4384ee; }
+.sync-note.warn { color: #d97706; }
+.sync-note.ok { color: #16a34a; }
+.sync-note.err { color: #d05245; }
 
 .add-lib-btn {
   display: flex;
