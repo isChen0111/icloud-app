@@ -162,10 +162,10 @@ function handleLine(line: string): void {
   if (syncState.status !== 'running') return
   const text = line.trim()
 
-  // 下载计数：只认单文件下载行 "Downloading F:\...\xxx.JPG"（以盘符路径开头）。
-  // 不能用 /downloaded/i：会把总结句 "All photos and videos have been downloaded" 误计 1 次；
-  // 也不能认 "Downloading 30 original photos..." 总计行。
-  if (/^downloading\s+[a-z]:[\\/]/i.test(text)) {
+  // 下载计数：匹配 "Downloading F:\...\xxx.JPG" 单文件行（行首有时间戳+级别，不能锚定 ^）。
+  // 排除总计行 "Downloading N original photos"（后面跟数字不是盘符，自然不匹配）。
+  // 排除总结句 "All photos and videos have been downloaded"（不含 "Downloading X:\"）。
+  if (/downloading\s+[a-z]:[\\/]/i.test(text)) {
     syncState.downloaded += 1
     syncState.message = `已下载 ${syncState.downloaded} 项`
   } else if (/^downloading/i.test(text)) {
