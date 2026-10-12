@@ -43,7 +43,11 @@ function countAssets(dbPath: string): { photos: number; videos: number } {
         .all() as { type: string; c: number }[]
       const counts: Record<string, number> = {}
       for (const r of rows) counts[r.type] = r.c
-      return { photos: counts.photo ?? 0, videos: counts.video ?? 0 }
+      // 与主页 /api/stats 口径统一：照片数 = 普通照片 + 实况照片（live），视频数不含实况附带视频
+      return {
+        photos: (counts.photo ?? 0) + (counts.live ?? 0),
+        videos: counts.video ?? 0,
+      }
     } finally {
       db.close()
     }
