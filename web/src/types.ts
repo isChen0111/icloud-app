@@ -245,4 +245,6 @@ export interface SyncState {
   downloaded: number
   startedAt: string | null
   finishedAt: string | null
+  /** icloudpd 原始输出（最近 N 行，环形缓冲，供前端「运行日志」展示） */
+  log: string[]
 }

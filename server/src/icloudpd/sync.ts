@@ -24,6 +24,8 @@ import { checkAuthValid } from './auth.js'
 const RETRY_WAIT_MS = 60_000
 const MAX_RETRIES = 5
 const INDEX_NOT_READY = /has not finished indexing/i
+/** icloudpd 原始输出环形缓冲上限（行） */
+const MAX_LOG_LINES = 500
 
 let proc: ChildProcess | null = null
 let retryTimer: NodeJS.Timeout | null = null
@@ -147,8 +149,16 @@ function spawnOnce(lib: LibraryRow, kind: 'full' | 'inc'): void {
   })
 }
 
-/** 单行输出处理：进度计数 / 索引未完成重试 */
+/** 单行输出处理：原始行记入日志缓冲 / 进度计数 / 索引未完成重试 */
 function handleLine(line: string): void {
+  // 原始输出先进日志（任何状态都记：running / waiting_retry / 重试过程都能看到）
+  const raw = line.replace(/\r/g, '').trim()
+  if (raw) {
+    syncState.log.push(raw)
+    if (syncState.log.length > MAX_LOG_LINES) {
+      syncState.log.splice(0, syncState.log.length - MAX_LOG_LINES)
+    }
+  }
   if (syncState.status !== 'running') return
   const text = line.trim()
 
