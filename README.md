@@ -11,8 +11,7 @@ icloud-app/
 │   ├── iCloudPD照片库同步-架构功能设计.html   # P0 照片库拉取/认证/多库：架构与 API 规格
 │   ├── 产品设计稿-照片库拉取同步.html          # P0 UI 设计基准（含 _shots/ 截图）
 │   ├── CONTEXT-项目上下文快照.md
-│   ├── 整体审查报告-2026-10-06.md   # 全项目代码审查：F-01~F-07 问题与修复进度
-│   └── icloud-analyze/              # icloud.com.cn/photos 逆向分析源码材料
+│   └── 整体审查报告-2026-10-06.md   # 全项目代码审查：F-01~F-07 问题与修复进度
 ├── iCloudPhoto/            # 照片库根（多库：iCloudPhoto/lib<id>/，icloudpd 输出，只读）
 ├── server/                 # Fastify 后端与媒体处理流水线
 │   ├── src/
