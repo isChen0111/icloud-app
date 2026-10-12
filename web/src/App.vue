@@ -905,6 +905,7 @@ onBeforeUnmount(() => {
       @open-auth="openAuth"
       @new-library="settingsOpen = false; onboardingOpen = true"
       @library-deleted="onLibraryDeleted"
+      @need-stats-refresh="pollStats"
     />
   </div>
 </template>

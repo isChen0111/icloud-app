@@ -9,7 +9,7 @@
  *   删除类参数不提供）
  * - 关于：应用信息
  *
- * 多库等待执行：其他库有同步任务在执行时，本库点「执行」→ 后端 409 → 进入「等待执行…」
+ * 多库约束：icloudpd 同步全局单任务——某库执行时其他库点「执行」→ 后端 409 → 提示等待已有任务完成（不排队）；
  * 态（disabled），全局任务释放后自动恢复。
  */
 import { onBeforeUnmount, onMounted, ref } from 'vue'
@@ -22,6 +22,8 @@ const emit = defineEmits<{
   'open-auth': [lib: { id: number; name: string; account: string | null }]
   'new-library': []
   'library-deleted': [payload: { id: number; wasActive: boolean }]
+  /** 请求 App 立即刷新 stats（任务启动/取消后即时反馈，与主界面 await pollStats 同效） */
+  'need-stats-refresh': []
 }>()
 
 type Tab = 'libs' | 'about'
@@ -33,8 +35,8 @@ const pick = ref<Record<number, 'full' | 'inc' | null>>({})
 const menuOpen = ref<number | null>(null)
 /** 展开「照片库配置」的库 id（点击库卡片的配置下拉展开/收起） */
 const configOpen = ref<number | null>(null)
-/** 等待执行中的库 id（其他库任务占用，本库点执行被拒） */
-const waiting = ref<number | null>(null)
+/** 任务刚启动、stats 轮询尚未确认前的本地占位态（防止连点/误开菜单） */
+const starting = ref<Record<number, boolean>>({})
 const syncError = ref('')
 /** 删除确认弹窗（仅本地删除；复选框决定是否连同本地照片副本一起删） */
 const deleteTarget = ref<LibraryInfo | null>(null)
@@ -101,11 +103,15 @@ async function loadLibraries(): Promise<void> {
   }
 }
 
-/** 5s 轮询：同步全局任务状态；全局释放后清除等待执行态 */
+/** 5s 轮询：同步全局任务状态；解除本地「启动中」占位（确认执行中→交执行中态；任务已结束→回空闲） */
 function pollStats(): void {
   void loadLibraries()
-  if (waiting.value != null && !globalBusy()) waiting.value = null
-  if (waiting.value != null && props.stats?.sync.libraryId === waiting.value) waiting.value = null
+  for (const idStr of Object.keys(starting.value)) {
+    const id = Number(idStr)
+    if (thisLibBusy(id) || !globalBusy()) {
+      starting.value = { ...starting.value, [id]: false }
+    }
+  }
 }
 
 function toggleMenu(libId: number): void {
@@ -125,15 +131,12 @@ async function runSync(libId: number): Promise<void> {
   try {
     await startSync(libId, kind)
     pick.value = { ...pick.value, [libId]: null }
+    // 启动成功 → 请求 App 立即刷新 stats；本地「启动中」占位兜底（轮询确认 running 后转执行中/取消）
+    starting.value = { ...starting.value, [libId]: true }
+    emit('need-stats-refresh')
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err)
-    syncError.value = msg
-    // 后端 409：其他库任务占用（消息含「其他库」）→ 本库进入「等待执行」；
-    // 本库自身执行中（消息含「本库」）→ 保持执行中态（按钮回到执行中/取消），不标等待
-    if (/已有任务|执行中/.test(msg) && !msg.includes('本库')) {
-      waiting.value = libId
-    }
-    pick.value = { ...pick.value, [libId]: null }
+    // 失败（全局已有 icloudpd 任务占用 / 非激活库等）：保留已选操作并提示，用户可稍后重试
+    syncError.value = err instanceof Error ? err.message : String(err)
   }
 }
 
@@ -141,21 +144,26 @@ async function cancelSyncRun(libId: number): Promise<void> {
   syncError.value = ''
   try {
     await cancelSync(libId)
+    syncError.value = ''
+    emit('need-stats-refresh')
   } catch (err) {
     syncError.value = err instanceof Error ? err.message : String(err)
   }
 }
 
-/** 等待执行态按钮文案 */
+/** 按钮文案（执行中 / 启动中 / 已选待执行 / 空闲），与主界面一致 */
 function libBtnLabel(lib: LibraryInfo): string {
-  if (thisLibBusy(lib.id)) return props.stats?.sync.kind === 'inc' ? '增量同步中…' : '全量拉取中…'
-  if (waiting.value === lib.id) return '等待执行…'
+  if (thisLibBusy(lib.id)) {
+    const kind = props.stats?.sync.kind === 'inc' ? '增量同步' : '全量拉取'
+    return `${kind}执行中 · 点击取消`
+  }
+  if (starting.value[lib.id]) return '启动中…'
   if (pick.value[lib.id]) return `执行 · ${pick.value[lib.id] === 'inc' ? '增量同步' : '全量拉取'}`
   return '同步'
 }
 
 function libBtnDisabled(lib: LibraryInfo): boolean {
-  return waiting.value === lib.id
+  return starting.value[lib.id] === true
 }
 
 onMounted(() => {
@@ -251,7 +259,7 @@ onBeforeUnmount(() => {
               <div class="lib-sync-row">
                 <div class="lib-sync-wrap">
                   <button
-                    v-if="!thisLibBusy(lib.id) && !pick[lib.id] && waiting !== lib.id"
+                    v-if="!thisLibBusy(lib.id) && !pick[lib.id] && !starting[lib.id]"
                     class="sync-btn"
                     :class="{ disabled: otherBusy(lib.id) }"
                     type="button"
@@ -319,7 +327,7 @@ onBeforeUnmount(() => {
                   </button>
                   <div v-if="thisLibBusy(lib.id)" class="sync-prog" aria-hidden="true" />
                 </div>
-                <span v-if="syncError && (pick[lib.id] || waiting === lib.id || thisLibBusy(lib.id))" class="sync-note">{{ syncError }}</span>
+                <span v-if="syncError && (pick[lib.id] || starting[lib.id] || thisLibBusy(lib.id))" class="sync-note">{{ syncError }}</span>
                 <span v-else-if="props.stats?.sync.status === 'done' && props.stats.sync.libraryId === lib.id" class="sync-note">
                   同步完成，本次下载 {{ props.stats.sync.downloaded }} 项
                 </span>

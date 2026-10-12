@@ -105,7 +105,11 @@ function spawnOnce(lib: LibraryRow, kind: 'full' | 'inc'): void {
   // 测试限量（ICLOUDPD_RECENT>0 时只处理最近 N 张；正式功能不设置）
   if (config.icloudpdRecent > 0) args.push('--recent', String(config.icloudpdRecent))
 
-  const child = spawn(config.icloudpdExe, args, { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true })
+  // windowsHide: 默认隐藏命令行窗口；ICLOUDPD_SHOW_WINDOW=1 时显示（调试观察 icloudpd 输出用）
+  const child = spawn(config.icloudpdExe, args, {
+    stdio: ['pipe', 'pipe', 'pipe'],
+    windowsHide: !config.icloudpdShowWindow,
+  })
   proc = child
   syncState.pid = child.pid ?? null
   let buffer = ''

@@ -84,4 +84,10 @@ export const config = {
    * （icloudpd 官方参数：只处理最近 N 张，避免测试时拉全库）。0 = 不限制。
    */
   icloudpdRecent: Number(process.env.ICLOUDPD_RECENT ?? 0),
+
+  /**
+   * icloudpd 进程是否显示命令行窗口（仅调试用）：默认隐藏（windowsHide: true）。
+   * 需要观察 icloudpd 实时输出时设 ICLOUDPD_SHOW_WINDOW=1 重启后端。
+   */
+  icloudpdShowWindow: process.env.ICLOUDPD_SHOW_WINDOW === '1',
 }
