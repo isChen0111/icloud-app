@@ -71,19 +71,20 @@ Set-Location ..\server
 npm run start
 ```
 
-### FFmpeg 下载失败时（备用方案）
+### 第三方二进制下载失败时（备用方案）
 
-如果自动下载失败，可选以下任一方案：
+`server/` 下执行 `npm ci` 时 postinstall 会自动下载安装 FFmpeg（含 libheif）与 icloudpd exe（均从[项目 Release 页面](https://github.com/isChen0111/icloud-app/releases/tag/vendor-binaries)下载；已存在则跳过）。若自动下载失败，可选以下任一方案：
 
-1. 从[项目 Release 页面](https://github.com/isChen0111/icloud-app/releases/tag/vendor-binaries)手动下载 `ffmpeg-full.zip`，放到 `server/vendor/ffmpeg-full.zip`，然后在 `server/` 目录运行：
+1. 手动下载 `ffmpeg-full.zip`（FFmpeg）或 `icloudpd-1.32.3-windows-amd64.exe`（icloudpd），分别放到 `server/vendor/ffmpeg-full.zip` / `server/vendor/icloudpd-1.32.3-windows-amd64.exe`，再在 `server/` 目录运行：
 
    ```powershell
    powershell -ExecutionPolicy Bypass -File scripts/install-ffmpeg-full.ps1
+   powershell -ExecutionPolicy Bypass -File scripts/install-icloudpd.ps1
    ```
 
-2. 或设置环境变量 `FFMPEG_FULL_URL` 指向可访问的文件地址，再从 `server/` 目录重新运行 `npm ci`。
+2. 或设置环境变量 `FFMPEG_FULL_URL` / `ICLOUDPD_URL` 指向可访问的文件地址，再从 `server/` 目录重新运行 `npm ci`。
 
-不要使用 `npm ci --ignore-scripts`，否则会跳过 FFmpeg 自动安装。若已使用该参数，可按上面的步骤手动安装 FFmpeg。
+不要使用 `npm ci --ignore-scripts`，否则会跳过自动安装。若已使用该参数，可按上面的步骤手动安装。
 
 ### 环境变量（.env）
 
@@ -114,7 +115,7 @@ npm run start
 | `npm run dev` | `web/` | 启动前端开发服务 |
 | `npm run build` | `web/` | 构建前端生产版本 |
 | `npm test` | `server/` | 单元测试（node:test，12 用例：缩略图调度器 9 + ffmpeg 超时 2 + 后台挂起上限 1） |
-| `npm run postinstall` | `server/` | 安装/解压 BtbN ffmpeg full（含 libheif） |
+| `npm run postinstall` | `server/` | 安装/解压 BtbN ffmpeg full（含 libheif）+ icloudpd exe |
 
 ## API（开发参考）
 
