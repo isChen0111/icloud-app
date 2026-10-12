@@ -125,7 +125,7 @@ export async function registerLibraryRoutes(app: FastifyInstance): Promise<void>
   /**
    * 更新单库同步参数：untilFound（增量：连续 N 个已存在则停，默认 20）
    *                       recentLimit（下载限量，0=全量不限，默认 0）
-   * 库配置优先级高于 .env ICLOUDPD_RECENT。
+   * 环境变量 ICLOUDPD_RECENT 已废弃，仅保留在 .env.example 作兼容说明。
    */
   app.patch('/api/libraries/:id/config', async (request, reply) => {
     const id = Number((request.params as { id: string }).id)

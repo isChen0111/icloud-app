@@ -104,9 +104,9 @@ function spawnOnce(lib: LibraryRow, kind: 'full' | 'inc'): void {
     '--set-exif-datetime',
   ]
   if (kind === 'inc') args.push('--until-found', String(Math.max(1, lib.until_found || 20)))
-  // 下载限量：库配置 recent_limit（0=全量不限）；环境变量仅作兜底（库配置 > 环境变量）
-  const recent = lib.recent_limit > 0 ? lib.recent_limit : config.icloudpdRecent
-  if (recent > 0) args.push('--recent', String(recent))
+  // 下载限量：仅库配置 recent_limit > 0 时追加 --recent；0 = 全量不限。
+  // 不再读 .env ICLOUDPD_RECENT（已废弃，统一在设置中心按库配置）
+  if (lib.recent_limit > 0) args.push('--recent', String(lib.recent_limit))
 
   const child = spawn(config.icloudpdExe, args, { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true })
   proc = child
