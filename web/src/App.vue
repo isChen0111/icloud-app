@@ -485,7 +485,6 @@ onBeforeUnmount(() => {
                   </button>
                 </div>
               </div>
-            </div>
             <div v-if="stats" class="popover-count-area">
               <div class="popover-counts">
                 <b>{{ numberFormat.format(photoCount) }}</b> 张照片<br>
