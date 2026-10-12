@@ -128,11 +128,12 @@ async function runSync(libId: number): Promise<void> {
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     syncError.value = msg
-    // 后端 409（其他库任务占用）→ 进入等待执行
-    if (/已有任务|执行中/.test(msg)) {
+    // 后端 409：其他库任务占用（消息含「其他库」）→ 本库进入「等待执行」；
+    // 本库自身执行中（消息含「本库」）→ 保持执行中态（按钮回到执行中/取消），不标等待
+    if (/已有任务|执行中/.test(msg) && !msg.includes('本库')) {
       waiting.value = libId
-      pick.value = { ...pick.value, [libId]: null }
     }
+    pick.value = { ...pick.value, [libId]: null }
   }
 }
 
@@ -318,7 +319,7 @@ onBeforeUnmount(() => {
                   </button>
                   <div v-if="thisLibBusy(lib.id)" class="sync-prog" aria-hidden="true" />
                 </div>
-                <span v-if="syncError && (pick[lib.id] || waiting === lib.id)" class="sync-note">{{ syncError }}</span>
+                <span v-if="syncError && (pick[lib.id] || waiting === lib.id || thisLibBusy(lib.id))" class="sync-note">{{ syncError }}</span>
                 <span v-else-if="props.stats?.sync.status === 'done' && props.stats.sync.libraryId === lib.id" class="sync-note">
                   同步完成，本次下载 {{ props.stats.sync.downloaded }} 项
                 </span>
