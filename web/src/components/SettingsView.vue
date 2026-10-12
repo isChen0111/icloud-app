@@ -202,27 +202,27 @@ onBeforeUnmount(() => {
 
             <article v-for="lib in libraries" :key="lib.id" class="lib-card">
               <div class="lib-card-head">
-                <strong class="lib-card-name">{{ lib.name }}</strong>
-                <span v-if="lib.active" class="pill current">当前</span>
-                <span class="pill" :class="lib.authStatus === 'authed' ? 'ok' : 'warn'">
-                  {{ lib.authStatus === 'authed' ? '已链接' : lib.authStatus === 'expired' ? '会话过期' : '未链接' }}
-                </span>
+                <div class="lib-card-title-wrap">
+                  <strong class="lib-card-name">{{ lib.name }}</strong>
+                  <span v-if="lib.active" class="pill current">当前</span>
+                  <span class="pill" :class="lib.authStatus === 'authed' ? 'ok' : 'warn'">
+                    {{ lib.authStatus === 'authed' ? '已链接' : lib.authStatus === 'expired' ? '会话过期' : '未链接' }}
+                  </span>
+                </div>
                 <div class="lib-card-actions">
-                  <!-- 链接入口：从未链接过 → 新建链接（输邮箱）；已链接（含过期） → 刷新链接（固定邮箱直接进入认证） -->
                   <button class="btn-ghost" type="button" @click="emit('open-auth', { id: lib.id, name: lib.name, account: lib.account })">
                     {{ lib.authStatus === 'none' ? '新建链接' : '刷新链接' }}
                   </button>
-                  <!-- 删除：仅删本地注册/缓存；勾选复选框才删本地照片副本。云端 iCloud 原片永不删除 -->
                   <button class="btn-ghost danger" type="button" @click="openDelete(lib)">删除</button>
                 </div>
               </div>
-              <div class="lib-card-count">照片 {{ lib.photos }} · 视频 {{ lib.videos }}</div>
+              <div class="lib-card-count">{{ lib.photos }} 张照片 · {{ lib.videos }} 个视频</div>
               <div class="lib-card-meta">
-                账号：<code>{{ lib.account ?? '—' }}</code><br>
-                目录：<code>{{ lib.libraryRoot ?? '—' }}</code><br>
-                缓存：<code>{{ lib.cacheDir ?? '—' }}</code><br>
-                会话：<code>{{ lib.cookieDir ?? '—' }}</code><br>
-                最近同步：<code>{{ lib.lastSyncAt ? new Date(lib.lastSyncAt).toLocaleString('zh-CN') : '从未' }}</code>
+                <div class="meta-row"><span class="meta-key">账号</span><code>{{ lib.account ?? '—' }}</code></div>
+                <div class="meta-row"><span class="meta-key">目录</span><code>{{ lib.libraryRoot ?? '—' }}</code></div>
+                <div class="meta-row"><span class="meta-key">缓存</span><code>{{ lib.cacheDir ?? '—' }}</code></div>
+                <div class="meta-row"><span class="meta-key">会话</span><code>{{ lib.cookieDir ?? '—' }}</code></div>
+                <div class="meta-row"><span class="meta-key">最近同步</span><code>{{ lib.lastSyncAt ? new Date(lib.lastSyncAt).toLocaleString('zh-CN') : '从未' }}</code></div>
               </div>
 
               <!-- 照片库配置（按官方默认值锁死只读，代码预留；删除类参数不提供） -->
@@ -418,18 +418,21 @@ onBeforeUnmount(() => {
   border-radius: 11px;
   background: var(--bg-panel);
 }
-.lib-card-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.lib-card-name { font-size: 13.5px; }
+.lib-card-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: space-between; }
+.lib-card-title-wrap { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; min-width: 0; }
+.lib-card-name { font-size: 14px; font-weight: 700; }
 .pill {
-  padding: 1px 8px;
-  border-radius: 999px;
+  padding: 1.5px 8px;
+  border-radius: 5px;
   font-size: 10.5px;
   font-weight: 600;
+  line-height: 1.4;
 }
-.pill.current { background: var(--bg-field-hover); color: #4384ee; }
+/* 当前：蓝色实心胶囊，一眼识别激活库 */
+.pill.current { background: #4384ee; color: #fff; }
 .pill.ok { background: rgb(44 154 97 / 12%); color: #2c9a61; }
 .pill.warn { background: rgb(255 159 10 / 14%); color: #a87515; }
-.lib-card-actions { margin-left: auto; display: flex; gap: 6px; }
+.lib-card-actions { display: flex; gap: 6px; flex-shrink: 0; }
 .btn-ghost {
   padding: 4px 10px;
   border: 1px solid var(--border);
@@ -444,23 +447,31 @@ onBeforeUnmount(() => {
 .btn-ghost.danger { color: #d05245; }
 .btn-ghost.danger:hover { background: rgb(208 82 69 / 9%); color: #d05245; }
 .btn-ghost:disabled { opacity: 0.45; cursor: not-allowed; }
+/* 信息列表：label 固定宽灰色，value 主色，扫读对齐 */
 .lib-card-meta {
-  margin-top: 8px;
-  color: var(--text-2);
-  font-size: 11.5px;
-  line-height: 1.8;
+  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
 }
-.lib-card-count {
-  display: inline-block;
-  margin-top: 9px;
-  padding: 2px 9px;
-  border-radius: 999px;
-  background: var(--bg-field);
-  color: var(--text-2);
+.meta-row { display: flex; align-items: baseline; gap: 10px; font-size: 11.5px; }
+.meta-key {
+  flex: 0 0 56px;
+  color: var(--text-3);
   font-size: 11px;
-  font-weight: 600;
 }
-.lib-card-meta code { font-family: ui-monospace, Consolas, monospace; font-size: 11px; word-break: break-all; }
+.meta-row code {
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 11px;
+  color: var(--text-2);
+  word-break: break-all;
+}
+/* 照片/视频数：普通灰色小字，不做胶囊标签 */
+.lib-card-count {
+  margin-top: 4px;
+  color: var(--text-3);
+  font-size: 11.5px;
+}
 
 /* 照片库配置展开区 */
 .config-toggle {
