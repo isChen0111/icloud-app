@@ -15,6 +15,8 @@ export interface SyncTaskState {
   startedAt: string | null
   finishedAt: string | null
   pid: number | null
+  /** icloudpd 原始输出环形缓冲（最新在前，保留 MAX_LOG_LINES 行） */
+  log: string[]
 }
 
 export const syncState: SyncTaskState = {
@@ -26,6 +28,7 @@ export const syncState: SyncTaskState = {
   startedAt: null,
   finishedAt: null,
   pid: null,
+  log: [],
 }
 
 /** 复位为 idle（取消/完成后） */
@@ -37,4 +40,5 @@ export function resetSyncState(): void {
   syncState.startedAt = null
   syncState.finishedAt = null
   syncState.pid = null
+  syncState.log = []
 }

@@ -25,6 +25,7 @@ import { useRoute } from 'vue-router'
 import OnboardingView from './components/OnboardingView.vue'
 import AuthDialog from './components/AuthDialog.vue'
 import SettingsView from './components/SettingsView.vue'
+import SyncButton from './components/SyncButton.vue'
 
 const stats = ref<Stats | null>(null)
 const route = useRoute()
@@ -35,7 +36,6 @@ const onboardingOpen = ref(false)
 const authDialogOpen = ref(false)
 const librariesChecked = ref(false)
 const syncPick = ref<'full' | 'inc' | null>(null)
-const syncMenuOpen = ref(false)
 const syncError = ref('')
 
 /** P0：右上角库切换下拉 + 设置中心 */
@@ -154,36 +154,46 @@ const thumbnailPercent = computed(() => {
   return Math.min(100, Math.floor((thumbnails.processed / thumbnails.total) * 100))
 })
 
-/* ---------- P0 同步按钮四态计算 ---------- */
+/* ---------- P0 同步按钮（视觉/状态机统一在共享组件 SyncButton.vue） ---------- */
 const syncRunning = computed(() => stats.value?.sync.status === 'running' || stats.value?.sync.status === 'waiting_retry')
-/** 按钮当前状态：running（执行中可取消）> picked（已选待执行）> idle（同步▾菜单） */
-const syncBtnState = computed(() => {
-  if (syncRunning.value) return 'running'
-  if (syncPick.value) return 'picked'
-  return 'idle'
-})
-const syncBtnLabel = computed(() => {
-  const state = syncBtnState.value
-  if (state === 'running') {
-    const kind = stats.value?.sync.kind === 'inc' ? '增量同步' : '全量拉取'
-    return `${kind}执行中 · 点击取消`
+
+/** 等待重试倒计时（后端 60 秒后自动重试，前端倒数让用户知道还要等多久） */
+const retryCountdown = ref(0)
+let syncRetryTimer: number | undefined
+watch(() => stats.value?.sync.status, (status, prev) => {
+  if (status === 'waiting_retry' && prev !== 'waiting_retry') {
+    retryCountdown.value = 60
+    syncRetryTimer = window.setInterval(() => {
+      retryCountdown.value = Math.max(0, retryCountdown.value - 1)
+      if (retryCountdown.value <= 0 && syncRetryTimer) window.clearInterval(syncRetryTimer)
+    }, 1000)
+  } else if (status !== 'waiting_retry' && syncRetryTimer) {
+    window.clearInterval(syncRetryTimer)
+    retryCountdown.value = 0
   }
-  if (state === 'picked') return `执行 · ${syncPick.value === 'inc' ? '增量同步' : '全量拉取'}`
-  return '同步'
 })
-/** 同步完成/失败后的临时提示（轮询 5s 内自然回落） */
-const syncStatusText = computed(() => {
+
+/** 状态行文案：直接显示后端人话 message，done/cancelled 给本地总结 */
+const syncDisplayText = computed(() => {
   const s = stats.value?.sync
-  if (!s || s.status === 'idle' || s.status === 'running' || s.status === 'waiting_retry') return ''
+  if (!s || s.status === 'idle') return ''
   if (s.status === 'done') return `同步完成，本次下载 ${s.downloaded} 项`
   if (s.status === 'cancelled') return '已取消'
-  if (s.status === 'error') return s.message || '同步失败'
-  return ''
+  if (s.status === 'waiting_retry' && retryCountdown.value > 0) {
+    return `${s.message} · ${retryCountdown.value} 秒后继续`
+  }
+  return s.message || ''
 })
-const syncProgressText = computed(() => {
-  const s = stats.value?.sync
-  if (!s || s.downloaded <= 0) return ''
-  return `已下载 ${s.downloaded} 项`
+/** 状态行颜色：蓝=进行中 黄=等待 绿=完成 红=失败 */
+const syncStatusClass = computed(() => {
+  switch (stats.value?.sync.status) {
+    case 'running': return 'info'
+    case 'waiting_retry': return 'warn'
+    case 'done': return 'ok'
+    case 'error': return 'err'
+    case 'cancelled': return 'muted'
+    default: return ''
+  }
 })
 /** 认证状态文案 */
 const authText = computed(() => {
@@ -198,10 +208,9 @@ const authNeedsLink = computed(() => {
   return lib != null && lib.authStatus !== 'authed'
 })
 
-/** 选择全量/增量后进入「执行」态 */
+/** 选择全量/增量后进入「执行」态（菜单开合由 SyncButton 内部管理） */
 function pickSync(kind: 'full' | 'inc'): void {
   syncPick.value = kind
-  syncMenuOpen.value = false
   syncError.value = ''
 }
 
@@ -475,72 +484,22 @@ onBeforeUnmount(() => {
                         : '正在连接照片库'
                 }}
               </strong>
-              <!-- P0 同步按钮区（替代原「共检查 N 个媒体文件」副标题行；设计稿单按钮四态） -->
+              <!-- P0 同步按钮区（共享组件 SyncButton：主界面/设置中心视觉与状态机完全一致） -->
               <div style="position: relative; margin-top: 7px">
-                <div class="sync-btn-wrap">
-                  <button
-                    v-if="syncBtnState === 'idle'"
-                    class="sync-btn"
-                    type="button"
-                    :aria-expanded="syncMenuOpen"
-                    @click="syncMenuOpen = !syncMenuOpen"
-                  >
-                    <span class="ico">
-                      <svg viewBox="0 0 24 24" aria-hidden="true">
-                        <path d="M6.5 17a4 4 0 0 1-.8-7.9A5.5 5.5 0 0 1 17 8.6a3.5 3.5 0 0 1-.5 8.4" />
-                        <path d="m9.5 13 2.5 2.5 2.5-2.5M12 15.5v-6" />
-                      </svg>
-                    </span>
-                    <span>同步</span>
-                    <svg class="chev" :class="{ open: syncMenuOpen }" viewBox="0 0 12 12" aria-hidden="true">
-                      <path d="m3 4.5 3 3 3-3" />
-                    </svg>
-                  </button>
-                  <button
-                    v-if="syncBtnState === 'picked'"
-                    class="sync-btn primary"
-                    type="button"
-                    @click="runSync"
-                  >
-                    <span class="ico">
-                      <svg viewBox="0 0 24 24" aria-hidden="true">
-                        <path d="M5 3.2v9.6L13 8 5 3.2Z" />
-                      </svg>
-                    </span>
-                    <span>{{ syncBtnLabel }}</span>
-                  </button>
-                  <button
-                    v-if="syncBtnState === 'running'"
-                    class="sync-btn run"
-                    type="button"
-                    @click="cancelSyncRun"
-                  >
-                    <span class="spinner" />
-                    <span>{{ syncBtnLabel }}</span>
-                  </button>
-                  <div v-if="syncBtnState === 'running'" class="sync-prog" aria-hidden="true" />
-                  <div v-if="syncMenuOpen" class="sync-menu" role="menu">
-                    <button type="button" role="menuitem" @click="pickSync('full')">
-                      <svg viewBox="0 0 24 24" aria-hidden="true">
-                        <path d="M7 18a4.5 4.5 0 0 1-.8-8.9A5.5 5.5 0 0 1 17.4 9.5 3.8 3.8 0 0 1 17 17" />
-                        <path d="M12 12v6" />
-                        <path d="m9 15.5 3 3 3-3" />
-                      </svg>
-                      全量拉取
-                    </button>
-                    <button type="button" role="menuitem" @click="pickSync('inc')">
-                      <svg viewBox="0 0 24 24" aria-hidden="true">
-                        <path d="M12 5v14" />
-                        <path d="M5 12h14" />
-                      </svg>
-                      增量同步
-                    </button>
-                  </div>
-                </div>
-                <!-- 状态/提示行：按钮下方独立一行（不跟按钮横向挤），认证过期时并列「重新链接」 -->
+                <SyncButton
+                  :busy="syncRunning"
+                  :kind="stats?.sync.kind ?? 'full'"
+                  :picked="syncPick"
+                  @pick="pickSync"
+                  @run="runSync"
+                  @cancel="cancelSyncRun"
+                />
+              </div>
+                <!-- 状态/提示行：按钮下方独立一行。颜色信号走前置小圆点，文字保持中性灰 -->
                 <div class="sync-meta">
-                  <span v-if="syncStatusText || syncProgressText || syncError" class="sync-note">
-                    {{ syncError || syncStatusText || syncProgressText }}
+                  <span v-if="syncDisplayText" class="sync-note" :class="syncStatusClass">
+                    <i class="sync-dot" aria-hidden="true" />
+                    {{ syncDisplayText }}
                   </span>
                   <button
                     v-if="authNeedsLink && stats?.library"
@@ -552,7 +511,6 @@ onBeforeUnmount(() => {
                   </button>
                 </div>
               </div>
-            </div>
             <div v-if="stats" class="popover-count-area">
               <div class="popover-counts">
                 <b>{{ numberFormat.format(photoCount) }}</b> 张照片<br>
@@ -905,6 +863,7 @@ onBeforeUnmount(() => {
       @open-auth="openAuth"
       @new-library="settingsOpen = false; onboardingOpen = true"
       @library-deleted="onLibraryDeleted"
+      @need-stats-refresh="pollStats"
     />
   </div>
 </template>
@@ -1296,66 +1255,7 @@ onBeforeUnmount(() => {
 .failure-item-actions { display: flex; flex: 0 0 auto; gap: 6px; }
 .failure-dialog-footer { padding: 11px 20px; border-top: 1px solid var(--border); }
 
-/* ===== P0 同步按钮（popover heading 内，设计稿：全量/增量合并 + 执行/取消合并 + 行内进度条） ===== */
-.sync-btn-wrap { position: relative; display: inline-flex; align-items: center; gap: 7px; min-width: 0; }
-.sync-btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 5px;
-  height: 26px;
-  padding: 0 12px;
-  min-width: 138px;
-  border: 1px solid var(--border);
-  border-radius: 7px;
-  background: var(--bg-panel);
-  color: var(--text-1);
-  font: inherit;
-  font-size: 11px;
-  font-weight: 600;
-  white-space: nowrap;
-  cursor: pointer;
-  user-select: none;
-  box-shadow: 0 1px 2px rgb(15 23 42 / 4%);
-  transition: all 0.18s ease;
-}
-.sync-btn:hover { border-color: #4384ee; color: #4384ee; box-shadow: 0 2px 6px rgb(10 132 255 / 12%); }
-.sync-btn .ico { display: inline-flex; align-items: center; flex-shrink: 0; color: inherit; }
-.sync-btn .ico svg { width: 12px; height: 12px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
-.sync-btn .chev { width: 11px; height: 11px; flex-shrink: 0; transition: transform 0.18s ease; }
-.sync-btn .chev.open { transform: rotate(180deg); }
-.sync-btn.primary { border-color: #4384ee; background: #4384ee; color: #fff; }
-.sync-btn.primary:hover { background: #3577dc; color: #fff; }
-.sync-btn.run { background: rgb(67 132 238 / 10%); border-color: #4384ee; color: #4384ee; }
-.sync-btn .spinner {
-  display: inline-block;
-  width: 12px;
-  height: 12px;
-  flex-shrink: 0;
-  border: 2px solid rgb(67 132 238 / 25%);
-  border-top-color: #4384ee;
-  border-radius: 50%;
-  animation: sync-spin 0.8s linear infinite;
-}
-@keyframes sync-spin { to { transform: rotate(360deg); } }
-/* 执行中行内进度条（设计稿：按钮下方 2px 渐变推进） */
-.sync-prog {
-  position: absolute;
-  left: 0;
-  top: calc(100% + 3px);
-  height: 2px;
-  width: 138px;
-  border-radius: 2px;
-  background: linear-gradient(90deg, #4384ee, #7cc2ff);
-  animation: sync-prog-slide 2.6s linear infinite;
-  z-index: 32;
-  pointer-events: none;
-}
-@keyframes sync-prog-slide {
-  0% { transform: scaleX(0); transform-origin: left; }
-  55% { transform: scaleX(0.9); transform-origin: left; }
-  100% { transform: scaleX(0.9) translateX(30px); transform-origin: left; }
-}
+/* ===== P0 同步按钮：按钮本体样式已移入共享组件 SyncButton.vue；此处仅保留状态提示行 ===== */
 /* 状态/提示行：按钮下方独立一行，不再跟按钮横向挤 */
 .sync-meta {
   display: flex;
@@ -1375,40 +1275,32 @@ onBeforeUnmount(() => {
   white-space: nowrap;
 }
 .sync-meta:empty { display: none; }
-.sync-menu {
-  position: absolute;
-  top: calc(100% + 6px);
-  left: 0;
-  min-width: 138px;
-  background: var(--bg-panel);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  box-shadow: 0 6px 18px rgb(15 23 42 / 14%);
-  z-index: 31;
-  padding: 4px;
-  font-size: 11px;
-  animation: sync-pop 0.12s ease;
+/* 状态行：文字中性灰，颜色信号走前置小圆点 */
+.sync-note.info { color: var(--text-2); }
+.sync-note.warn { color: var(--text-2); }
+.sync-note.ok { color: var(--text-2); }
+.sync-note.err { color: var(--text-2); }
+.sync-note.muted { color: var(--text-3); }
+.sync-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-right: 6px;
+  border-radius: 50%;
+  background: var(--text-3);
+  vertical-align: 1px;
 }
-@keyframes sync-pop { from { opacity: 0; transform: translateY(-3px); } to { opacity: 1; transform: none; } }
-.sync-menu button {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  width: 100%;
-  padding: 6px 10px;
-  border: 0;
-  border-radius: 6px;
-  background: transparent;
-  color: var(--text-1);
-  font: inherit;
-  font-size: 11px;
-  text-align: left;
-  white-space: nowrap;
-  cursor: pointer;
+.sync-note.info .sync-dot { background: #4384ee; }
+.sync-note.warn .sync-dot { background: #d97706; }
+.sync-note.ok .sync-dot { background: #16a34a; }
+.sync-note.err .sync-dot { background: #d05245; }
+/* 进行中/等待时圆点 pulse 动画 */
+.sync-note.info .sync-dot,
+.sync-note.warn .sync-dot { animation: sync-dot-pulse 1.6s ease-in-out infinite; }
+@keyframes sync-dot-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.4; transform: scale(0.8); }
 }
-.sync-menu button:hover { background: rgb(67 132 238 / 9%); color: #4384ee; }
-.sync-menu button svg { width: 12px; height: 12px; flex-shrink: 0; fill: none; stroke: var(--text-3); stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
-.sync-menu button:hover svg { stroke: #4384ee; }
 
 /* ===== P0 认证过期入口（同步按钮旁，仅 expired 显示） ===== */
 .relink-btn {

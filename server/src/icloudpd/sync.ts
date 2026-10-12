@@ -24,6 +24,8 @@ import { checkAuthValid } from './auth.js'
 const RETRY_WAIT_MS = 60_000
 const MAX_RETRIES = 5
 const INDEX_NOT_READY = /has not finished indexing/i
+/** icloudpd 原始输出环形缓冲上限（行） */
+const MAX_LOG_LINES = 500
 
 let proc: ChildProcess | null = null
 let retryTimer: NodeJS.Timeout | null = null
@@ -101,9 +103,10 @@ function spawnOnce(lib: LibraryRow, kind: 'full' | 'inc'): void {
     '--cookie-directory', lib.cookie_dir,
     '--set-exif-datetime',
   ]
-  if (kind === 'inc') args.push('--until-found', '20')
-  // 测试限量（ICLOUDPD_RECENT>0 时只处理最近 N 张；正式功能不设置）
-  if (config.icloudpdRecent > 0) args.push('--recent', String(config.icloudpdRecent))
+  if (kind === 'inc') args.push('--until-found', String(Math.max(1, lib.until_found || 20)))
+  // 下载限量：仅库配置 recent_limit > 0 时追加 --recent；0 = 全量不限。
+  // 不再读 .env ICLOUDPD_RECENT（已废弃，统一在设置中心按库配置）
+  if (lib.recent_limit > 0) args.push('--recent', String(lib.recent_limit))
 
   const child = spawn(config.icloudpdExe, args, { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true })
   proc = child
@@ -147,18 +150,27 @@ function spawnOnce(lib: LibraryRow, kind: 'full' | 'inc'): void {
   })
 }
 
-/** 单行输出处理：进度计数 / 索引未完成重试 */
+/** 单行输出处理：原始行记入日志缓冲 / 进度计数 / 索引未完成重试 */
 function handleLine(line: string): void {
+  // 原始输出先进日志（任何状态都记：running / waiting_retry / 重试过程都能看到）
+  const raw = line.replace(/\r/g, '').trim()
+  if (raw) {
+    syncState.log.push(raw)
+    if (syncState.log.length > MAX_LOG_LINES) {
+      syncState.log.splice(0, syncState.log.length - MAX_LOG_LINES)
+    }
+  }
   if (syncState.status !== 'running') return
   const text = line.trim()
 
-  // 下载中 / 已下载 → 计数（可能出现在同一行）
-  if (/downloading/i.test(text)) {
-    syncState.message = '正在下载…'
-  }
-  if (/downloaded/i.test(text) && !/skip/i.test(text)) {
+  // 下载计数：匹配 "Downloading F:\...\xxx.JPG" 单文件行（行首有时间戳+级别，不能锚定 ^）。
+  // 排除总计行 "Downloading N original photos"（后面跟数字不是盘符，自然不匹配）。
+  // 排除总结句 "All photos and videos have been downloaded"（不含 "Downloading X:\"）。
+  if (/downloading\s+[a-z]:[\\/]/i.test(text)) {
     syncState.downloaded += 1
     syncState.message = `已下载 ${syncState.downloaded} 项`
+  } else if (/^downloading/i.test(text)) {
+    syncState.message = '正在下载…'
   }
 
   // Apple 端索引未完成：等待后自动重试（最多 5 次）

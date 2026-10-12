@@ -18,6 +18,7 @@ import {
   createLibrary,
   setActiveLibrary,
   deleteLibrary,
+  updateLibraryConfig,
   validateLibraryName,
   type LibraryRow,
 } from '../db/libraries.js'
@@ -69,6 +70,8 @@ function toPublic(row: LibraryRow) {
     libraryRoot: row.library_root,
     cacheDir: row.cache_dir,
     cookieDir: row.cookie_dir,
+    untilFound: row.until_found,
+    recentLimit: row.recent_limit,
   }
 }
 
@@ -117,6 +120,25 @@ export async function registerLibraryRoutes(app: FastifyInstance): Promise<void>
     }
     switchToLibrary(id)
     return reply.send({ ok: true, activeId: id })
+  })
+
+  /**
+   * 更新单库同步参数：untilFound（增量：连续 N 个已存在则停，默认 20）
+   *                       recentLimit（下载限量，0=全量不限，默认 0）
+   * 环境变量 ICLOUDPD_RECENT 已废弃，仅保留在 .env.example 作兼容说明。
+   */
+  app.patch('/api/libraries/:id/config', async (request, reply) => {
+    const id = Number((request.params as { id: string }).id)
+    if (!Number.isInteger(id) || id <= 0) return reply.code(400).send({ error: 'invalid id' })
+    const target = getLibraryById(id)
+    if (!target) return reply.code(404).send({ error: '库不存在' })
+    const body = (request.body ?? {}) as { untilFound?: number; recentLimit?: number }
+    updateLibraryConfig(id, {
+      untilFound: body.untilFound,
+      recentLimit: body.recentLimit,
+    })
+    const updated = getLibraryById(id)!
+    return reply.send({ ok: true, config: { untilFound: updated.until_found, recentLimit: updated.recent_limit } })
   })
 
   /**

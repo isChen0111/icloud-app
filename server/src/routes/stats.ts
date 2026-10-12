@@ -203,11 +203,14 @@ export async function registerStatsRoutes(app: FastifyInstance): Promise<void> {
       })(),
       sync: {
         status: syncState.status,
+        libraryId: syncState.libraryId,
         kind: syncState.kind,
         message: syncState.message,
         downloaded: syncState.downloaded,
         startedAt: syncState.startedAt,
         finishedAt: syncState.finishedAt,
+        // 日志截断返回最近 200 行（stats 5s 轮询，控制响应体积）
+        log: syncState.log.slice(-200),
       },
     })
   })

@@ -221,6 +221,10 @@ export interface LibraryInfo {
   photos: number
   /** 库内视频数量 */
   videos: number
+  /** 增量同步：连续 N 个已存在则停（默认 20） */
+  untilFound: number
+  /** 下载限量：0=全量不限 */
+  recentLimit: number
 }
 
 export interface LibrariesResult {
@@ -245,4 +249,6 @@ export interface SyncState {
   downloaded: number
   startedAt: string | null
   finishedAt: string | null
+  /** icloudpd 原始输出（最近 N 行，环形缓冲，供前端「运行日志」展示） */
+  log: string[]
 }
