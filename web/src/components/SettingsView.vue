@@ -15,6 +15,7 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { fetchLibraries, startSync, cancelSync, deleteLibrary } from '../api/client'
 import type { LibraryInfo, Stats } from '../types'
+import SyncButton from './SyncButton.vue'
 
 const props = defineProps<{ stats: Stats | null }>()
 const emit = defineEmits<{
@@ -32,7 +33,6 @@ const libraries = ref<LibraryInfo[]>([])
 const loading = ref(false)
 /** 每库已选待执行：{ [libId]: 'full'|'inc' } */
 const pick = ref<Record<number, 'full' | 'inc' | null>>({})
-const menuOpen = ref<number | null>(null)
 /** 展开「照片库配置」的库 id（点击库卡片的配置下拉展开/收起） */
 const configOpen = ref<number | null>(null)
 /** 展开「运行日志」的库 id（点击折叠展开/收起） */
@@ -118,13 +118,8 @@ function pollStats(): void {
   }
 }
 
-function toggleMenu(libId: number): void {
-  menuOpen.value = menuOpen.value === libId ? null : libId
-}
-
 function pickSync(libId: number, kind: 'full' | 'inc'): void {
   pick.value = { ...pick.value, [libId]: kind }
-  menuOpen.value = null
   syncError.value = ''
 }
 
@@ -153,21 +148,6 @@ async function cancelSyncRun(libId: number): Promise<void> {
   } catch (err) {
     syncError.value = err instanceof Error ? err.message : String(err)
   }
-}
-
-/** 按钮文案（执行中 / 启动中 / 已选待执行 / 空闲），与主界面一致 */
-function libBtnLabel(lib: LibraryInfo): string {
-  if (thisLibBusy(lib.id)) {
-    const kind = props.stats?.sync.kind === 'inc' ? '增量同步' : '全量拉取'
-    return `${kind}执行中 · 点击取消`
-  }
-  if (starting.value[lib.id]) return '启动中…'
-  if (pick.value[lib.id]) return `执行 · ${pick.value[lib.id] === 'inc' ? '增量同步' : '全量拉取'}`
-  return '同步'
-}
-
-function libBtnDisabled(lib: LibraryInfo): boolean {
-  return starting.value[lib.id] === true
 }
 
 onMounted(() => {
@@ -257,99 +237,39 @@ onBeforeUnmount(() => {
                 <div class="config-row"><span class="config-key">增量同步</span><code>--until-found 20</code></div>
                 <div class="config-row"><span class="config-key">会话</span><code>cookie 存于各库 cookies 目录，过期后在主界面/本页重新链接</code></div>
                 <div class="config-note">后续需要自定义参数时，再按官方实际可用命令逐项开放（先出方案确认）。</div>
-                <!-- icloudpd 运行日志（仅展示该库自己任务的输出，随 stats 轮询更新） -->
-                <div v-if="props.stats?.sync.libraryId === lib.id && syncLogLines.length" class="lib-log">
-                  <button
-                    type="button"
-                    class="lib-log-toggle"
-                    :aria-expanded="logOpen === lib.id"
-                    @click="logOpen = logOpen === lib.id ? null : lib.id"
-                  >
-                    <span>运行日志（{{ syncLogLines.length }} 行）</span>
-                    <svg class="chev" :class="{ open: logOpen === lib.id }" viewBox="0 0 12 12" aria-hidden="true">
-                      <path d="m3 4.5 3 3 3-3" />
-                    </svg>
-                  </button>
-                  <pre v-if="logOpen === lib.id" class="lib-log-box">{{ syncLogLines.join('\n') }}</pre>
-                </div>
               </div>
 
-              <!-- 每库同步：与主界面同款单按钮（全量/增量合并，执行/取消合并），全局单任务 -->
+              <!-- 每库同步：共享组件 SyncButton（与主界面视觉/状态机完全一致），全局单任务 -->
               <div class="lib-sync-row">
-                <div class="lib-sync-wrap">
-                  <button
-                    v-if="!thisLibBusy(lib.id) && !pick[lib.id] && !starting[lib.id]"
-                    class="sync-btn"
-                    :class="{ disabled: otherBusy(lib.id) }"
-                    type="button"
-                    :aria-expanded="menuOpen === lib.id"
-                    :disabled="libBtnDisabled(lib)"
-                    @click="toggleMenu(lib.id)"
-                  >
-                    <span class="ico">
-                      <svg viewBox="0 0 24 24" aria-hidden="true">
-                        <path d="M6.5 17a4 4 0 0 1-.8-7.9A5.5 5.5 0 0 1 17 8.6a3.5 3.5 0 0 1-.5 8.4" />
-                        <path d="m9.5 13 2.5 2.5 2.5-2.5M12 15.5v-6" />
-                      </svg>
-                    </span>
-                    <span>{{ libBtnLabel(lib) }}</span>
-                    <svg class="chev" :class="{ open: menuOpen === lib.id }" viewBox="0 0 12 12" aria-hidden="true">
-                      <path d="m3 4.5 3 3 3-3" />
-                    </svg>
-                    <div v-if="menuOpen === lib.id" class="sync-menu" role="menu">
-                      <button type="button" role="menuitem" @click="pickSync(lib.id, 'full')">
-                        <svg viewBox="0 0 24 24" aria-hidden="true">
-                          <path d="M7 18a4.5 4.5 0 0 1-.8-8.9A5.5 5.5 0 0 1 17.4 9.5 3.8 3.8 0 0 1 17 17" />
-                          <path d="M12 12v6" />
-                          <path d="m9 15.5 3 3 3-3" />
-                        </svg>
-                        全量拉取
-                      </button>
-                      <button type="button" role="menuitem" @click="pickSync(lib.id, 'inc')">
-                        <svg viewBox="0 0 24 24" aria-hidden="true">
-                          <path d="M12 5v14" />
-                          <path d="M5 12h14" />
-                        </svg>
-                        增量同步
-                      </button>
-                    </div>
-                  </button>
-                  <button
-                    v-else-if="pick[lib.id]"
-                    class="sync-btn primary"
-                    type="button"
-                    :disabled="libBtnDisabled(lib)"
-                    @click="runSync(lib.id)"
-                  >
-                    <span class="ico">
-                      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 3.2v9.6L13 8 5 3.2Z" /></svg>
-                    </span>
-                    <span>{{ libBtnLabel(lib) }}</span>
-                  </button>
-                  <button
-                    v-else-if="thisLibBusy(lib.id)"
-                    class="sync-btn run"
-                    type="button"
-                    @click="cancelSyncRun(lib.id)"
-                  >
-                    <span class="spinner" />
-                    <span>{{ libBtnLabel(lib) }}</span>
-                  </button>
-                  <button
-                    v-else
-                    class="sync-btn wait"
-                    type="button"
-                    disabled
-                  >
-                    <span class="spinner" />
-                    <span>{{ libBtnLabel(lib) }}</span>
-                  </button>
-                  <div v-if="thisLibBusy(lib.id)" class="sync-prog" aria-hidden="true" />
-                </div>
+                <SyncButton
+                  :busy="thisLibBusy(lib.id)"
+                  :kind="props.stats?.sync.kind ?? 'full'"
+                  :starting="!!starting[lib.id]"
+                  :picked="pick[lib.id] ?? null"
+                  :disabled="otherBusy(lib.id)"
+                  @pick="(k) => pickSync(lib.id, k)"
+                  @run="runSync(lib.id)"
+                  @cancel="cancelSyncRun(lib.id)"
+                />
                 <span v-if="syncError && (pick[lib.id] || starting[lib.id] || thisLibBusy(lib.id))" class="sync-note">{{ syncError }}</span>
                 <span v-else-if="props.stats?.sync.status === 'done' && props.stats.sync.libraryId === lib.id" class="sync-note">
                   同步完成，本次下载 {{ props.stats.sync.downloaded }} 项
                 </span>
+              </div>
+              <!-- icloudpd 运行日志（该库任务输出，按钮下方独立整行，随 stats 轮询更新） -->
+              <div v-if="props.stats?.sync.libraryId === lib.id && syncLogLines.length" class="lib-log">
+                <button
+                  type="button"
+                  class="lib-log-toggle"
+                  :aria-expanded="logOpen === lib.id"
+                  @click="logOpen = logOpen === lib.id ? null : lib.id"
+                >
+                  <span>运行日志（{{ syncLogLines.length }} 行）</span>
+                  <svg class="chev" :class="{ open: logOpen === lib.id }" viewBox="0 0 12 12" aria-hidden="true">
+                    <path d="m3 4.5 3 3 3-3" />
+                  </svg>
+                </button>
+                <pre v-if="logOpen === lib.id" class="lib-log-box">{{ syncLogLines.join('\n') }}</pre>
               </div>
             </article>
 
@@ -571,9 +491,8 @@ onBeforeUnmount(() => {
   padding-top: 10px;
   border-top: 1px dashed var(--border);
 }
-.lib-sync-wrap { position: relative; display: inline-flex; }
-/* 运行日志折叠面板 */
-.lib-log { margin-top: 10px; border-top: 1px dashed var(--border); padding-top: 8px; }
+/* 运行日志折叠面板（同步按钮行下方独立整行） */
+.lib-log { margin: 8px 0 2px; }
 .lib-log-toggle {
   display: flex;
   align-items: center;
@@ -604,101 +523,8 @@ onBeforeUnmount(() => {
   word-break: break-all;
 }
 
-/* 与主界面同步按钮同款样式 */
-.sync-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  padding: 5px 10px;
-  border: 1px solid var(--border);
-  border-radius: 7px;
-  background: var(--bg-field);
-  color: var(--text-1);
-  font: inherit;
-  font-size: 12px;
-  white-space: nowrap;
-  cursor: pointer;
-  transition: background 0.15s;
-}
-.sync-btn:hover { background: var(--bg-field-hover); }
-.sync-btn.primary { border-color: #4384ee; background: #4384ee; color: #fff; }
-.sync-btn.run { border-color: #d05245; color: #d05245; }
-.sync-btn.wait { border-color: var(--border); color: var(--text-2); opacity: 0.8; }
-.sync-btn.disabled { opacity: 0.6; cursor: not-allowed; }
-.sync-btn .ico { display: inline-flex; }
-.sync-btn .ico svg { width: 13px; height: 13px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
-.sync-btn .chev {
-  width: 10px;
-  height: 10px;
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 2;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-  transition: transform 0.15s;
-}
-.sync-btn .chev.open { transform: rotate(180deg); }
-.sync-menu {
-  position: absolute;
-  top: calc(100% + 4px);
-  left: 0;
-  z-index: 50;
-  min-width: 150px;
-  padding: 6px;
-  border: 1px solid var(--border);
-  border-radius: 9px;
-  background: var(--bg-panel);
-  box-shadow: 0 10px 28px rgb(0 0 0 / 15%);
-}
-.sync-menu button {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  width: 100%;
-  padding: 7px 9px;
-  border: 0;
-  border-radius: 6px;
-  background: transparent;
-  color: var(--text-1);
-  font: inherit;
-  font-size: 12px;
-  text-align: left;
-  cursor: pointer;
-}
-.sync-menu button:hover { background: rgb(67 132 238 / 9%); color: #4384ee; }
-.sync-menu button svg { width: 12px; height: 12px; fill: none; stroke: var(--text-3); stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
-.sync-menu button:hover svg { stroke: #4384ee; }
-.sync-prog {
-  position: absolute;
-  left: 6px;
-  right: 6px;
-  bottom: -1px;
-  height: 2px;
-  border-radius: 2px;
-  background: rgb(67 132 238 / 25%);
-  overflow: hidden;
-}
-.sync-prog::after {
-  content: '';
-  display: block;
-  width: 40%;
-  height: 100%;
-  background: #4384ee;
-  animation: lib-prog 1.1s ease-in-out infinite;
-}
-@keyframes lib-prog { from { transform: translateX(-100%); } to { transform: translateX(300%); } }
+/* 同步按钮本体样式统一在共享组件 SyncButton.vue（scoped），此处仅保留提示行 */
 .sync-note { color: var(--text-2); font-size: 11px; }
-.spinner {
-  display: inline-block;
-  width: 12px;
-  height: 12px;
-  border: 2px solid color-mix(in srgb, currentColor 22%, transparent);
-  border-top-color: currentColor;
-  border-radius: 50%;
-  animation: lib-spin 0.8s linear infinite;
-  flex: 0 0 auto;
-}
-@keyframes lib-spin { to { transform: rotate(360deg); } }
 
 .add-lib-btn {
   display: flex;
