@@ -583,28 +583,30 @@ onBeforeUnmount(() => {
 .config-edit-row {
   display: flex;
   flex-wrap: wrap;
-  align-items: flex-end;
+  align-items: flex-start;
   gap: 14px;
   padding-bottom: 10px;
   margin-bottom: 8px;
   border-bottom: 1px solid var(--border);
 }
 .config-edit-field { display: flex; flex-direction: column; gap: 4px; min-width: 140px; }
-.config-edit-label { font-size: 11px; color: var(--text-3); font-weight: 600; }
+.config-edit-label { font-size: 11px; color: var(--text-3); font-weight: 600; line-height: 1.4; }
 .config-input {
   width: 110px;
-  padding: 5px 9px;
+  height: 28px;
+  padding: 0 9px;
   border: 1px solid var(--border);
   border-radius: 7px;
   background: var(--bg-panel);
   color: var(--text-1);
   font: inherit;
   font-size: 12px;
+  box-sizing: border-box;
 }
 .config-input:focus { outline: none; border-color: #4384ee; box-shadow: 0 0 0 2px rgb(67 132 238 / 15%); }
-.config-hint { margin: 0; font-size: 10.5px; color: var(--text-3); line-height: 1.4; max-width: 220px; }
-.config-edit-actions { padding-bottom: 1px; }
-.btn-ghost.primary { border-color: #4384ee; color: #4384ee; }
+.config-hint { margin: 0; font-size: 10.5px; color: var(--text-3); line-height: 1.4; max-width: 220px; min-height: 2.8em; }
+.config-edit-actions { align-self: flex-end; padding-bottom: 1px; }
+.btn-ghost.primary { height: 28px; padding: 0 14px; border-color: #4384ee; color: #4384ee; }
 .btn-ghost.primary:hover { background: rgb(67 132 238 / 10%); }
 .btn-ghost.primary:disabled { opacity: 0.6; cursor: default; }
 /* 只读参数区 */
