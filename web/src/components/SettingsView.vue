@@ -259,13 +259,13 @@ onBeforeUnmount(() => {
                   @run="runSync(lib.id)"
                   @cancel="cancelSyncRun(lib.id)"
                 />
-                <span v-if="syncError && (pick[lib.id] || starting[lib.id] || thisLibBusy(lib.id))" class="sync-note err">{{ syncError }}</span>
-                <span v-else-if="thisLibBusy(lib.id)" class="sync-note" :class="syncStatusClass(props.stats!.sync.status)">{{ props.stats!.sync.message }}</span>
+                <span v-if="syncError && (pick[lib.id] || starting[lib.id] || thisLibBusy(lib.id))" class="sync-note err"><i class="sync-dot" aria-hidden="true" />{{ syncError }}</span>
+                <span v-else-if="thisLibBusy(lib.id)" class="sync-note" :class="syncStatusClass(props.stats!.sync.status)"><i class="sync-dot" aria-hidden="true" />{{ props.stats!.sync.message }}</span>
                 <span v-else-if="props.stats?.sync.status === 'done' && props.stats.sync.libraryId === lib.id" class="sync-note ok">
-                  同步完成，本次下载 {{ props.stats.sync.downloaded }} 项
+                  <i class="sync-dot" aria-hidden="true" />同步完成，本次下载 {{ props.stats.sync.downloaded }} 项
                 </span>
                 <span v-else-if="otherBusy(lib.id) && pick[lib.id]" class="sync-note warn">
-                  其他库同步中，请等待完成后再执行
+                  <i class="sync-dot" aria-hidden="true" />其他库同步中，请等待完成后再执行
                 </span>
               </div>
               <!-- icloudpd 运行日志（该库任务输出，按钮下方独立整行，随 stats 轮询更新） -->
@@ -547,11 +547,27 @@ onBeforeUnmount(() => {
 }
 
 /* 同步按钮本体样式统一在共享组件 SyncButton.vue（scoped），此处仅保留提示行 */
-.sync-note { color: var(--text-2); font-size: 11px; }
-.sync-note.info { color: #4384ee; }
-.sync-note.warn { color: #d97706; }
-.sync-note.ok { color: #16a34a; }
-.sync-note.err { color: #d05245; }
+.sync-note { color: var(--text-2); font-size: 11px; display: inline-flex; align-items: center; }
+.sync-note.err { color: var(--text-2); }
+.sync-note.ok { color: var(--text-2); }
+.sync-note.warn { color: var(--text-2); }
+.sync-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-right: 6px;
+  border-radius: 50%;
+  background: var(--text-3);
+  flex-shrink: 0;
+}
+.sync-note.info .sync-dot { background: #4384ee; }
+.sync-note.warn .sync-dot { background: #d97706; animation: sv-dot-pulse 1.6s ease-in-out infinite; }
+.sync-note.ok .sync-dot { background: #16a34a; }
+.sync-note.err .sync-dot { background: #d05245; }
+@keyframes sv-dot-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.4; transform: scale(0.8); }
+}
 
 .add-lib-btn {
   display: flex;

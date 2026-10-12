@@ -495,9 +495,10 @@ onBeforeUnmount(() => {
                   @cancel="cancelSyncRun"
                 />
               </div>
-                <!-- 状态/提示行：按钮下方独立一行，直接显示后端人话 message，按状态着色 -->
+                <!-- 状态/提示行：按钮下方独立一行。颜色信号走前置小圆点，文字保持中性灰 -->
                 <div class="sync-meta">
                   <span v-if="syncDisplayText" class="sync-note" :class="syncStatusClass">
+                    <i class="sync-dot" aria-hidden="true" />
                     {{ syncDisplayText }}
                   </span>
                   <button
@@ -1274,12 +1275,32 @@ onBeforeUnmount(() => {
   white-space: nowrap;
 }
 .sync-meta:empty { display: none; }
-/* 状态行颜色：蓝=进行中 黄=等待重试 绿=完成 红=失败 */
-.sync-note.info { color: #4384ee; }
-.sync-note.warn { color: #d97706; }
-.sync-note.ok { color: #16a34a; }
-.sync-note.err { color: #d05245; }
+/* 状态行：文字中性灰，颜色信号走前置小圆点 */
+.sync-note.info { color: var(--text-2); }
+.sync-note.warn { color: var(--text-2); }
+.sync-note.ok { color: var(--text-2); }
+.sync-note.err { color: var(--text-2); }
 .sync-note.muted { color: var(--text-3); }
+.sync-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-right: 6px;
+  border-radius: 50%;
+  background: var(--text-3);
+  vertical-align: 1px;
+}
+.sync-note.info .sync-dot { background: #4384ee; }
+.sync-note.warn .sync-dot { background: #d97706; }
+.sync-note.ok .sync-dot { background: #16a34a; }
+.sync-note.err .sync-dot { background: #d05245; }
+/* 进行中/等待时圆点 pulse 动画 */
+.sync-note.info .sync-dot,
+.sync-note.warn .sync-dot { animation: sync-dot-pulse 1.6s ease-in-out infinite; }
+@keyframes sync-dot-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.4; transform: scale(0.8); }
+}
 
 /* ===== P0 认证过期入口（同步按钮旁，仅 expired 显示） ===== */
 .relink-btn {
