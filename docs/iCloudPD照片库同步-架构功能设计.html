@@ -163,7 +163,7 @@
 <p>沿用现有 <code>runProcess</code> 模式（<code>server/src/ffmpeg.ts</code>）的经验：后端 <code>spawn</code> icloudpd exe，参数走数组（不经 shell，无注入面），子进程输出经管道回传，配合超时 kill 防卡死。核心原则：</p>
 <ul>
   <li><b>黑盒调用</b>：不把 icloudpd 源码/逻辑并入项目，只解析它的 stdout/退出码判断结果——降低官方项目维护波动的影响。</li>
-  <li><b>可执行文件定位</b>：配置 <code>ICLOUDPD_PATH</code>（默认 <code>vendor/icloudpd/icloudpd.exe</code>），与 ffmpeg 同一套路径解析策略；首次使用引导下载 exe。</li>
+  <li><b>可执行文件定位</b>：配置 <code>ICLOUDPD_EXE</code>（默认 <code>server/vendor/icloudpd-1.32.3-windows-amd64.exe</code>），与 ffmpeg 同一套路径解析策略；<b>自动安装</b>：postinstall 串联 <code>scripts/install-icloudpd.ps1</code>，从仓库 Release <code>vendor-binaries</code> 下载（已存在跳过，<code>ICLOUDPD_URL</code> 可覆盖源）。</li>
   <li><b>任务模型</b>：每次下载/认证 = 一个后台任务（见 §5 数据模型），有状态、进度、日志、可重试。</li>
 </ul>
 

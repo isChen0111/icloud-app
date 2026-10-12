@@ -11,7 +11,7 @@
 1. **实测 iCloud 网页端机制**（浏览器操作 + 网络抓包 + JS bundle 源码分析）：
    - 网格 = 自研虚拟滚动（DOM 常驻 ~168 节点，absolute+transform，列数 3~9 滑块缩放只改 CSS）；缩略图 DerivativeImage ~415px 档 XHR→blob→objectURL；详情 OneUp 轮播 3 格 + 邻居预加载 ±2；实况照片 = 静止帧 + 隐藏 video 叠层按住播放；视频 = 原生 video + HTTP 206 Range。
 2. **行业调研**：Immich 三档缩略图、@tanstack/vue-virtual、sharp（libvips+libheif 是 Node HEIC 唯一成熟方案）、iCloudPD 输出结构（YYYY/MM/DD + `IMG_xxxx.HEIC ⇄ IMG_xxxx_HEVC.MOV`）。
-3. **P0 已落地并端到端验证**：后端 server/（Fastify + better-sqlite3 + sharp + ffmpeg）+ 前端 web/（Vue3.5+Vite+TS+Pinia 虚拟滚动/懒加载/详情轮播/实况/视频）。全量扫描 12,591 资产；HEIC 解码用 BtbN ffmpeg full 版（libheif）已固化 postinstall。
+3. **P0 已落地并端到端验证**：后端 server/（Fastify + better-sqlite3 + sharp + ffmpeg）+ 前端 web/（Vue3.5+Vite+TS+Pinia 虚拟滚动/懒加载/详情轮播/实况/视频）。全量扫描 12,591 资产；HEIC 解码用 BtbN ffmpeg full 版（libheif）已固化 postinstall。**第三方二进制自动安装**：postinstall 串联 `install-ffmpeg-full.ps1` + `install-icloudpd.ps1`（icloudpd exe 2026-10-12 加入），均从仓库 Release `vendor-binaries` 下载（已存在跳过，URL 可覆盖）。
 4. **P1 已验收**：日期分组定位（月份头行 + 吸顶月份指示器 + **方案 C 日期导航面板**——工具栏「日期」按钮 → 下拉面板，左年份 + 右月份缩略图 3×4 网格，/api/dates 返回 108 个月 offset+thumbId）、缩放滑块（**默认 8 列**）、详情邻居预加载、照片墙底色占位后渐进显示 grid 缩略图、hash 深链、键盘切换、实况按住播放。内存 LRU 已决定不做（2026-10-07：本地场景收益低，浏览器缓存已足够）。
 5. **P2 已验收（范围收缩）**：FTS5 trigram 搜索（文件名/日期子串，至少 3 字符，/api/search）。用户已决定不做：HEVC 按需转码缓存 / 逆地理编码 / 收藏 / 最近删除 / 下载原片；客户端批量选择已在 P2+-1 随删除功能落地。
 6. **稳定化（代码审查 5×P1 + 7×P2 = 12 项全部修复）**：
@@ -76,7 +76,7 @@
 
 ## 工程约定（踩坑沉淀）
 - **PowerShell 引号坑**：命令实际由 PowerShell 执行；`\"` 不是转义（用反引号）、双引号内 `$` 会展开。多层级引号一律落临时文件：复杂 JS/SQL 写 `.cjs` 文件再 `node 文件`；多行 commit 用 `Out-File` + `git commit --file=`。
-- **原生模块**：better-sqlite3 13.0.3 随 npm 包提供平台预编译文件；当前运行环境 Node 24，项目要求 Node 22+。本地若切换 Node 主版本后遇到原生模块加载错误，先在 `server/` 重跑 `npm ci`。ffmpeg 不再走 npm 原生包，在 `server/vendor/ffmpeg-full/`。
+- **原生模块**：better-sqlite3 13.0.3 随 npm 包提供平台预编译文件；当前运行环境 Node 24，项目要求 Node 22+。本地若切换 Node 主版本后遇到原生模块加载错误，先在 `server/` 重跑 `npm ci`。ffmpeg 不再走 npm 原生包，在 `server/vendor/ffmpeg-full/`；icloudpd exe 在 `server/vendor/icloudpd-1.32.3-windows-amd64.exe`——两者均由 postinstall 自动下载（仓库 Release `vendor-binaries`，2026-10-12 起 icloudpd 也自动安装）。
 - **服务进程**：用户自启后端 8899/前端 5173，勿占用；临时验证进程用完 TaskStop。
 - **git SSH**：固定 `core.sshCommand = "C:/Windows/System32/OpenSSH/ssh.exe" -o StrictHostKeyChecking=accept-new`；日常 `git push origin main` 畅通。
 - **临时脚本**：`server/scripts/.*`（dot 开头）用完即删，已在 .gitignore 排除防误提交。
