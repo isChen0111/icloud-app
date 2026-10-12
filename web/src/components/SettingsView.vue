@@ -508,7 +508,18 @@ onBeforeUnmount(() => {
   cursor: pointer;
 }
 .lib-log-toggle:hover { color: var(--text-1); }
-.lib-log-toggle .chev { margin-left: auto; }
+.lib-log-toggle .chev {
+  width: 11px;
+  height: 11px;
+  margin-left: auto;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  transition: transform 0.15s;
+}
+.lib-log-toggle .chev.open { transform: rotate(180deg); }
 .lib-log-box {
   margin: 6px 0 2px;
   max-height: 240px;
