@@ -420,13 +420,16 @@ onBeforeUnmount(() => {
 }
 .lib-card-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: space-between; }
 .lib-card-title-wrap { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; min-width: 0; }
-.lib-card-name { font-size: 14px; font-weight: 700; }
+.lib-card-name { font-size: 14px; font-weight: 700; line-height: 1.3; }
 .pill {
-  padding: 1.5px 8px;
+  display: inline-flex;
+  align-items: center;
+  height: 18px;
+  padding: 0 8px;
   border-radius: 5px;
   font-size: 10.5px;
   font-weight: 600;
-  line-height: 1.4;
+  line-height: 1;
 }
 /* 当前：蓝色实心胶囊，一眼识别激活库 */
 .pill.current { background: #4384ee; color: #fff; }

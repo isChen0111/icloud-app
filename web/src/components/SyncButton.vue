@@ -134,7 +134,7 @@ function choose(kind: 'full' | 'inc'): void {
 .sync-btn:hover { border-color: #4384ee; color: #4384ee; box-shadow: 0 2px 6px rgb(10 132 255 / 12%); }
 .sync-btn.disabled { opacity: 0.6; cursor: not-allowed; }
 .sync-btn.disabled:hover { border-color: var(--border); color: var(--text-1); box-shadow: none; }
-.sync-btn .ico { display: inline-flex; align-items: center; flex-shrink: 0; color: inherit; }
+.sync-btn .ico { display: inline-flex; align-items: center; flex-shrink: 0; color: inherit; margin-top: 1px; }
 .sync-btn .ico svg { width: 12px; height: 12px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
 .sync-btn .chev { width: 11px; height: 11px; flex-shrink: 0; transition: transform 0.18s ease; }
 .sync-btn .chev.open { transform: rotate(180deg); }
