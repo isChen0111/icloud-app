@@ -22,9 +22,13 @@ import { getDb } from '../db/index.js'
 import { config } from '../config.js'
 import { runScan, scanProgress } from '../scanner/index.js'
 import { getThumbnailProgress, getQueueMetrics, queueSize } from '../pipeline/queue.js'
+import { getCurrentLibrary } from '../context.js'
+import { syncState } from '../icloudpd/state.js'
 
-/** 体积缓存文件（落盘，避免每次启动重算） */
-const statsCacheFile = path.join(config.cacheDir, 'stats.json')
+/** 体积缓存文件（落盘，避免每次启动重算）。函数取当前激活库 cacheDir（切库后自动跟随） */
+function statsCachePath(): string {
+  return path.join(config.cacheDir, 'stats.json')
+}
 
 /** 异步分片遍历一个目录树，累加所有文件字节数；每批让出事件循环，避免阻塞其他请求 */
 async function walkSize(dir: string, batchSize = 256): Promise<number> {
@@ -73,8 +77,8 @@ export async function registerStatsRoutes(app: FastifyInstance): Promise<void> {
   /** 从落盘缓存恢复体积；文件内容与当前库路径不匹配时忽略 */
   function loadCacheFromDisk(): void {
     try {
-      if (!fs.existsSync(statsCacheFile)) return
-      const data = JSON.parse(fs.readFileSync(statsCacheFile, 'utf8')) as {
+      if (!fs.existsSync(statsCachePath())) return
+      const data = JSON.parse(fs.readFileSync(statsCachePath(), 'utf8')) as {
         libraryRoot: string
         totalBytes: number
         assetCount?: number
@@ -107,7 +111,7 @@ export async function registerStatsRoutes(app: FastifyInstance): Promise<void> {
         // 落盘：下次进程重启直接读取
         fs.mkdirSync(config.cacheDir, { recursive: true })
         fs.writeFileSync(
-          statsCacheFile,
+          statsCachePath(),
           JSON.stringify({
             libraryRoot: config.libraryRoot,
             totalBytes: bytes,
@@ -145,7 +149,7 @@ export async function registerStatsRoutes(app: FastifyInstance): Promise<void> {
       totalBytesCache = null
       assetCountAtCompute = null
       try {
-        fs.rmSync(statsCacheFile, { force: true })
+        fs.rmSync(statsCachePath(), { force: true })
       } catch (err) {
         console.error('[stats] 清理过期体积缓存失败:', err)
       }
@@ -189,6 +193,22 @@ export async function registerStatsRoutes(app: FastifyInstance): Promise<void> {
       // 已忽略失败项计数（F-07 系列）：浮层入口三态展示用
       ignoredThumbnails: ignoredThumbnailFailures,
       scan: { ...scanProgress },
+      // P0 新增：当前激活库与 icloudpd 同步任务状态（前端 status 组件轮询展示）
+      library: (() => {
+        const lib = getCurrentLibrary()
+        if (!lib) return null
+        // account 脱敏（is***@domain 形式）后再返回给前端
+        // 本地单机应用：账号原样返回（与 /api/libraries 一致，供设置中心/认证弹窗完整显示与固定邮箱）
+        return { id: lib.id, name: lib.name, account: lib.account, authStatus: lib.auth_status, lastSyncAt: lib.last_sync_at }
+      })(),
+      sync: {
+        status: syncState.status,
+        kind: syncState.kind,
+        message: syncState.message,
+        downloaded: syncState.downloaded,
+        startedAt: syncState.startedAt,
+        finishedAt: syncState.finishedAt,
+      },
     })
   })
 

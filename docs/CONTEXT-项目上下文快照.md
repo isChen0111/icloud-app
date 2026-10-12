@@ -1,6 +1,6 @@
 # 项目上下文快照（供会话压缩/新会话恢复用）
 
-> 生成日期：2026-09-08；最后同步：2026-10-06（审查报告 7 项 F-01~F-07 全部修复并合并推送 main：F-03/F-04 合并 6fd9dae、F-07 系列合并 505cb28；架构文档/README/审查报告按代码实测同步，rev 已动态化）。若本会话上下文被压缩或丢失，先读本文件 + 架构设计文档 + README，即可恢复全部关键信息。
+> 生成日期：2026-09-08；最后同步：2026-10-12（P0 照片库同步与多库实现 + 文档三件套同步：iCloudPD同步架构功能设计按实现回填、架构设计文档新增 §3.8/§5 P0 模块/§6 路线图/§8 风险、README 补多库启动与 API；删除已过时的「资源状态顶部UI方案.html」）。若本会话上下文被压缩或丢失，先读本文件 + 架构设计文档 + README，即可恢复全部关键信息。
 
 ## 项目目标与现状
 - 用户已用 iCloudPD 把 iCloud 照片全部拉到本地（`F:\iPhone\icloud-app\iCloudPhoto\`，源文件：**12,609 资产 = 照片 1,988 + 实况 7,442 + 视频 3,179，162.9GB，约 2 万媒体文件（scan runId 1 实测 20,051 文件）**）。
@@ -46,6 +46,11 @@
    - **F-03 源文件签名 + F-04 Origin 校验（P2，2026-10-06，分支 fix/f03-f04 → 合并 6fd9dae 已推送）**：assets 表新增 `file_size`/`file_mtime`（列检查 ALTER 迁移）；scanner 遍历收集签名（size + mtimeMs，约 1~2s 总成本），签名不一致 → 重新提取元数据 + 状态置 pending + 删旧 grid/detail 缓存 → 重建。**前端 rev 联动**：资产 DTO / `/api/dates` 返回 `rev = file_mtime`，thumbUrl/videoPosterUrl 调用点携带（GridItem/DetailView/LivePhoto/DateNavPanel/useLazyImage）——覆盖文件后 mtime 变 → URL 变 → 浏览器绕过 1 年强缓存自动换新图（F-03 完整闭环）。F-04：index.ts onRequest hook 对带非允许 Origin 的非 GET/HEAD 请求返回 403（恶意网页跨站防护；curl/本地脚本无 Origin 零影响）。验证：tsc/vue-tsc 0 错、测试 12/12、F-03 端到端（覆盖→失效→重建→前端换图）、F-04 行为 4 项全对。审查报告 7 项全部完成。
 21. **2026-10-07 调度器事件让位改造（fix/event-based-yield，待验收）**：替换原「浏览租约 30s 挂起 + 60s 强制放行」机制——后台任务始终入队（priority=0），交互任务 priority=10 永远先出队，PQueue 一次启动 concurrency 个任务时交互不足则用后台填满剩余槽位（零时间参数、零槽位浪费）。动机：增量更新场景（如仅新增 1 个文件）下后台任务原需白等 30s，即使槽位全空闲；60s 放行在持续浏览时也只保证「入队排队」而非「真正执行」。**结构性 trade-off**：运行中的任务不可被抢占，首次启动大量后台占满槽位时交互需等运行中的后台完成（单任务 ffmpeg 60s 超时上限，通常几百 ms）。连带删除：`/api/thumbnails/activity` 路由与前端 `notifyThumbnailBrowsing`/App.vue 浏览信号监听（6 个事件）、`markThumbnailBrowsing`、`browseLeaseMs`/`backgroundMaxDeferMs`。影响文件：thumbnailScheduler.ts / queue.ts / thumb.ts / client.ts / App.vue / thumbnailScheduler.test.ts（10 用例：并发不变量 3 + 交互优先 2 + 后台填槽 2 + 积压计数 1 + 队列指标 2）+ 文档同步。验证：server npm test 12/12、双端 tsc 0 错。
 22. **2026-10-07 慢速拖动修复（fix/slow-drag-prefetch，待验收）**：拖拽模式**按速度拆开**——慢速拖动（250ms 内位移 ≤ 1/5 屏）从原「250ms 节流轮询 + 只加载严格可见（`visibleOnly` → margin=0 无预载）」改为「onScroll 走 rAF 合并每帧派发 + **始终带预载 margin**」，与普通滚动同体验（新进视口的图下一帧即触发、视口外一行提前预载）；快速拖动保留 `fastDrag` 跳过中间区域（防请求风暴）；250ms 轮询从「加载驱动」改为「速度检测器」。**动机**：慢速拖动时图片「慢慢出现、松手才秒出」——原设计每 250ms 才触发且刻意关掉预载，加载自身延迟被放大。**删除** `visibleOnly` 参数与 `pump(visibleOnly)` 的 margin=0 分支。影响文件：仅 `web/src/composables/gridThumbnailScheduler.ts`（接口不变，GridScroller.vue / useLazyImage.ts 零改动）。验证：vue-tsc 0 错 + 浏览器手动 3 场景（慢速拖动即时出现 / 快速拖动跳过中间松手秒出 / 滚轮不变）。
+23. **2026-10-09~12 P0 照片库同步与多库（feat/icloudpd-sync，未提交）**：网页端直接管理 icloudpd 拉取，多库单活跃库模式。
+   - **后端**：① `db/libraries.ts` 库注册表（应用级 `server/cache/meta.db`，多库共享）——createLibrary（**已有激活库时新建不激活**，仅首次建库激活；目录规则：照片根 `iCloudPhoto/lib<id>`、缓存 `server/cache/lib<id>`、cookie 同库下 `cookies`，库名只是别名不参与路径）/list/getActive/setActive/updateAuth/touchSync/delete。② `context.ts` 激活库上下文——getCurrentLibrary 实时读 meta.db、applyLibraryPaths 覆写 config、resetLibraryPaths（删最后一个库回默认路径）。③ `icloudpd/auth.ts` **webui 桥接认证**——console 管道实测不可行（getpass 直读 Windows 控制台不走管道，管道化挂起），改 spawn `--password-provider webui --mfa-provider webui --auth-only`，轮询 127.0.0.1:8080 `/status` 解析 password/code 阶段，前端 `POST /api/auth/input` 由后端桥接转 webui `/password`|`/code`；完成判据 = 进程退出码 0 + cookie 落盘；状态机 starting→waiting_password→submitting→waiting_code→done/error；`sendAuthInput` 加 **inputLock 防重锁**（防连点/并发造成**手机收到两次双重验证弹窗**，2026-10-12 实测）；10 分钟超时 taskkill /T 杀进程树；checkAuthValid 巡检。④ `icloudpd/sync.ts` 全量/增量——`--until-found 20` 增量、`ICLOUDPD_RECENT=N`（--recent N）测试限量、waiting_retry（has not finished indexing 60s×5）、done/error/cancelled 内存态全局单任务（isSyncBusy 409）。⑤ routes：`libraries`（CRUD + PATCH active + DELETE removePhotos 必删注册+缓存、删激活库自动切剩余最小 id 库/删最后 resetLibraryPaths、删前 resetSyncState 防旧库「同步完成」残留）、`auth`（POST /api/auth、/api/auth/input、GET /api/auth、POST /api/auth/cancel）、`sync`（POST/GET/DELETE /api/library/:id/sync，仅当前激活库可发起）、`stats`（sync 状态带 libraryId + auth 状态 + 账号去脱敏完整返回）。
+   - **前端**：① App.vue——右上角库切换下拉（当前库名 ▾ + 列表 + 新建）+ 设置齿轮；移除 popover 红框库信息/新建库区块；`pickLibrary` 切库后 location.reload()；`onLibraryDeleted` 非激活库仅移除下拉项；`openAuth` 按 account 传 autoStart（刷新链接打开即自动认证）。② `SettingsView.vue`（新）——左侧分组导航（照片库/应用）、每库卡片（当前标识/照片 N·视频 M/完整账号/目录缓存会话/最近同步独立行/新建链接·刷新链接/删除确认弹窗默认勾选删副本）、照片库配置 ▾ 浅蓝面板锁死只读、每库同步四态按钮 + 多库「等待执行…」（全局单任务 409→waiting 自动恢复）；设置窗口 880px。③ `OnboardingView.vue`——弹窗化（半透明遮罩+×+ESC）：「创建照片库」按钮（动画+成功提示，**创建完不自动切换页面/不自动进下一步**）→ 手动「下一步：链接 iCloud」。④ `AuthDialog.vue`——**分步状态机**（starting 无输入框 → 输密码独立步 → submitting 校验中仅转圈文案 → 输验证码 → done/error 绿✓/红✗弹出动画结果停留）+ 步骤指示器（1密码→2验证码→3完成）+ 输入框三态（默认白底边框/聚焦蓝光晕/禁用浅灰）+ 校验中全链路禁点（×/遮罩/输入框/按钮）；**固定邮箱页已删**（设置中心/主界面「刷新链接」打开即 autoStart 自动认证，免二次点击）；邮箱格式校验。⑤ `types.ts` LibraryInfo 补 libraryRoot/cacheDir/cookieDir/photos/videos；`api/client.ts` deleteLibrary。
+   - **cli-scan / watcher**：激活库化（仅当前库启停扫描/监听）。
+   - **文档**：`docs/iCloudPD照片库同步-架构功能设计.html` 按实现全面回填（§3.1.1 webui 桥接/状态机/防重、§4.1/4.4 设置中心与首次引导、§5 表结构与真实 API、§6 路线图、§7 问题 8）；架构设计文档新增 §3.8 P0 同步与多库 + §5 结构 + §6 路线图行 + §8 风险；README 补多库启动/环境变量/API/功能概览；删除已过时 `docs/资源状态顶部UI方案.html`（产品设计稿保留）。
 
 ## 照片库实测数据（2026-09-08）
 - 结构：`YYYY/MM/DD/文件名`（iCloudPD 默认），实况配对基名归一（`_HEVC` 后缀），**无时间差校验**。⚠️ **配对必须限定同一目录**——跨目录同名文件（不同设备/编辑版本的同名，如 `2018/02/04/IMG_0040*` 与 `2021/07/27/IMG_0040*`，全库 2,363 个基名分布多目录）若只按基名配对会错配丢视频（见「已完成」第 9 条）。
@@ -54,7 +59,7 @@
 - 关键统计：orientation=6 共 6,853 张（photo+live），orientation=1 共 1,905；非 HEIC + orientation 2~8 = 103 张（方向重建范围）。
 
 ## 技术选型（已定）
-- 后端：Node 24（用户 D:\nodejs）+ TypeScript + Fastify 5 + better-sqlite3 13.0.3（包内平台预编译，lockfile 需保留 `gypfile:false`）+ exifr + sharp 0.35 + vendor ffmpeg spawn（BtbN full / libheif）+ p-queue（**F-01 后为单一 ThumbnailScheduler：交互 priority=10 / 后台 priority=0、后台始终入队、交互不足时后台填满剩余槽位（事件让位，2026-10-07 移除原租约挂起）、总并发 config.thumbConcurrency=8 严格不超**）
+- 后端：Node 24（用户 D:\nodejs）+ TypeScript + Fastify 5 + better-sqlite3 13.0.3（包内平台预编译，lockfile 需保留 `gypfile:false`）+ exifr + sharp 0.35 + vendor ffmpeg spawn（BtbN full / libheif）+ p-queue（**F-01 后为单一 ThumbnailScheduler：交互 priority=10 / 后台 priority=0、后台始终入队、交互不足时后台填满剩余槽位（事件让位，2026-10-07 移除原租约挂起）、总并发 config.thumbConcurrency=8 严格不超**）+ **icloudpd-1.32.3-windows-amd64.exe 黑盒 spawn（P0：vendor 目录，ICLOUDPD_EXE 可覆盖；webui 桥接认证 + 全量/增量同步，详见 §23）**
 - 前端：Vue 3.5 + Vite + TS + Pinia + vue-router(hash) + @tanstack/vue-virtual + 自研 useLazyImage（IntersectionObserver；网格最多 8 个图片请求并发；拖动滚动条**按速度拆开**：慢速拖动走 rAF 每帧派发 + 带预载（与普通滚动同体验），快速拖动 250ms 判速跳过中间区域，松开后优先派发最终视口，2026-10-07 fix/slow-drag-prefetch）
 - 缩略图档：grid 320px / detail 1600px WebP；视频封面 ffmpeg 抽帧。扫描后只后台预热 grid；照片墙格子先显示底色，grid 图片加载成功后淡入；已废弃的 blur 缓存由扫描清理
 - 端口：后端 127.0.0.1:8899，前端 http://localhost:5173（Vite 绑 IPv6，勿用 127.0.0.1:5173）
@@ -65,7 +70,7 @@
 - ✅ P2：FTS5 搜索（HEVC 转码/收藏/最近删除/下载不做；批量选择已随客户端删除落地）
 - ✅ 稳定化：12 项修复 + GitHub 版本管理
 - ✅ **照片墙占位优化（2026-10-03）**：移除独立 blur 缩略图档及对应请求/后台生成；格子先显示底色，grid 图片加载成功后淡入。旧 `cache/thumbs/blur/` 在扫描时清理；详情页复用 grid 并用 CSS 模糊的占位效果保留。
-- ✅ **P2+-1 部分落地（2026-09-17；2026-10-01 刷新与完整性保护已补齐）**：目录热监听 + 完整扫描后删除对账 + 启动同步 + 首批资产入库后填充照片墙、扫描结束后最终刷新；一键拉取仍待开发。
+- ✅ **P2+-1 部分落地（2026-09-17；2026-10-01 刷新与完整性保护已补齐）**：目录热监听 + 完整扫描后删除对账 + 启动同步 + 首批资产入库后填充照片墙、扫描结束后最终刷新；**一键拉取已由 2026-10-12 P0 落地（icloudpd 同步模块 + 网页端触发，见 §23）**。
 - ✅ **P2+-2 冷启动体验（状态展示落地）**：扫描按 `YYYY/MM/DD` 目录日期从新到旧处理（仅优先级，展示仍按实际拍摄时间）；每 5 秒轮询状态，扫描期间发现已入库资产且照片墙仍为空时立即初始化，扫描结束后再最终刷新。顶栏单行资源摘要 + 浮层详情；扫描显示已检查文件数及当前入库照片/视频数、不显示预览图百分比；扫描结束后按数据库持久化状态显示全库预览图总量、已处理/已生成/待处理/失败，服务重启后已生成计数和百分比可从数据库状态恢复。失败数可点击查看文件清单及原因，支持逐项/批量重试、忽略和恢复提醒；忽略不会删除原文件，历史记录缺少原因时明确提示。照片/视频数量口径通过计数旁悬浮提示说明；照片数包含普通照片和实况照片，视频数不包含实况配对 MOV；扫描对账按配对后的主资产路径执行，支持既有独立 MOV 后来与照片配对时清除旧视频资产记录。
 - ⏸ P2+-3 语义搜索（暂缓）：人物/地点/场景组合（如「邓州 2023 年 陈咏新」）——不连大模型，face-api.js + tfjs-node 本地人脸聚类 + people/faces/asset_tags 表 + 组合查询解析器；视频抽帧入人脸库；标签不写文件元数据。
 
@@ -85,7 +90,7 @@
 - ✅ toolbar 调试信息（items/rows/virt）：已定保留（用户确认）。
 - ✅ **KeepAlive 缓存失效已补齐（2026-10-01）**：前端轮询扫描状态，扫描结束后刷新月份和已缓存页；保留滚动位置。
 - ✅ 2026-09-17 审查 B1~B5 修复完成（删除页缓存错位 / 实况宽高兜底 / 首屏默认浅色 / CORS DELETE / 排版整理）。
-- 🔜 P2+-1 一键拉取（exe 方案已定）待开发；P2+-3 语义搜索暂缓实现；**P2+-4 详情缓存治理已列入**（保留最近 N 月浏览的 detail 图 / 一键清空 detail 缓存，可选）。
+- 🔜 **P0（2026-10-09~12，feat/icloudpd-sync）全链路已实现但未提交/未合并**：认证流 + 全量/增量 + 多库切换/删除 + 设置中心，待用户验收确认后提交合并回 main 并推送；**P0 期间的测试照片库与缓存可清理（cache/lib&lt;id&gt;、iCloudPhoto/lib&lt;id&gt;），正式库迁移回原 iCloudPhoto 结构**。P2+-3 语义搜索暂缓实现；**P2+-4 详情缓存治理已列入**（保留最近 N 月浏览的 detail 图 / 一键清空 detail 缓存，可选）。
 - ✅ **search store finally 竞态已修**（2026-09-19 审查发现，代码 finally 已有 `if (seq !== searchSeq) return` 守卫，F-05 改动时一并确认）。
 - ✅ **F-07 + 失败清单系列已完成**（2026-10-06，分支 fix/ffmpeg-timeout → 合并 505cb28 推送）：ffmpeg/ffprobe 超时 kill；失败项操作解锁（只锁扫描中）；后台挂起 60s 上限（**2026-10-07 事件让位改造中已移除**）；失败保留 ignored + 忽略跳过重试 + 自愈日志；浮层三态入口；扫描缓存对账（待处理卡死根治，实测收敛）；命名修正（浮层/徽标「待处理」→「失败」）。测试 12/12。
 - ✅ **审查报告 7 项全部完成**（2026-10-06，F-03/F-04 分支 fix/f03-f04 → 合并 6fd9dae 推送）：F-03 源文件签名（size+mtimeMs）驱动缓存失效 + 前端 rev 联动（rev=file_mtime，URL 随内容变化强制换图）；F-04 副作用请求非允许 Origin 403。文档快照资产口径 12,609 已同步。

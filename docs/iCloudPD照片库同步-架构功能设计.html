@@ -149,9 +149,9 @@
   <tr><td><code>--until-found N</code></td><td><span class="tag ok">✅ 无坑</span></td><td>垫底 3 条后跑 <code>--until-found 1 --dry-run</code>：8.1 秒、7 行日志即停（遇已存在立即停止）</td><td>日常增量同步（同用户 bat）</td></tr>
   <tr><td><code>--dry-run</code></td><td><span class="tag ok">✅ 可用</span></td><td>只对比零落盘；输出模式稳定（<code>Downloading… → [DRY RUN] Would download… → Downloaded…</code>）</td><td>演练/验证/进度解析样本</td></tr>
   <tr><td><code>--set-exif-datetime</code></td><td><span class="tag ok">✅ 建议默认启用</span></td><td>官方语义确认：仅当 EXIF 缺拍摄时间时补写、不覆盖已有（零风险）；只作用于图片（"for the image"），视频不受影响；纯本地写操作、不依赖 Apple 端，无需窗口实测</td><td>全量/增量命令默认追加（兜底拍摄时间）</td></tr>
-  <tr><td><code>--skip-photos / --skip-videos / --skip-live-photos</code></td><td><span class="tag confirm">⚠️ 待补测</span></td><td>官方稳定参数，未实测（Apple 端索引波动导致下载实测窗口不稳）</td><td>设置项过滤（P0 窗口期补测）</td></tr>
-  <tr><td><code>--size / --force-size</code></td><td><span class="tag confirm">⚠️ 待补测</span></td><td>同上</td><td>下载规格设置（P0 窗口期补测）</td></tr>
-  <tr><td><code>--no-progress-bar</code></td><td><span class="tag confirm">⚠️ 待补测</span></td><td>官方推荐管道/日志友好；未实测</td><td>后端调用建议加（P0 窗口期补测）</td></tr>
+  <tr><td><code>--skip-photos / --skip-videos / --skip-live-photos</code></td><td><span class="tag confirm">⚠️ 未开放</span></td><td>官方稳定参数，未实测；<b>P0 设置中心照片库配置锁死只读，暂不提供</b></td><td>后续放开配置时再补测（见 §7 问题 4）</td></tr>
+  <tr><td><code>--size / --force-size</code></td><td><span class="tag confirm">⚠️ 未开放</span></td><td>同上</td><td>后续放开配置时再补测（见 §7 问题 4）</td></tr>
+  <tr><td><code>--no-progress-bar</code></td><td><span class="tag ok">✅ 已覆盖</span></td><td>官方推荐管道/日志友好；实现未显式传——spawn 走管道非 TTY 时 icloudpd 自动关闭进度条，行模式解析不受影响</td><td>无需显式追加（实测下载输出可稳定解析）</td></tr>
   <tr><td><code>--auto-delete</code> / <code>--keep-icloud-recent-days</code></td><td><span class="tag p0">❌ 不测不开放</span></td><td>涉及删除（本地/ iCloud 云端），不可逆，用户明确不测</td><td>产品不提供 Sync/Move 模式</td></tr>
 </table>
 <div class="callout warn"><b>实测发现的关键坑（唯一）</b>：Apple 端照片服务 <b>间歇性未就绪</b>——同一命令 12:54 成功、12:57 报 <code>Apple iCloud Photo Library has not finished indexing yet</code>（validate 响应中 <code>webservices</code> 为空）。性质为 Apple 云端状态、与本地/参数无关，等待可恢复。对策见 §3.1.5 自动重试设计。</div>
@@ -167,28 +167,28 @@
   <li><b>任务模型</b>：每次下载/认证 = 一个后台任务（见 §5 数据模型），有状态、进度、日志、可重试。</li>
 </ul>
 
-<h4>3.1.1 认证流程设计（网页端输入邮箱/密码/验证码）— P0 可开工规格</h4>
-<div class="callout ok"><b>主方案（2026-10-09 用户确认）</b>：应用<b>自绘认证面板</b>（不嵌入官方 webui 页面），后端与 icloudpd 子进程通过管道交互——密码、验证码由前端输入后经接口写入进程 stdin。官方 webui（<code>--password-provider webui --mfa-provider webui</code>，已实测可用）保留为<b>备选</b>，仅当自绘管道交互遇阻时启用。</div>
-<p><b>启动命令</b>（<code>--domain cn</code> + console 管道 + <code>--auth-only</code>，用户名必填）：</p>
-<pre><code>icloudpd --username &lt;邮箱&gt; --password-provider console --mfa-provider console \
+<h4>3.1.1 认证流程设计（网页端输入邮箱/密码/验证码）— 已实现（webui 桥接）</h4>
+<div class="callout ok"><b>最终方案（2026-10-12 实现落地）</b>：<b>自绘认证面板 + icloudpd webui 桥接</b>。console 管道方案实测不可行（icloudpd 的密码读取走 getpass 直读 Windows 控制台，不经过管道，管道化会挂起），已放弃。落地路径：后端 spawn <code>icloudpd --password-provider webui --mfa-provider webui --auth-only</code>（webui 监听 <code>127.0.0.1:8080</code>），前端自绘分步面板，输入经后端桥接写入 webui；完成判据 = <b>进程退出码 0 + cookie 落盘</b>。</div>
+<p><b>启动命令</b>（<code>--domain cn</code> + webui provider + <code>--auth-only</code>，用户名必填）：</p>
+<pre><code>icloudpd --username &lt;邮箱&gt; --password-provider webui --mfa-provider webui \
          --cookie-directory &lt;库cookie目录&gt; --domain cn --auth-only</code></pre>
-<p>认证交互流：前端输入密码 → 后端写入 stdin（进程提示 Password:）→ Apple 触发双重验证 → 前端显示验证码输入 → 后端写入 stdin（进程提示 Two-factor Authentication Code:）→ 认证完成退出。</p>
+<p><b>交互流</b>：后端轮询 <code>127.0.0.1:8080/status</code> 解析当前阶段（等待密码 / 等待验证码）；前端分步面板按阶段显示输入框 → 前端 <code>POST /api/auth/input</code> → 后端转 POST 到 webui 的 <code>/password</code> / <code>/code</code> → 认证完成进程退出、cookie 落盘 → 状态 <code>authed</code>。</p>
 <p><b>认证状态机</b>（每库）：
-<code>none</code>（未认证）→ <code>pending</code>（已发起，进程启动中）→ <code>waiting_input</code>（进程就绪，等密码/验证码）→ <code>linked</code>（成功，cookie 落盘）/ <code>failed</code>（失败/超时）→ 会话过期后回 <code>expired</code>。</p>
+<code>none</code>（未链接）→ <code>starting</code>（进程启动中，前端只显示转圈、<b>不暴露输入框</b>）→ <code>waiting_password</code>（输密码）→ <code>submitting</code>（校验中，输入框/按钮全隐藏，只显示转圈文案）→ <code>waiting_code</code>（输验证码）→ <code>done</code>（成功，<code>authed</code>）/ <code>error</code>（失败，可重试）；同步遇 cookie 失效 → <code>expired</code>（前端显示「需要重新链接」）。</p>
 <table>
   <tr><th>接口</th><th>行为</th><th>判定</th></tr>
-  <tr><td><code>POST /api/library/:id/auth/start</code></td><td>spawn icloudpd auth-only（参数数组、日志脱敏）；管道保持连接，监听进程 stdout 提示</td><td>成功：状态 <code>pending</code>；失败：<code>failed</code> + 错误信息</td></tr>
-  <tr><td><code>POST /api/library/:id/auth/input</code></td><td>接收密码或验证码，写入子进程 stdin；写后切换下一步状态</td><td>写入成功 = 进入下一状态（密码→waiting_code，验证码→linked/failed）</td></tr>
-  <tr><td><code>GET /api/library/:id/auth</code></td><td>前端 3s 轮询认证状态</td><td>判定规则见下</td></tr>
-  <tr><td><code>POST /api/library/:id/auth/check</code></td><td>重跑 auth-only 作会话检查（过期检测）</td><td>认证成功 = 会话有效；失败 = <code>expired</code></td></tr>
+  <tr><td><code>POST /api/auth</code></td><td>spawn icloudpd webui auth-only（参数数组、日志脱敏）；启动轮询 webui 状态</td><td>成功：进入 <code>starting</code>；失败：<code>error</code> + 错误信息</td></tr>
+  <tr><td><code>POST /api/auth/input</code></td><td>接收密码或验证码，桥接写入 webui（<code>/password</code> | <code>/code</code>）；<b>inputLock 防重锁</b>——同一时刻只处理一次提交，防连点/并发造成重复发验证码请求</td><td>写入成功 = 进入下一阶段（密码→submitting/waiting_code，验证码→submitting/done）</td></tr>
+  <tr><td><code>GET /api/auth</code></td><td>前端轮询认证状态（阶段变化才解锁输入）</td><td>阶段/错误变化即返回最新状态</td></tr>
+  <tr><td><code>POST /api/auth/cancel</code></td><td>取消认证：taskkill /T 杀进程树 + 清理</td><td>进程终止即取消</td></tr>
 </table>
-<p><b>成功判定（关键）</b>：进程退出 且 cookie 目录生成 <code>&lt;用户名&gt;</code> + <code>.session</code> 文件 → <code>linked</code>。<b>超时</b>：认证任务 10 分钟无进展 → kill 并置 <code>failed</code>（可重试）。<b>安全</b>：密码/验证码仅驻留内存、经管道直接写入 stdin，命令参数与日志脱敏，不落明文。</p>
-<div class="callout warn"><b>待 P0 实测项</b>：console provider 的提示文本与 stdin 时序（含 Apple 验证码二次提示）需真实环境跑通验证；验证通过后按本节实现，若 console 管道不可用则切回 webui 备选方案（新标签页 + 轮询）。</div>
+<p><b>成功判定（关键）</b>：进程退出码 0 且 cookie 目录生成会话文件 → <code>authed</code>。<b>超时</b>：认证任务 10 分钟无进展 → taskkill 进程树并置 <code>error</code>（可重试）。<b>安全</b>：密码/验证码仅驻留内存，经后端桥接写入 webui，不落日志、不进 DB；已链接库 <b>固定邮箱不可改</b>（换邮箱会造成照片库目录/会话错乱，需先删除照片库再新建）。</p>
+<div class="callout warn"><b>已知防重要点</b>：2026-10-12 实测曾出现「输入密码后手机收到两次双重验证弹窗」——重复路径包括前端连点提交、轮询解锁时机过早、webui 内部重发 MFA。已上 <code>inputLock</code> + 前端 submitting 锁（提交后锁定，轮询到阶段变化/错误才解锁）收敛；若仍复现，优先检查后端日志「忽略重复提交」与 <code>/code</code> 被多次 POST。</div>
 
 <h4>3.1.2 cookie 保存与安全</h4>
 <ul>
-  <li>每库独立 <code>--cookie-directory</code>（如 <code>server/cache/libraries/&lt;库id&gt;/cookies</code>），互不干扰；cookie 文件含会话令牌，属敏感数据。</li>
-  <li>密码与验证码<b>只经 icloudpd 自身通道传递</b>（webui 页面 / 管道），不进后端业务日志；后端对子进程命令行做脱敏（密码参数不落日志）。</li>
+  <li>每库独立 <code>--cookie-directory</code>（<code>server/cache/lib&lt;id&gt;/cookies</code>，与缓存同库目录，见 §3.2.2 目录规则），互不干扰；cookie 文件含会话令牌，属敏感数据。</li>
+  <li>密码与验证码<b>只经自绘面板 → 后端桥接 → webui 通道传递</b>，不进后端业务日志、不进 DB；后端对子进程命令行做脱敏（密码参数不落日志）。</li>
 </ul>
 
 <h4>3.1.3 cookie 过期检测与网页端应对</h4>
@@ -231,8 +231,8 @@
 
 <h4>3.2.2 改造方案（单活跃库版）</h4>
 <ol>
-  <li><b>库注册表</b>：新增 <code>libraries</code> 表（见 §5），应用启动时加载全部库配置（路径/账号/cookie/参数）；只存元数据，不实例化。</li>
-  <li><b>库上下文（LibraryContext）+ 激活生命周期</b>：每库一个运行时对象（独立 DB 连接、缓存目录、cookie 目录、扫描器/watcher、icloudpd 参数）。<b>激活规则：同一时间仅一个库处于激活</b>；切库 = 切换事务「停旧库任务 → 关旧库 DB/释放 cache → 开新库 DB/初始化 watcher → 通知前端整页刷新」；现有 <code>getDb()/config</code> 改为「当前激活库」上下文注入。</li>
+  <li><b>库注册表</b>：新增 <code>libraries</code> 表（应用级 <code>meta.db</code>，放 <code>server/cache/meta.db</code>，所有库共享），应用启动时加载全部库配置（路径/账号/cookie/参数）；只存元数据，不实例化。<b>目录规则（已落地，库名只是别名，不参与路径）</b>：照片根 = <code>&lt;项目根&gt;/iCloudPhoto/lib&lt;id&gt;</code>；缓存 = <code>server/cache/lib&lt;id&gt;</code>（library.db / thumbs / cookies 都在这）；注册表 = <code>server/cache/meta.db</code>（放 cache 根，不随库切换）。</li>
+  <li><b>库上下文（LibraryContext）+ 激活生命周期</b>：每库一个运行时对象（独立 DB 连接、缓存目录、cookie 目录、扫描器/watcher、icloudpd 参数）。<b>激活规则：同一时间仅一个库处于激活</b>；切库 = 切换事务「停旧库任务 → 关旧库 DB/释放 cache → 开新库 DB/初始化 watcher → 通知前端整页刷新」；现有 <code>getDb()/config</code> 改为「当前激活库」上下文注入。<b>新建库不自动激活</b>：已有激活库时新建仅注册，主页面/下拉/设置中心保持原库（首次建库才激活）。</li>
   <li><b>全局任务队列 + 库标记 + 路由绑定</b>：缩略图/同步任务为全局单一队列，每条任务带 <code>library_id</code>；调度器只执行当前激活库的任务，非激活库任务保持「挂起」排队不执行。路由请求绑定当前激活库（请求级解析「当前库」），无需路径前缀大改。</li>
   <li><b>前端</b>：新增 <code>libraries</code> store（当前库 + 库列表）；切库 = 重置 assets/search/stats 全部状态 + <b>整页初始化</b>（不保留滚动位置/已加载内容，用户决策）；照片墙状态按库独立。</li>
   <li><b>下载侧</b>：每库一条 icloudpd 命令（<code>--username</code> 指定该库账号 + <code>--directory</code> 指向该库目录 + <code>--cookie-directory</code> 该库 cookie），天然隔离。</li>
@@ -252,29 +252,33 @@
 
 <h2>4. 产品功能设计</h2>
 
-<h3>4.1 首次启动引导（无照片库状态）— P0 可开工规格</h3>
+<h3>4.1 首次启动引导（无照片库状态）— 已实现</h3>
 <p><b>触发</b>：后端启动后无任何已注册库（<code>GET /api/libraries</code> 返回空）→ 前端主页中央引导卡片。</p>
 <pre><code>主页中央引导卡：
   「创建你的照片库」
-  ① 输入照片库名称（如：我的相册）→ 校验：非空、≤32 字符、库名唯一
-  ② 点击「链接 iCloud 照片库」→ POST /api/libraries（建库，状态 pending）→ 打开认证面板
-  ③ 认证面板：内嵌 webui 页面（/api/library/:id/auth/proxy）→ 用户输密码/验证码
-  ④ 认证成功（状态机 → linked）→ 按钮变「开始全量拉取」（<b>不自动拉取</b>：拉取有运行代价，由用户决定何时执行）
+  ① 输入照片库名称（如：我的相册）→ 校验：非空、≤32 字符、库名唯一、不含路径非法字符
+  ② 点击「创建照片库」→ POST /api/libraries（建库动画 + 成功提示；<b>已有当前库时新建不切换</b>，
+     仅首次建库自动激活）→ 手动「下一步：链接 iCloud」（不自动跳转，由用户控制节奏）
+  ③ 认证面板：自绘分步状态机（§3.1.1）——starting → 输密码 → 校验 → 输验证码 → 结果动画；
+     每步 UI 独立：校验中只显示转圈文案（不残留输入框/标题），成功绿色 ✓ / 失败红色 ✗ 弹出动画，停留不自动消失
+  ④ 认证成功（状态机 → authed）→ 手动「开始全量拉取」（<b>不自动拉取</b>：拉取有运行代价，由用户决定何时执行）
   ⑤ 点击 → POST /api/library/:id/sync {kind: full} → 进度显示（已下载/总数）
   ⑥ 完成 → 进入照片墙浏览</code></pre>
-<p><b>流程状态机</b>：<code>无库 → 创建中(pending) → 认证中(waiting_input) → 认证完成(linked) → 全量拉取中(running) → 就绪(idle)</code>。中途失败（<code>failed</code> / <code>error</code>）：可回退重试，已下载文件不丢失（Copy 幂等）。</p>
-<p><b>字段与校验</b>：库名（唯一、≤32 字符）、账号邮箱（来自 icloudpd 认证，脱敏展示末 4 位）、目录（后端自动派生，不开放手填）。<b>异常分支</b>：认证超时（10 分钟）→ 提示重试；Apple 端 <code>has not finished indexing</code> → 显示「等待 iCloud 索引完成」+ 自动重试（§3.1.5）；全量拉取中断 → 标记 error，可「增量同步」续传。</p>
+<p><b>流程状态机</b>：<code>无库 → 创建中 → 认证中(starting→waiting_password→waiting_code) → 认证完成(authed) → 全量拉取中(running) → 就绪(idle)</code>。中途失败（<code>error</code>）：可回退重试，已下载文件不丢失（Copy 幂等）。</p>
+<p><b>字段与校验</b>：库名（唯一、≤32 字符）、账号邮箱（来自 icloudpd 认证，设置中心完整展示）、目录（后端自动派生 <code>iCloudPhoto/lib&lt;id&gt;</code>，不开放手填）。<b>异常分支</b>：认证超时（10 分钟）→ 提示重试；Apple 端 <code>has not finished indexing</code> → 显示「等待 iCloud 索引完成」+ 自动重试（§3.1.5）；全量拉取中断 → 标记 error，可「增量同步」续传。</p>
 
 <h3>4.2 全量拉取 / 增量同步按钮（左上角同步状态组件）</h3>
 <p><b>位置</b>：<code>resource-status</code> 下拉 <code>popover-heading</code> 内「照片库已同步」标题下方、<b>原「共检查 N 个媒体文件。」说明文字行位置</b>（去掉该行说明，改放同步按钮；不新增区域、不重构既有 UI）。</p>
 <ul>
   <li><b>单个按钮承载全部交互</b>（全量/增量合并、执行/取消合并），四态动画切换：</li>
-  <li>① <b>同步 ▾</b>：默认态，点击展开小菜单（全量拉取 / 增量同步 二选一）；</li>
-  <li>② <b>执行 · 全量拉取 / 执行 · 增量同步</b>：选中态（按钮高亮），点击即开始；</li>
-  <li>③ <b>⟳ xx 执行中 · 点击取消</b>：运行态（spinner 动画），再次点击即取消；</li>
-  <li>④ 取消/完成后回到「同步 ▾」。按钮固定最小宽度，状态切换不跳变。</li>
+  <li>① <b>同步 ▾</b>：默认态（云下载图标），点击展开小菜单（全量拉取 / 增量同步 二选一，菜单项带图标）；</li>
+  <li>② <b>执行 · 全量拉取 / 执行 · 增量同步</b>：选中态（主色实心 + 播放图标），点击即开始；</li>
+  <li>③ <b>⟳ xx 执行中 · 点击取消</b>：运行态（spinner 动画 + 行内进度条动画），再次点击即取消；</li>
+  <li>④ 取消/完成后回到「同步 ▾」。按钮固定最小宽度与高度，状态切换不跳变。</li>
+  <li><b>排队态仅作用于真正排队的库</b>：其他库执行中时，未排队的库按钮保持「同步」可正常选择执行；只有选定后进入排队的库才显示「排队中」（时钟图标 + 悬浮提示），当前任务结束后自动启动。</li>
+  <li>进度条为演示动画，真实实现接入拉取任务进度百分比。</li>
   <li>全量 = 整库重新校验 + 补下载（Copy 全量）；增量 = <code>--until-found 20</code> 快速增量——日常使用。</li>
-  <li>每库同时只允许 1 个下载任务；认证过期时该区域显示「需要重新链接」入口（§3.1.3）。</li>
+  <li>每库同时只允许 1 个下载任务；认证过期时该区域显示「需要重新链接」入口（§3.1.3），点击打开认证面板并<b>立即自动开始认证</b>（已链接库固定邮箱，免二次点击）。</li>
   <li>全量拉取<b>一律由用户手动触发</b>（首次引导链接成功后也不自动拉取，见 §4.1）。</li>
   <li><b>全局状态同步</b>：同步状态存于库级全局状态（一处启动，主界面与设置中心 §4.4 同一数据源实时一致，按钮文案/动画/取消能力同步）。</li>
 </ul>
@@ -286,94 +290,87 @@
   <li>无库时显示「+ 新建照片库」（跳转引导流程 §4.1）。</li>
 </ul>
 
-<h3>4.4 设置中心（右上角设置按钮）</h3>
-<p><b>位置</b>：右上角新增齿轮按钮（theme-btn 旁）→ 打开设置组件。内容分两块：</p>
+<h3>4.4 设置中心（右上角设置按钮）— 已实现</h3>
+<p><b>位置</b>：右上角齿轮按钮（theme-btn 旁）→ 弹窗式设置组件（加宽 880px）。左侧导航分两组：<b>照片库</b>（照片库管理）/ <b>应用</b>（关于）——分组标题弱化为纯标签，与菜单项明显区分。</p>
 <h4>① 照片库管理</h4>
 <ul>
-  <li>库列表：名称（<b>当前激活库带「当前」标识</b>）/ 目录 / 账号 / 同步状态 / 最近同步时间</li>
-  <li>操作：新增（引导流程）、重命名、删除（删除库 = 移除注册 + 停 watcher；<b>不删除照片文件</b>，须二次确认）、重新链接（重新认证）、修改账号</li>
-  <li><b>每库卡片提供同步操作</b>：与主界面（§4.2）同款<b>单按钮四态</b>（同步▾ → 执行·xx → ⟳执行中 → 同步），且<b>与主界面共享同一库级同步状态</b>（在主界面启动的同步，设置中心对应库实时显示执行中；反之亦然）</li>
-  <li><b>一次仅一个库执行同步</b>：已有库执行中时，其他库点执行 → 显示「等待执行（当前：xx 同步中）」，当前任务结束后按序自动启动（全局单一同步队列，与单活跃库模型一致）</li>
+  <li>每库一张卡片：库名 + <b>「当前」标识</b> + 链接状态胶囊（已链接 / 会话过期 / 未链接）+ <b>照片 N · 视频 M</b> 计数（实时打开各库 DB 计算）+ 完整账号 + 目录 / 缓存 / 会话路径 + <b>最近同步独立一行</b></li>
+  <li>链接入口：未链接库 → 「新建链接」（输邮箱）；已链接/过期库 → 「刷新链接」（<b>固定邮箱不可改</b>，点击打开认证面板<b>立即自动开始认证</b>，免二次点击）</li>
+  <li>删除：确认弹窗（<b>默认勾选「同时删除本地照片副本」</b>）→ 仅删注册 + 缓存目录，勾选才删本地照片；同步执行中 409；<b>删激活库 → 自动切到剩余 id 最小库 / 删最后一个回默认路径并整页刷新</b>；删非激活库 → 仅本地移除下拉项、不刷新主页</li>
+  <li><b>每库卡片提供同步操作</b>：与主界面（§4.2）同款<b>单按钮四态</b>，且<b>与主界面共享同一库级同步状态</b>（一处启动，两处实时一致）</li>
+  <li><b>一次仅一个库执行同步</b>：其他库任务执行中时，本库点「执行」→ 后端 409 → 进入<b>「等待执行…」</b>态（disabled），全局任务释放后自动恢复；未执行任务的库按钮保持「同步」可正常选择执行</li>
 </ul>
-<h4>② icloudpd 自定义设置扩展（映射到库级参数，<b>与照片库绑定、默认全部锁死</b>）</h4>
-<p>每库独立保存一份参数；当前版本按官方默认值<b>全部锁死不可编辑</b>（与文件夹结构同样处理，仅预留实现与字段，后续按需放开）。</p>
+<h4>② 照片库配置（每库卡片内展开，<b>与照片库绑定、默认全部锁死只读</b>）</h4>
+<p>每库卡片「照片库配置 ▾」展开浅蓝信息面板（不再占左侧独立分区）；当前版本按官方默认值<b>全部锁死不可编辑</b>（与文件夹结构同样处理，仅预留实现与字段，后续按需放开）。</p>
 <table>
   <tr><th>设置项</th><th>映射参数</th><th>默认（锁定）</th></tr>
   <tr><td>文件夹结构</td><td><code>--folder-structure</code></td><td><b>固定 <code>%Y/%m/%d</code></b>（代码硬依赖：<code>scanner/index.ts</code> 的目录日期解析 <code>parseDateFromDir</code> 与同目录配对均按该结构读取；改动会导致扫描/分组错乱）</td></tr>
-  <tr><td>跳过类型</td><td><code>--skip-photos / --skip-videos / --skip-live-photos</code></td><td>全部关闭</td></tr>
-  <tr><td>下载规格</td><td><code>--size</code></td><td>original</td></tr>
+  <tr><td>命令模式</td><td>download</td><td>只下载，不删除云端照片（删除类参数不开放，产品不提供）</td></tr>
+  <tr><td>区域</td><td><code>--domain</code></td><td>cn（不可关闭，大陆必需）</td></tr>
+  <tr><td>EXIF</td><td><code>--set-exif-datetime</code></td><td>开启（写入拍摄时间标签，实测可用）</td></tr>
   <tr><td>增量检查深度</td><td><code>--until-found</code></td><td>20</td></tr>
-  <tr><td>同步模式</td><td>Copy / Sync(<code>--auto-delete</code>)</td><td>Copy（<b>删除类参数不开放</b>，产品不提供）</td></tr>
-  <tr><td>大陆域名</td><td><code>--domain</code></td><td>cn（不可关闭，大陆必需）</td></tr>
-  <tr><td>演练模式</td><td><code>--dry-run</code></td><td>关闭（调试用）</td></tr>
+  <tr><td>会话</td><td>cookie 目录</td><td>各库 <code>cookies</code> 目录；过期后在主界面/本页重新链接</td></tr>
 </table>
 
 <h2>5. 数据模型与 API 设计</h2>
-<h3>5.1 新增表（库注册表所在 DB：应用级 library.db 或独立 meta.db）</h3>
-<pre><code>libraries
+<h3>5.1 新增表（应用级 meta.db，位于 server/cache/meta.db）</h3>
+<pre><code>libraries                                    -- 多库共享一份注册表
   id            INTEGER PRIMARY KEY AUTOINCREMENT
-  name          TEXT NOT NULL            -- 库名（网页端展示）
-  photo_dir     TEXT NOT NULL            -- 照片库根目录（icloudpd --directory 输出）
-  cache_dir     TEXT NOT NULL            -- 缩略图缓存（每库独立）
-  db_path       TEXT NOT NULL            -- SQLite 数据库文件（每库独立）
-  cookie_dir    TEXT NOT NULL            -- icloudpd cookie 目录
-  username      TEXT                     -- iCloud 账号邮箱（脱敏展示）
-  icloudpd_args TEXT                     -- 自定义参数 JSON（§4.4②）
-  auth_status   TEXT DEFAULT 'none'      -- none / pending / linked / expired
-  sync_status   TEXT DEFAULT 'idle'      -- idle / running / error
-  created_at    TEXT DEFAULT (datetime('now'))
-
-sync_tasks
-  id            INTEGER PRIMARY KEY AUTOINCREMENT
-  library_id    INTEGER NOT NULL         -- 所属库
-  kind          TEXT NOT NULL            -- full / incremental / auth_check
-  status        TEXT NOT NULL            -- queued / running / success / error / auth_expired
-  progress      TEXT                     -- icloudpd 输出解析：{downloaded, total, current_file}
-  error         TEXT
-  started_at    TEXT
-  finished_at   TEXT</code></pre>
-<h3>5.2 API 清单（新增路由，前缀 /api/library/:id 或 /api/libraries）</h3>
+  name          TEXT UNIQUE NOT NULL         -- 库名（显示别名，不参与路径）
+  library_root  TEXT NOT NULL                -- 照片根 = &lt;项目根&gt;/iCloudPhoto/lib&lt;id&gt;
+  cache_dir     TEXT NOT NULL                -- 缓存 = server/cache/lib&lt;id&gt;（library.db/thumbs）
+  cookie_dir    TEXT NOT NULL                -- 会话 = server/cache/lib&lt;id&gt;/cookies
+  account       TEXT                         -- iCloud 账号邮箱（设置中心完整展示）
+  auth_status   TEXT NOT NULL DEFAULT 'none' -- none / authed / expired
+  last_sync_at  TEXT                         -- 最近同步时间
+  created_at    TEXT NOT NULL
+  active        INTEGER NOT NULL DEFAULT 0   -- 单活跃库标记（同一时间仅一个 = 1）</code></pre>
+<p><b>同步任务状态不入表</b>（单任务模型）：全量/增量任务为全局单任务，状态/进度/错误存内存（<code>icloudpd/state.ts</code>），经 <code>GET /api/library/:id/sync</code> 与 <code>/api/stats</code> 暴露；数据库仅落 <code>last_sync_at</code>。</p>
+<h3>5.2 API 清单（已实现，P0 单活跃库：认证全局无库 id，同步按库 id 触发）</h3>
 <table>
   <tr><th>方法</th><th>路径</th><th>说明</th></tr>
-  <tr><td>GET</td><td><code>/api/libraries</code></td><td>库列表（含状态）</td></tr>
-  <tr><td>POST</td><td><code>/api/libraries</code></td><td>创建库（名称）→ 返回待认证状态</td></tr>
-  <tr><td>DELETE</td><td><code>/api/libraries/:id</code></td><td>删除库（停 watcher，不移文件）</td></tr>
-  <tr><td>GET</td><td><code>/api/library/:id/auth</code></td><td>认证状态查询（none/pending/linked/expired）</td></tr>
-  <tr><td>POST</td><td><code>/api/library/:id/auth/start</code></td><td>启动认证（spawn icloudpd auth-only，返回代理入口）</td></tr>
-  <tr><td>GET</td><td><code>/api/library/:id/auth/proxy</code></td><td>反向代理 icloudpd webui 认证页（iframe 嵌入）</td></tr>
-  <tr><td>POST</td><td><code>/api/library/:id/auth/check</code></td><td>auth-only 会话有效性检查（过期检测）</td></tr>
-  <tr><td>POST</td><td><code>/api/library/:id/sync</code></td><td>触发同步：body {kind: full|incremental}</td></tr>
-  <tr><td>GET</td><td><code>/api/library/:id/sync/tasks</code></td><td>任务历史 + 当前任务进度</td></tr>
-  <tr><td>GET</td><td><code>/api/library/:id/stats</code></td><td>库级统计（现有 /api/stats 的库化版本）</td></tr>
+  <tr><td>GET</td><td><code>/api/libraries</code></td><td>库列表（含 active/auth_status/account/目录/照片视频计数）</td></tr>
+  <tr><td>POST</td><td><code>/api/libraries</code></td><td>创建库（body {name}；已有激活库时不激活，仅首次建库激活）</td></tr>
+  <tr><td>PATCH</td><td><code>/api/libraries/:id/active</code></td><td>切换激活库（同步执行中 409；热切换：停 watcher → 清队列 → 关 DB → 重扫）</td></tr>
+  <tr><td>DELETE</td><td><code>/api/libraries/:id</code></td><td>删除库（body {removePhotos}；必删注册 + 缓存目录，removePhotos 才删照片；删激活库自动切剩余库/回默认路径）</td></tr>
+  <tr><td>POST</td><td><code>/api/auth</code></td><td>开始认证（spawn icloudpd webui auth-only）→ starting</td></tr>
+  <tr><td>POST</td><td><code>/api/auth/input</code></td><td>输入密码/验证码（桥接 webui；inputLock 防重）</td></tr>
+  <tr><td>GET</td><td><code>/api/auth</code></td><td>认证状态轮询（starting/waiting_password/submitting/waiting_code/done/error）</td></tr>
+  <tr><td>POST</td><td><code>/api/auth/cancel</code></td><td>取消认证（taskkill 进程树）</td></tr>
+  <tr><td>POST</td><td><code>/api/library/:id/sync</code></td><td>触发同步：body {kind: full|inc}；仅限当前激活库（其他库 409）</td></tr>
+  <tr><td>GET</td><td><code>/api/library/:id/sync</code></td><td>同步任务状态（全局单任务）</td></tr>
+  <tr><td>DELETE</td><td><code>/api/library/:id/sync</code></td><td>取消同步任务</td></tr>
+  <tr><td>GET</td><td><code>/api/stats</code></td><td>全局统计 + 当前库同步状态（含 libraryId/kind）+ 认证状态 + 缩略图失败/忽略计数</td></tr>
 </table>
 
 <h2>6. 实施路线图</h2>
 <table>
-  <tr><th>阶段</th><th>范围</th><th>验收标准</th></tr>
+  <tr><th>阶段</th><th>范围</th><th>状态</th></tr>
   <tr><td><span class="tag p0">P0</span><b>认证与单库同步闭环</b></td>
-      <td>① 验证 icloudpd webui provider + --domain .cn 真实可用性；② 后端 icloudpd 模块（spawn/auth-only/下载任务/进度解析）；③ 首次引导流程（创建库→认证→全量）；④ 状态组件加全量/增量按钮</td>
-      <td>网页端完成一个库的：创建 → 链接（邮箱/密码/验证码）→ 全量拉取 → 增量同步；断网重试有效；cookie 过期可提示重新链接</td></tr>
+      <td>icloudpd webui 桥接认证 + 后端 icloudpd 模块（spawn/auth-only/下载任务/进度解析）+ 首次引导（创建库→认证→全量）+ 状态组件加全量/增量按钮</td>
+      <td><b>已实现</b>（feat/icloudpd-sync 分支，联调验收中）——认证状态机/分步面板、全量/增量单按钮四态、断网重试（waiting_retry）、cookie 过期重新链接均落地</td></tr>
   <tr><td><span class="tag p1">P1</span><b>单活跃库多库</b></td>
-      <td>libraries 表 + 激活上下文 + 全局队列带库标记 + 前端切库（整页初始化）</td>
-      <td>同实例多库注册/切换；切换事务无串库（旧库任务全部挂起、连接关闭后才激活新库）；非激活库任务暂停不执行；删除库优雅停止</td></tr>
+      <td>meta.db libraries 表 + 激活上下文 + 全局同步单任务 + 前端切库（整页初始化）+ 删除</td>
+      <td><b>已实现</b>——多库注册/切换/删除（确认弹窗、默认勾选删副本）、新建不自动激活、删激活库自动切库、切库后同步状态重置</td></tr>
   <tr><td><span class="tag p2">P2</span><b>设置中心与扩展</b></td>
-      <td>设置组件（库管理 + icloudpd 参数自定义）+ 过期巡检 + 会话有效期展示</td>
-      <td>设置页可增删改库、配置下载参数；过期自动提示</td></tr>
+      <td>设置组件（库管理 + 照片库配置）+ 过期巡检 + 会话有效期展示</td>
+      <td><b>部分实现</b>——库管理/链接/删除/每库同步完成；照片库配置锁死只读（预留）；过期巡检与参数自定义待后续</td></tr>
 </table>
 
 <h2>7. 风险与待确认问题清单</h2>
 <table>
   <tr><th>#</th><th>问题</th><th>影响</th><th>建议</th></tr>
-  <tr><td>1 <span class="tag ok">已验证</span></td><td>icloudpd <code>--password-provider webui + --mfa-provider webui</code> 真实可用（2026-10-09 实测）：进程启动本地认证页（监听 8080），网页输入密码/验证码后认证成功、进程自动退出、cookie 落盘；<code>--auth-only</code> 独立认证正常</td><td>无（主路径成立）</td><td>后端 spawn 该命令 → 端口代理给前端 iframe；认证完成以「进程退出 + cookie 落盘」为判据</td></tr>
-  <tr><td>2 <span class="tag ok">已验证</span></td><td>文件夹结构确认：icloudpd <b>默认即 <code>%Y/%m/%d</code></b>（实测 dry-run 输出路径 <code>…\2026\08\31\IMG_7851.HEIC</code>，无需显式指定）；且本项目<b>锁定该结构不可更改</b>（代码依赖见 §4.4②）</td><td>无（已锁定）</td><td>拉取命令不暴露 folder-structure 配置项，固定传 <code>--folder-structure %Y/%m/%d</code></td></tr>
+  <tr><td>1 <span class="tag ok">已验证</span></td><td>icloudpd <code>--password-provider webui + --mfa-provider webui</code> 真实可用（2026-10-09 实测）：进程启动本地认证页（监听 8080），网页输入密码/验证码后认证成功、进程自动退出、cookie 落盘；<code>--auth-only</code> 独立认证正常。<b>最终实现 = 自绘面板 + webui 桥接</b>（console 管道实测不可行：getpass 直读 Windows 控制台不经管道，管道化挂起，已放弃）</td><td>无（主路径成立）</td><td>已落地为 <code>POST /api/auth</code> 启动 webui auth-only + 轮询 8080/status + 桥接输入；完成判据 = 进程退出码 0 + cookie 落盘</td></tr>
+  <tr><td>2 <span class="tag ok">已验证</span></td><td>文件夹结构确认：icloudpd <b>默认即 <code>%Y/%m/%d</code></b>（实测 dry-run 输出路径 <code>…\2026\08\31\IMG_7851.HEIC</code>，无需显式指定）；且本项目<b>锁定该结构不可更改</b>（代码依赖见 §4.4②）</td><td>无（已锁定）</td><td>不暴露 folder-structure 配置项；拉取命令<b>不显式传该参数</b>，依赖 icloudpd 默认 <code>%Y/%m/%d</code>（扫描代码按此硬依赖）</td></tr>
   <tr><td>3 <span class="tag ok">已验证</span></td><td><code>--domain cn</code> 大陆访问正常（实测认证响应 <code>country: CN</code>、请求走 <code>setup.icloud.com.cn</code>）；但注意 Apple 端<b>照片库索引状态间歇性</b>：实测同一命令 12:54 成功、12:57 报 <code>has not finished indexing yet</code>——需靠内置重试消化（见新增 §3.1.5）</td><td>下载成功率</td><td>下载任务内置自动重试：识别关键词 <code>has not finished indexing</code> → 等待 30~60s 重试（固定次数），而非直接失败</td></tr>
-  <tr><td>4 <span class="tag ok">部分验证</span></td><td>icloudpd 输出格式：dry-run 实测输出稳定（<code>Downloading… → [DRY RUN] Would download… → Downloaded…</code>），可用于进度解析；<code>--until-found 1 --dry-run</code> 实测 8.1s/7 行日志即停（停止行为清晰）；正式下载的进度条/计数样本待 Apple 窗口稳定后补抓，后端建议加 <code>--no-progress-bar</code> 取纯文本输出</td><td>同步进度展示</td><td>进度解析按上述行模式设计；<code>--no-progress-bar</code> / <code>--skip-*</code> / <code>--size</code> 待窗口期补测（见 §2.5）</td></tr>
-  <tr><td>5 <span class="tag confirm">待确认</span></td><td>多库重构改动面大（db/config/routes/scanner/watcher/前端 store），是否接受分阶段推进（P0 先单库）</td><td>排期与风险</td><td>按 §6 分期；P0 期间代码仍按单库上下文写，为 P1 留接口</td></tr>
-  <tr><td>6 <span class="tag confirm">待确认</span></td><td>密码/验证码安全边界：webui 通道之外是否需要额外加密存储 cookie 目录</td><td>敏感数据</td><td>默认按本地单机威胁模型，cookie 目录权限限制即可；如多用户再升级</td></tr>
+  <tr><td>4 <span class="tag ok">已落地</span></td><td>icloudpd 输出格式：dry-run 实测输出稳定（<code>Downloading… → [DRY RUN] Would download… → Downloaded…</code>）；<code>--until-found 1 --dry-run</code> 实测 8.1s/7 行日志即停（停止行为清晰）。<b>进度解析已实现</b>：sync.ts 按行模式解析 downloaded/状态（done/error/cancelled），非 TTY 管道下进度条自动关闭无需 <code>--no-progress-bar</code>；全量/增量命令已实测跑通（含 <code>--set-exif-datetime</code>）</td><td>同步进度展示</td><td>进度解析已按行模式落地；<code>--skip-*</code> / <code>--size</code> 等可选参数<b>P0 未开放</b>（设置中心照片库配置锁死只读），后续放开时再补测（见 §2.5）</td></tr>
+  <tr><td>5 <span class="tag ok">已解决</span></td><td>多库重构改动面大（db/config/routes/scanner/watcher/前端 store），是否接受分阶段推进（P0 先单库）</td><td>排期与风险</td><td><b>未分阶段，多库已随 P0 一并实现</b>（2026-10-12）：meta.db 注册表 + 单活跃库上下文直接落地，P1 多库部分随 P0 完成；原「P0 先单库」建议不再需要</td></tr>
+  <tr><td>6 <span class="tag ok">已处理</span></td><td>密码/验证码安全边界：自绘面板 + 桥接通道（不落日志/DB、不进 cookie 存储）；已链接库固定邮箱不可改（防换邮箱错乱，需删除重建）</td><td>敏感数据</td><td>默认按本地单机威胁模型，cookie 目录权限限制即可；如多用户再升级</td></tr>
   <tr><td>7</td><td>icloudpd 项目维护者空缺（官方标注）</td><td>长期依赖风险</td><td>黑盒调用 + 版本锁定 + 关注仓库动态；必要时评估 fork</td></tr>
+  <tr><td>8 <span class="tag ok">已收敛</span></td><td>认证重复发验证码（2026-10-12 实测：输入密码后手机收到两次双重验证「允许」弹窗）</td><td>骚扰 + 认证错乱</td><td>已上 <code>inputLock</code>（后端同一时刻仅处理一次提交）+ 前端 submitting 锁（提交后锁定、轮询到阶段变化/错误才解锁）；若复现优先查后端日志「忽略重复提交」与 <code>/code</code> 多次 POST</td></tr>
 </table>
 
-<p class="meta" style="margin-top:32px;padding-top:12px;border-top:1px solid var(--border);">本文档为设计稿，供评审与排期参考。<b>2026-10-09 实测结论已回填</b>：§2.5 命令实测清单 + §7 问题 1/2/3/4 + §3.1.5 自动重试设计。P0 尚余补测项：<code>--skip-*</code>、<code>--size</code>、<code>--no-progress-bar</code>（待 Apple 索引窗口稳定）。</p>
+<p class="meta" style="margin-top:32px;padding-top:12px;border-top:1px solid var(--border);">本文档为设计稿，供评审与排期参考。<b>2026-10-09 实测结论已回填</b>：§2.5 命令实测清单 + §7 问题 1/2/3/4 + §3.1.5 自动重试设计。<b>2026-10-12 实现同步</b>：§3.1.1 认证方案更新为 webui 桥接（console 不可行）、状态机与防重锁；§4.1 首次引导、§4.4 设置中心、§5 数据模型/API、§6 路线图、§7 问题 1/4/5/6/8 均按实现回填（问题 5 多库分阶段疑问已解决——多库随 P0 一并实现；问题 4 进度解析已落地）。P0 尚余：全链路联调验收；<code>--skip-*</code> / <code>--size</code> 因配置锁死未开放，后续放开时补测。</p>
 
 </div>
 </body>

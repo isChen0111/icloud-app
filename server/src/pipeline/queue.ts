@@ -169,3 +169,15 @@ export function getQueueMetrics(): ThumbnailQueueMetrics {
 export function registerThumbnailCancelled(): void {
   scheduler.registerCancelled()
 }
+
+/**
+ * 清空缩略图队列（切库前调用）：
+ * 旧库资产的排队任务全部丢弃（去重表 + 调度器排队），正在运行的旧库任务继续跑完
+ * （ensureThumbnail 内部按当前 getDb 查行，切库后旧 id 查不到即跳过，无害）。
+ * 进度账本复位，避免旧库进度串到新库。
+ */
+export function clearThumbnailQueue(): void {
+  scheduler.clear()
+  queued.clear()
+  resetThumbnailProgress()
+}

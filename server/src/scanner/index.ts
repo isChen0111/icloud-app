@@ -27,8 +27,8 @@ const VIDEO_EXTS = new Set(['.mov', '.mp4', '.m4v', '.avi'])
 /** 扫描进度（内存态，简单够用） */
 export const scanProgress = {
   status: 'idle' as 'idle' | 'scanning' | 'done' | 'error',
-  /** 本次扫描触发来源：手动 / 热监听 / 启动 */
-  source: 'idle' as 'idle' | 'manual' | 'watcher' | 'startup',
+  /** 本次扫描触发来源：手动 / 热监听 / 启动 / 切库 */
+  source: 'idle' as 'idle' | 'manual' | 'watcher' | 'startup' | 'switch',
   runId: 0,
   totalFiles: 0,
   scannedFiles: 0,
@@ -87,7 +87,7 @@ function walkDir(dir: string): { files: string[]; errors: string[] } {
 
 /**
  * 全量同步入口：遍历 + 配对 + 入库 + 删除对账。可重复调用（增量幂等）。
- * @param source 触发来源：manual（手动/API）/ watcher（热监听）/ startup（启动对账）
+ * @param source 触发来源：manual（手动/API）/ watcher（热监听）/ startup（启动对账）/ switch（切库）
  *
  * 容错与断点续跑（审查 P1-B1）：
  *  - 整体 try/catch：任何异常都把 scanProgress 置为 error 并上抛，
@@ -95,7 +95,7 @@ function walkDir(dir: string): { files: string[]; errors: string[] } {
  *  - 增量续跑：已入库的 file_path 直接复用元数据（照片库是 iCloudPD
  *    只读快照，文件内容不变），中断后重跑只补新文件，无需全量重来。
  */
-export async function runScan(source: 'manual' | 'watcher' | 'startup' = 'manual'): Promise<void> {
+export async function runScan(source: 'manual' | 'watcher' | 'startup' | 'switch' = 'manual'): Promise<void> {
   scanProgress.source = source
   scanProgress.runId++
   const db = getDb()

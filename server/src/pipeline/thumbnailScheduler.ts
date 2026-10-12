@@ -118,4 +118,14 @@ export class ThumbnailScheduler {
       cancelled: this.cancelledCount,
     }
   }
+
+  /**
+   * 清空排队任务（切库调用；正在运行的任务继续跑完，完成后自然释放槽位）。
+   * p-queue 的 clear() 只清排队不清运行中，交互计数同步归零。
+   */
+  clear(): void {
+    this.queue.clear()
+    this.interactiveWaitingCount = 0
+    this.cancelledCount = 0
+  }
 }
