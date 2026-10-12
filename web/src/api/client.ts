@@ -8,10 +8,14 @@ import type {
   AssetDetail,
   AssetDto,
   AssetInfo,
+  AuthSession,
+  LibrariesResult,
+  LibraryInfo,
   MonthGroup,
   PageResult,
   SearchResult,
   Stats,
+  SyncState,
   ThumbnailFailuresResult,
   ThumbSize,
 } from '../types'
@@ -173,3 +177,82 @@ export function deleteAssets(ids: number[]): Promise<DeleteAssetsResult> {
 }
 
 export type { AssetDto }
+
+/* ============ P0 照片库（icloudpd 同步） ============ */
+
+/** 库列表（account 脱敏） */
+export function fetchLibraries(): Promise<LibrariesResult> {
+  return get<LibrariesResult>('/libraries')
+}
+
+/** 新建照片库并激活（首次引导「设置库名」步骤） */
+export function createLibrary(name: string): Promise<{ ok: boolean; library: LibraryInfo; note?: string }> {
+  return post('/libraries', { name })
+}
+
+/** 切换激活库（热切换：停旧库资源 → 重扫新库） */
+export function switchLibrary(id: number): Promise<{ ok: boolean; activeId: number; unchanged?: boolean }> {
+  return fetch(`${BASE}/libraries/${id}/active`, { method: 'PATCH' }).then(async (r) => {
+    if (!r.ok) {
+      const error = (await r.json()) as { error?: unknown }
+      throw new Error(typeof error.error === 'string' ? error.error : `API /libraries/${id}/active → ${r.status}`)
+    }
+    return r.json() as Promise<{ ok: boolean; activeId: number; unchanged?: boolean }>
+  })
+}
+
+/**
+ * 删除照片库（仅本地；云端 iCloud 原片不受影响）。
+ * removePhotos=true 时连同本地已下载照片副本一起删，否则仅删注册 + 缓存。
+ */
+export function deleteLibrary(
+  id: number,
+  removePhotos: boolean,
+): Promise<{ ok: boolean; activeId: number | null; remaining: number }> {
+  return fetch(`${BASE}/libraries/${id}`, {
+    method: 'DELETE',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ removePhotos }),
+  }).then(async (r) => {
+    if (!r.ok) {
+      const error = (await r.json()) as { error?: unknown }
+      throw new Error(typeof error.error === 'string' ? error.error : `API /libraries/${id} DELETE → ${r.status}`)
+    }
+    return r.json() as Promise<{ ok: boolean; activeId: number | null; remaining: number }>
+  })
+}
+
+/** 启动认证（auth-only；返回会话，前端轮询 fetchAuth） */
+export function startAuth(libraryId: number, username: string): Promise<{ ok: boolean; auth: AuthSession }> {
+  return post('/auth', { libraryId, username })
+}
+
+/** 喂入密码 / 验证码 */
+export function sendAuthInput(value: string): Promise<{ ok: boolean; auth: AuthSession }> {
+  return post('/auth/input', { value })
+}
+
+/** 查询认证会话状态（轮询） */
+export function fetchAuth(): Promise<{ auth: AuthSession | null }> {
+  return get('/auth')
+}
+
+/** 取消认证 */
+export function cancelAuth(): Promise<{ ok: boolean }> {
+  return fetch(`${BASE}/auth/cancel`, { method: 'POST' }).then((r) => r.json())
+}
+
+/** 启动同步任务（kind: full 全量拉取 / inc 增量同步） */
+export function startSync(libraryId: number, kind: 'full' | 'inc'): Promise<{ ok: boolean; sync: SyncState }> {
+  return post(`/library/${libraryId}/sync`, { kind })
+}
+
+/** 同步任务状态（轮询） */
+export function fetchSync(libraryId: number): Promise<{ sync: SyncState }> {
+  return get(`/library/${libraryId}/sync`)
+}
+
+/** 取消同步任务 */
+export function cancelSync(libraryId: number): Promise<{ ok: boolean; sync: SyncState }> {
+  return fetch(`${BASE}/library/${libraryId}/sync`, { method: 'DELETE' }).then((r) => r.json())
+}

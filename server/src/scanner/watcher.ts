@@ -46,6 +46,22 @@ function scheduleScan(): void {
   }, 1500)
 }
 
+/**
+ * 排除规则：
+ * 1. 隐藏文件/目录（. 开头），如 .DS_Store、系统临时文件；
+ * 2. 缓存产物（stats.json / library.db / thumbs / tmp / cookies 等）。
+ *    当照片库根与缓存目录重合时（如测试库 cache 与 library 同一目录），
+ *    缓存写入会自触发扫描形成死循环；显式排除后，只有真实照片文件变化才触发扫描。
+ */
+function isIgnored(p: string): boolean {
+  const base = path.basename(p)
+  if (base.startsWith('.')) return true
+  if (base === 'stats.json' || base === 'library.db' || base === 'cookies') return true
+  if (base.endsWith('.db-wal') || base.endsWith('.db-shm')) return true
+  if (base === 'thumbs' || base === 'tmp' || base === 'blur') return true
+  return false
+}
+
 /** 启动热监听（幂等：重复调用只起一个 watcher） */
 export function startWatcher(): void {
   if (watcher) return
@@ -56,8 +72,8 @@ export function startWatcher(): void {
     // 注意：iCloudPD 连续下载大视频时，文件可能分块写入、中间停顿，
     // 500ms 太短会误判"写完了"导致抽帧失败；2s 更稳妥。
     awaitWriteFinish: { stabilityThreshold: 2000, pollInterval: 100 },
-    // 忽略隐藏文件/目录（. 开头），如 .DS_Store、系统临时文件
-    ignored: (p) => path.basename(p).startsWith('.'),
+    // 忽略隐藏文件 + 缓存产物（见 isIgnored）
+    ignored: isIgnored,
   })
 
   // 任一文件事件（新增/变化/删除/目录删除）都触发防抖同步
@@ -71,4 +87,21 @@ export function startWatcher(): void {
   })
 
   console.log(`[watcher] 已开始监听照片库: ${config.libraryRoot}`)
+}
+
+/** 停止热监听（切库前调用：停旧库 watcher，防新事件打向旧库扫描） */
+export function stopWatcher(): void {
+  if (debounceTimer) {
+    clearTimeout(debounceTimer)
+    debounceTimer = null
+  }
+  if (retryTimer) {
+    clearTimeout(retryTimer)
+    retryTimer = null
+  }
+  dirty = false
+  if (watcher) {
+    void watcher.close()
+    watcher = null
+  }
 }

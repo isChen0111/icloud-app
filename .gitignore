@@ -19,8 +19,7 @@ node_modules/
 /web/dist/
 
 # 大体积二进制（163MB zip + 300MB 解压目录；scripts/install-ffmpeg-full.ps1 可从 GitHub 重新下载）
-/server/vendor/ffmpeg-full.zip
-/server/vendor/ffmpeg-full/
+/server/vendor/
 
 # 日志与系统文件
 *.log

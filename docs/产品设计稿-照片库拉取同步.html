@@ -247,13 +247,15 @@ body{background:var(--bg);color:var(--text);font-family:system-ui,-apple-system,
               <!-- 原「共检查 2,277 个媒体文件。」说明行位置 → iCloud 同步单按钮（全量/增量合并，执行/取消合并） -->
               <div style="position:relative;margin-top:7px">
                 <button class="sync-btn" id="mainBtn" onclick="mainBtnClick()">
+                  <span class="ico" id="mainIco"></span>
                   <span class="spinner" id="mainSpin" style="display:none"></span>
                   <span id="mainBtnText">同步</span>
                   <svg class="chev" width="11" height="11" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="2"><path d="m3 4.5 3 3 3-3"/></svg>
                 </button>
+                <div class="sync-prog" id="mainProg" style="display:none"></div>
                 <div class="sync-menu" id="mainMenu" style="display:none">
-                  <div class="sync-menu-item" onclick="mainPick('full')">全量拉取</div>
-                  <div class="sync-menu-item" onclick="mainPick('inc')">增量同步</div>
+                  <div class="sync-menu-item" onclick="mainPick('full')"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M7 18a4.5 4.5 0 0 1-.8-8.9A5.5 5.5 0 0 1 17.4 9.5 3.8 3.8 0 0 1 17 17"/><path d="M12 12v6"/><path d="m9 15.5 3 3 3-3"/></svg>全量拉取</div>
+                  <div class="sync-menu-item" onclick="mainPick('inc')"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14"/><path d="M5 12h14"/></svg>增量同步</div>
                 </div>
               </div>
             </div>
@@ -384,13 +386,15 @@ body{background:var(--bg);color:var(--text);font-family:system-ui,-apple-system,
           <div style="display:flex;align-items:center;gap:10px;margin-top:10px;padding-top:10px;border-top:1px dashed var(--border)">
             <div style="position:relative">
               <button class="sync-btn" id="sBtn" onclick="libBtnClick('我的相册')">
+                <span class="ico" id="sIco"></span>
                 <span class="spinner" id="sSpin" style="display:none"></span>
                 <span id="sBtnText">同步</span>
                 <svg class="chev" width="11" height="11" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="2"><path d="m3 4.5 3 3 3-3"/></svg>
               </button>
+              <div class="sync-prog" id="sProg" style="display:none"></div>
               <div class="sync-menu" id="sMenu" style="display:none">
-                <div class="sync-menu-item" onclick="libPick('我的相册','full')">全量拉取</div>
-                <div class="sync-menu-item" onclick="libPick('我的相册','inc')">增量同步</div>
+                <div class="sync-menu-item" onclick="libPick('我的相册','full')"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M7 18a4.5 4.5 0 0 1-.8-8.9A5.5 5.5 0 0 1 17.4 9.5 3.8 3.8 0 0 1 17 17"/><path d="M12 12v6"/><path d="m9 15.5 3 3 3-3"/></svg>全量拉取</div>
+                <div class="sync-menu-item" onclick="libPick('我的相册','inc')"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14"/><path d="M5 12h14"/></svg>增量同步</div>
               </div>
             </div>
             <span class="sync-note" id="sNote">上次：今天 13:02</span>
@@ -413,13 +417,15 @@ body{background:var(--bg);color:var(--text);font-family:system-ui,-apple-system,
           <div style="display:flex;align-items:center;gap:10px;margin-top:10px;padding-top:10px;border-top:1px dashed var(--border)">
             <div style="position:relative">
               <button class="sync-btn" id="tBtn" onclick="libBtnClick('旅行相册')">
+                <span class="ico" id="tIco"></span>
                 <span class="spinner" id="tSpin" style="display:none"></span>
                 <span id="tBtnText">同步</span>
                 <svg class="chev" width="11" height="11" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="2"><path d="m3 4.5 3 3 3-3"/></svg>
               </button>
+              <div class="sync-prog" id="tProg" style="display:none"></div>
               <div class="sync-menu" id="tMenu" style="display:none">
-                <div class="sync-menu-item" onclick="libPick('旅行相册','full')">全量拉取</div>
-                <div class="sync-menu-item" onclick="libPick('旅行相册','inc')">增量同步</div>
+                <div class="sync-menu-item" onclick="libPick('旅行相册','full')"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M7 18a4.5 4.5 0 0 1-.8-8.9A5.5 5.5 0 0 1 17.4 9.5 3.8 3.8 0 0 1 17 17"/><path d="M12 12v6"/><path d="m9 15.5 3 3 3-3"/></svg>全量拉取</div>
+                <div class="sync-menu-item" onclick="libPick('旅行相册','inc')"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14"/><path d="M5 12h14"/></svg>增量同步</div>
               </div>
             </div>
             <span class="sync-note" id="tNote">上次：昨天 20:11</span>
@@ -472,18 +478,24 @@ body{background:var(--bg);color:var(--text);font-family:system-ui,-apple-system,
 @keyframes spin{to{transform:rotate(360deg)}}
 .syncopt.selected,.libopt.selected{background:var(--accent);border-color:var(--accent);color:#fff}
 /* 同步单按钮：全量/增量合并一个按钮，执行/取消合并一个按钮（多态切换 + 动画） */
-.sync-btn{display:inline-flex;align-items:center;justify-content:center;gap:5px;padding:3px 12px;min-width:138px;border:1px solid var(--border2);border-radius:7px;background:#fff;color:var(--text);font-size:11px;font-weight:600;cursor:pointer;transition:all .18s ease;user-select:none}
-.sync-btn:hover{border-color:var(--accent);color:var(--accent)}
+.sync-btn{display:inline-flex;align-items:center;justify-content:center;gap:5px;height:26px;padding:0 12px;min-width:138px;border:1px solid var(--border2);border-radius:7px;background:#fff;color:var(--text);font-size:11px;font-weight:600;cursor:pointer;transition:all .18s ease;user-select:none;box-shadow:0 1px 2px rgba(15,23,42,.04)}
+.sync-btn:hover{border-color:var(--accent);color:var(--accent);box-shadow:0 2px 6px rgba(10,132,255,.12)}
+.sync-btn .ico{display:inline-flex;align-items:center;flex-shrink:0;color:inherit}
 .sync-btn.primary{background:var(--accent);border-color:var(--accent);color:#fff}
-.sync-btn.primary:hover{background:#0a75e6}
+.sync-btn.primary:hover{background:#0a75e6;color:#fff}
 .sync-btn.run{background:var(--accent2);border-color:var(--accent);color:var(--accent)}
 .sync-btn.warn{background:var(--warn2);border-color:#f2c48c;color:var(--warn)}
-.sync-btn .chev{transition:transform .18s ease}
+.sync-btn .chev{transition:transform .18s ease;flex-shrink:0}
 .sync-btn.open .chev{transform:rotate(180deg)}
 .sync-btn .spinner{width:12px;height:12px;border:2px solid rgba(10,132,255,.25);border-top-color:var(--accent);border-radius:50%;animation:spin .8s linear infinite}
-.sync-menu{position:absolute;top:calc(100% + 4px);left:0;min-width:138px;background:#fff;border:1px solid var(--border2);border-radius:8px;box-shadow:0 6px 18px rgba(15,23,42,.14);z-index:31;padding:4px;font-size:11px;animation:popin .12s ease}
-.sync-menu-item{padding:6px 10px;border-radius:6px;cursor:pointer;color:var(--text);white-space:nowrap}
+/* 执行中行内进度条（演示动画；真实实现接任务进度百分比） */
+.sync-prog{position:absolute;left:0;top:calc(100% + 3px);height:2px;border-radius:2px;background:linear-gradient(90deg,var(--accent),#7cc2ff);animation:prog 2.6s linear infinite;z-index:32}
+@keyframes prog{0%{width:0}100%{width:100%}}
+.sync-menu{position:absolute;top:calc(100% + 6px);left:0;min-width:138px;background:#fff;border:1px solid var(--border2);border-radius:8px;box-shadow:0 6px 18px rgba(15,23,42,.14);z-index:31;padding:4px;font-size:11px;animation:popin .12s ease}
+.sync-menu-item{display:flex;align-items:center;gap:7px;padding:6px 10px;border-radius:6px;cursor:pointer;color:var(--text);white-space:nowrap}
+.sync-menu-item svg{flex-shrink:0;color:var(--text3)}
 .sync-menu-item:hover{background:var(--accent2);color:var(--accent)}
+.sync-menu-item:hover svg{color:var(--accent)}
 .sync-note{font-size:10px;color:var(--text3)}
 </style>
 <script>
@@ -509,29 +521,33 @@ function simDone(){
 }
 /* ===== 同步：单按钮状态机，全局单一状态（主界面与设置中心共享，实时同步） =====
    syncState = { lib, kind, status: 'idle' | 'picked' | 'running' }
-   按钮四态：同步▾（展开菜单）→ 执行·全量/增量 → ⟳执行中·点击取消 → 回到同步 */
+   按钮四态：同步▾（展开菜单）→ 执行·全量/增量 → ⟳执行中·点击取消 → 回到同步
+   排队规则：仅「确实已排队的库」显示排队中；其他库任何时候保持「同步」可正常选择执行 */
 var syncState={lib:null,kind:null,status:'idle'};
 var syncTimer=null;
-var queuedLib=null; // 等待执行的库（演示：一次仅一个库同步）
+var queuedLib=null; // 已排队的库（演示：一次仅一个库同步）
 
 function libKindLabel(k){return k==='full'?'全量拉取':'增量同步'}
+var ICONS={
+  idle:'<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M7 18a4.5 4.5 0 0 1-.8-8.9A5.5 5.5 0 0 1 17.4 9.5 3.8 3.8 0 0 1 17 17"/><path d="M12 12v6"/><path d="m9 15.5 3 3 3-3"/></svg>',
+  pick:'<svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="2"><path d="M6 5.5v13l10-6.5z"/></svg>',
+  wait:'<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/></svg>'
+};
 
-/* 单按钮点击分流：idle=展开/收起菜单；picked(本库)=执行；running(本库)=取消 */
+/* 单按钮点击分流：本库 idle/未占用=开菜单；本库 picked=执行；本库 running=取消 */
 function mainBtnClick(){
-  if(syncState.status==='idle'){toggleMenu('mainMenu','mainBtn');return}
-  if(syncState.status==='picked'&&syncState.lib==='我的相册'){execSync();return}
-  if(syncState.status==='running'&&syncState.lib==='我的相册'){cancelSync();return}
-  toast('演示：当前有其他任务执行中，不能重复启动');
+  var busyHere=(syncState.status==='picked'||syncState.status==='running')&&syncState.lib==='我的相册';
+  if(!busyHere){toggleMenu('mainMenu','mainBtn');return}
+  if(syncState.status==='picked'){execSync();return}
+  cancelSync();
 }
 function libBtnClick(lib){
   var menuId=lib==='我的相册'?'sMenu':'tMenu';
   var btnId=lib==='我的相册'?'sBtn':'tBtn';
-  if(syncState.status==='idle'||(syncState.status==='picked'&&syncState.lib!==lib)){
-    toggleMenu(menuId,btnId);return;
-  }
-  if(syncState.status==='picked'&&syncState.lib===lib){execSync();return}
-  if(syncState.status==='running'&&syncState.lib===lib){cancelSync();return}
-  toast('演示：当前有其他任务执行中，该库进入等待队列');
+  var busyHere=(syncState.status==='picked'||syncState.status==='running')&&syncState.lib===lib;
+  if(!busyHere){toggleMenu(menuId,btnId);return}
+  if(syncState.status==='picked'){execSync();return}
+  cancelSync();
 }
 function toggleMenu(menuId,btnId){
   var m=document.getElementById(menuId),b=document.getElementById(btnId);
@@ -545,9 +561,16 @@ function closeMenus(){
   ['mainMenu','sMenu','tMenu'].forEach(function(id){var m=document.getElementById(id);if(m)m.style.display='none'});
   ['mainBtn','sBtn','tBtn'].forEach(function(id){var b=document.getElementById(id);if(b)b.classList.remove('open')});
 }
-/* 选择（关闭菜单，进入 picked） */
+/* 选择（关闭菜单）：无任务→picked；其他库执行中→本库进入排队 */
 function mainPick(kind){
   closeMenus();
+  if(syncState.status==='running'){
+    if(syncState.lib==='我的相册'){toast('演示：该库已有任务执行中');return}
+    queuedLib={lib:'我的相册',kind:kind};
+    renderSync();
+    toast('演示：已加入等待队列，当前任务结束后自动执行');
+    return;
+  }
   syncState={lib:'我的相册',kind:kind,status:'picked'};
   renderSync();
 }
@@ -584,30 +607,44 @@ function cancelSync(){
   renderSync();
   toast('演示：任务已取消');
 }
-/* 渲染：三处按钮（主界面 / 设置中心两库）统一由全局状态驱动 */
+/* 渲染：三处按钮（主界面 / 设置中心两库）统一由全局状态驱动。
+   只有真正排队的库显示排队中，其余库始终「同步」可正常操作 */
 function btnCfg(lib){
   var st=syncState;
+  var queued=queuedLib&&queuedLib.lib===lib;
   if(st.status==='idle')
-    return queuedLib&&queuedLib.lib===lib?{text:'已排队',cls:'warn',spin:false}:{text:'同步',cls:'',spin:false};
-  if(st.status==='picked'&&st.lib===lib)return {text:'执行 · '+libKindLabel(st.kind),cls:'primary',spin:false};
+    return queued?{text:'排队中',cls:'warn',spin:false,ico:'wait'}:{text:'同步',cls:'',spin:false,ico:'idle'};
+  if(st.status==='picked')
+    return st.lib===lib?{text:'执行 · '+libKindLabel(st.kind),cls:'primary',spin:false,ico:'pick'}:{text:'同步',cls:'',spin:false,ico:'idle'};
   if(st.status==='running'){
-    if(st.lib===lib)return {text:libKindLabel(st.kind)+'执行中 · 点击取消',cls:'run',spin:true};
-    return {text:'等待执行（当前：'+st.lib+'）',cls:'warn',spin:false};
+    if(st.lib===lib)return {text:libKindLabel(st.kind)+'执行中 · 点击取消',cls:'run',spin:true,ico:null};
+    return queued?{text:'排队中',cls:'warn',spin:false,ico:'wait'}:{text:'同步',cls:'',spin:false,ico:'idle'};
   }
-  return {text:'同步',cls:'',spin:false};
+  return {text:'同步',cls:'',spin:false,ico:'idle'};
 }
-function setBtn(btnId,spinId,textId,cfg){
+function setBtn(btnId,spinId,textId,icoId,cfg){
   var b=document.getElementById(btnId);if(!b)return;
   b.className='sync-btn'+(cfg.cls?' '+cfg.cls:'');
   b.classList.remove('open');
+  b.title=cfg.title||'';
   var sp=document.getElementById(spinId);if(sp)sp.style.display=cfg.spin?'inline-block':'none';
   var tx=document.getElementById(textId);if(tx)tx.textContent=cfg.text;
+  var ic=document.getElementById(icoId);if(ic)ic.innerHTML=cfg.ico?ICONS[cfg.ico]:'';
 }
 function renderSync(){
   var c1=btnCfg('我的相册'),c2=btnCfg('旅行相册');
-  setBtn('mainBtn','mainSpin','mainBtnText',c1);
-  setBtn('sBtn','sSpin','sBtnText',c1);
-  setBtn('tBtn','tSpin','tBtnText',c2);
+  setBtn('mainBtn','mainSpin','mainBtnText','mainIco',c1);
+  setBtn('sBtn','sSpin','sBtnText','sIco',c1);
+  setBtn('tBtn','tSpin','tBtnText','tIco',c2);
+  /* 进度条：仅真正执行中的库显示（排队/待执行不显示） */
+  ['mainProg','sProg','tProg'].forEach(function(id){
+    var p=document.getElementById(id);if(!p)return;
+    var lib=id==='tProg'?'旅行相册':'我的相册';
+    var on=syncState.status==='running'&&syncState.lib===lib;
+    p.style.display=on?'block':'none';
+  });
+  /* 排队中按钮的悬浮提示 */
+  var q=queuedLib;if(q){var qid=q.lib==='旅行相册'?'tBtn':'sBtn';var qb=document.getElementById(qid);if(qb)qb.title='当前任务结束后自动开始：'+q.lib+' '+libKindLabel(q.kind)}
 }
 function simDelete(){toast('演示：删除需二次确认（仅移除注册，不删照片文件）')}
 function toggleSw(el){el.classList.toggle('on')}

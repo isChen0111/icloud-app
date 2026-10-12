@@ -17,6 +17,8 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { config } from './config.js'
 import { getDb } from './db/index.js'
+import { ensureDefaultLibrary, getMetaDb } from './db/libraries.js'
+import { applyLibraryPaths } from './context.js'
 import { registerAssetRoutes } from './routes/assets.js'
 import { registerThumbRoutes } from './routes/thumb.js'
 import { registerVideoRoutes } from './routes/video.js'
@@ -24,6 +26,9 @@ import { registerStatsRoutes } from './routes/stats.js'
 import { registerSearchRoutes } from './routes/search.js'
 import { registerInfoRoutes } from './routes/info.js'
 import { registerThumbnailErrorRoutes } from './routes/thumbnail-errors.js'
+import { registerLibraryRoutes } from './routes/libraries.js'
+import { registerAuthRoutes } from './routes/auth.js'
+import { registerSyncRoutes } from './routes/sync.js'
 import { runScan, scanProgress } from './scanner/index.js'
 import { startWatcher } from './scanner/watcher.js'
 import { cleanStaleTempFiles } from './pipeline/thumbnails.js'
@@ -32,9 +37,20 @@ import { cleanStaleTempFiles } from './pipeline/thumbnails.js'
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
 
 async function main(): Promise<void> {
-  // ① 数据库初始化（建表）
-  getDb()
-  cleanStaleTempFiles()
+  // ① 库注册表初始化（meta.db）；有激活库则覆写全局 config 为该库路径
+  //    （现有模块零改动复用）；无库 → 前端进入首次引导，不隐式建库。
+  getMetaDb()
+  const lib = ensureDefaultLibrary()
+  if (lib) {
+    applyLibraryPaths(lib)
+    console.log(`[libraries] 激活库: ${lib.name} (${lib.library_root})`)
+
+    // ② 数据库初始化（激活库的 library.db，建表）
+    getDb()
+    cleanStaleTempFiles()
+  } else {
+    console.log('[libraries] 无照片库，等待首次引导创建（主页将显示引导流程）')
+  }
 
   const app = Fastify({ logger: true })
 
@@ -72,6 +88,9 @@ async function main(): Promise<void> {
   await registerSearchRoutes(app)
   await registerInfoRoutes(app)
   await registerThumbnailErrorRoutes(app)
+  await registerLibraryRoutes(app)
+  await registerAuthRoutes(app)
+  await registerSyncRoutes(app)
 
   // ②.5 生产模式静态托管：若 web/dist 存在（已 build），把前端挂到根路径。
   //     开发模式下没有 dist，走 Vite 5173 + proxy，不影响。
@@ -86,11 +105,14 @@ async function main(): Promise<void> {
 
   // ③ 启动后台全量同步（P2+-1）：幂等增量，新增入库 + 删除对账 + 配对修正。
   //    不 await、不阻塞启动；前端轮询 /api/stats 获取状态并在结束时刷新照片墙。
-  void runScan('startup').catch((err) => {
-    scanProgress.status = 'error'
-    scanProgress.message = (err as Error).message
-    app.log.error(`启动同步失败: ${(err as Error).message}`)
-  })
+  //    无库时不启动（引导流程建库后再扫描）。
+  if (lib) {
+    void runScan('startup').catch((err) => {
+      scanProgress.status = 'error'
+      scanProgress.message = (err as Error).message
+      app.log.error(`启动同步失败: ${(err as Error).message}`)
+    })
+  }
   // ④ 启动
   await app.listen({ port: config.port, host: '127.0.0.1' })
   app.log.info(`📸 本地 iCloud 照片浏览器后端已启动`)
@@ -99,7 +121,7 @@ async function main(): Promise<void> {
   app.log.info(`   API:    http://127.0.0.1:${config.port}/api/stats`)
 
   // ⑤ 目录热监听（P2+-1）：手动拷入/删除/重命名文件 → 自动触发同步
-  startWatcher()
+  if (lib) startWatcher()
 }
 
 main().catch((err) => {

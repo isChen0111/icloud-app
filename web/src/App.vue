@@ -13,15 +13,83 @@ import {
   fetchThumbnailFailures,
   retryThumbnailFailures,
   setThumbnailFailuresIgnored,
+  fetchLibraries,
+  switchLibrary,
+  startSync,
+  cancelSync,
 } from './api/client'
 import { useAssetStore } from './stores/assets'
 import { useThemeStore } from './stores/theme'
-import type { Stats, ThumbnailFailure } from './types'
+import type { Stats, ThumbnailFailure, LibraryInfo } from './types'
 import { useRoute } from 'vue-router'
+import OnboardingView from './components/OnboardingView.vue'
+import AuthDialog from './components/AuthDialog.vue'
+import SettingsView from './components/SettingsView.vue'
 
 const stats = ref<Stats | null>(null)
 const route = useRoute()
 const assetStore = useAssetStore()
+
+/** P0：照片库引导 / 认证 / 同步按钮 */
+const onboardingOpen = ref(false)
+const authDialogOpen = ref(false)
+const librariesChecked = ref(false)
+const syncPick = ref<'full' | 'inc' | null>(null)
+const syncMenuOpen = ref(false)
+const syncError = ref('')
+
+/** P0：右上角库切换下拉 + 设置中心 */
+const settingsOpen = ref(false)
+const libMenuOpen = ref(false)
+const libraries = ref<LibraryInfo[]>([])
+/** 认证面板目标库（主界面重新链接 / 设置中心重新链接共用） */
+const authTarget = ref<{ id: number; name: string; account: string | null; autoStart: boolean } | null>(null)
+
+/** 拉取库列表（右上角下拉数据源） */
+async function refreshLibraries(): Promise<void> {
+  try {
+    libraries.value = (await fetchLibraries()).libraries
+  } catch {
+    // 后端未就绪，保持旧列表
+  }
+}
+
+function toggleLibMenu(): void {
+  libMenuOpen.value = !libMenuOpen.value
+  if (libMenuOpen.value) void refreshLibraries()
+}
+
+/** 切换激活库：成功后整页刷新（切库 = 整页初始化，设计稿 §3） */
+async function pickLibrary(id: number): Promise<void> {
+  libMenuOpen.value = false
+  try {
+    await switchLibrary(id)
+    location.reload()
+  } catch (err) {
+    syncError.value = err instanceof Error ? err.message : String(err)
+    void pollStats()
+  }
+}
+
+function openSettings(): void {
+  settingsOpen.value = true
+}
+
+/** 删除库后的处理：删激活库 → 整页刷新；删非激活库 → 仅从主界面库切换下拉移除 */
+function onLibraryDeleted(payload: { id: number; wasActive: boolean }): void {
+  if (payload.wasActive) {
+    location.reload()
+    return
+  }
+  libraries.value = libraries.value.filter((l) => l.id !== payload.id)
+}
+
+/** 打开认证面板（目标库 = stats 当前库 / 设置中心指定库；account 已链接则固定邮箱直接进入认证） */
+function openAuth(lib: { id: number; name: string; account?: string | null }): void {
+  // 已有 account = 刷新链接：弹窗打开后直接开始认证（免二次点击）；无 account = 新建链接：先输邮箱
+  authTarget.value = { id: lib.id, name: lib.name, account: lib.account ?? null, autoStart: !!lib.account }
+  authDialogOpen.value = true
+}
 
 const backendReady = ref(false)
 const statusDetailsOpen = ref(false)
@@ -85,6 +153,108 @@ const thumbnailPercent = computed(() => {
   if (!thumbnails || thumbnails.total === 0) return 100
   return Math.min(100, Math.floor((thumbnails.processed / thumbnails.total) * 100))
 })
+
+/* ---------- P0 同步按钮四态计算 ---------- */
+const syncRunning = computed(() => stats.value?.sync.status === 'running' || stats.value?.sync.status === 'waiting_retry')
+/** 按钮当前状态：running（执行中可取消）> picked（已选待执行）> idle（同步▾菜单） */
+const syncBtnState = computed(() => {
+  if (syncRunning.value) return 'running'
+  if (syncPick.value) return 'picked'
+  return 'idle'
+})
+const syncBtnLabel = computed(() => {
+  const state = syncBtnState.value
+  if (state === 'running') {
+    const kind = stats.value?.sync.kind === 'inc' ? '增量同步' : '全量拉取'
+    return `${kind}执行中 · 点击取消`
+  }
+  if (state === 'picked') return `执行 · ${syncPick.value === 'inc' ? '增量同步' : '全量拉取'}`
+  return '同步'
+})
+/** 同步完成/失败后的临时提示（轮询 5s 内自然回落） */
+const syncStatusText = computed(() => {
+  const s = stats.value?.sync
+  if (!s || s.status === 'idle' || s.status === 'running' || s.status === 'waiting_retry') return ''
+  if (s.status === 'done') return `同步完成，本次下载 ${s.downloaded} 项`
+  if (s.status === 'cancelled') return '已取消'
+  if (s.status === 'error') return s.message || '同步失败'
+  return ''
+})
+const syncProgressText = computed(() => {
+  const s = stats.value?.sync
+  if (!s || s.downloaded <= 0) return ''
+  return `已下载 ${s.downloaded} 项`
+})
+/** 认证状态文案 */
+const authText = computed(() => {
+  const lib = stats.value?.library
+  if (!lib) return ''
+  if (lib.authStatus === 'authed') return `已链接 ${lib.account ?? 'iCloud'}`
+  if (lib.authStatus === 'expired') return 'iCloud 会话已过期，请重新链接'
+  return '尚未链接 iCloud'
+})
+const authNeedsLink = computed(() => {
+  const lib = stats.value?.library
+  return lib != null && lib.authStatus !== 'authed'
+})
+
+/** 选择全量/增量后进入「执行」态 */
+function pickSync(kind: 'full' | 'inc'): void {
+  syncPick.value = kind
+  syncMenuOpen.value = false
+  syncError.value = ''
+}
+
+/** 执行同步（picked 态点击） */
+async function runSync(): Promise<void> {
+  const lib = stats.value?.library
+  const kind = syncPick.value ?? 'full'
+  if (!lib) return
+  try {
+    await startSync(lib.id, kind)
+    syncPick.value = null
+    syncError.value = ''
+    await pollStats()
+  } catch (err) {
+    syncError.value = err instanceof Error ? err.message : String(err)
+  }
+}
+
+/** 取消同步（running 态点击） */
+async function cancelSyncRun(): Promise<void> {
+  const lib = stats.value?.library
+  if (!lib) return
+  try {
+    await cancelSync(lib.id)
+    syncError.value = ''
+    await pollStats()
+  } catch (err) {
+    syncError.value = err instanceof Error ? err.message : String(err)
+  }
+}
+
+/** 首次挂载检查照片库：无任何库 → 打开首次引导 */
+async function checkLibraries(): Promise<void> {
+  try {
+    const { libraries } = await fetchLibraries()
+    onboardingOpen.value = libraries.length === 0
+  } catch {
+    // 后端未就绪：保持 librariesChecked=false，下次 pollStats 后再查
+  } finally {
+    librariesChecked.value = true
+  }
+}
+
+function onOnboardingClose(): void {
+  onboardingOpen.value = false
+  void pollStats()
+}
+
+/** 认证成功：关闭面板并刷新统计（认证状态/库信息） */
+function onAuthDone(): void {
+  authDialogOpen.value = false
+  void pollStats()
+}
 
 /** 主题：切换深浅（localStorage 持久化，见 stores/theme.ts） */
 const themeStore = useThemeStore()
@@ -226,6 +396,7 @@ watch(
 onMounted(() => {
   document.addEventListener('pointerdown', closeStatusDetailsOnOutsideClick)
   document.addEventListener('keydown', closeStatusDetailsOnEscape)
+  void checkLibraries()
   void pollStats()
 })
 onBeforeUnmount(() => {
@@ -304,17 +475,83 @@ onBeforeUnmount(() => {
                         : '正在连接照片库'
                 }}
               </strong>
-              <span v-if="stats?.scan.status === 'scanning'">
-                已检查 {{ numberFormat.format(stats.scan.scannedFiles) }} 个媒体文件。
-              </span>
-              <span v-else-if="stats?.scan.status === 'idle'">后端已连接，正在准备启动照片库检查。</span>
-              <span v-else-if="stats?.scan.status === 'error'" class="error-message">
-                {{ stats.scan.message || '扫描未能完成，请检查后端日志。' }}
-              </span>
-              <span v-else-if="stats?.scan.status === 'done'">
-                共检查 {{ numberFormat.format(stats.scan.totalFiles) }} 个媒体文件。
-              </span>
-              <span v-else>等待后端返回照片库状态。</span>
+              <!-- P0 同步按钮区（替代原「共检查 N 个媒体文件」副标题行；设计稿单按钮四态） -->
+              <div style="position: relative; margin-top: 7px">
+                <div class="sync-btn-wrap">
+                  <button
+                    v-if="syncBtnState === 'idle'"
+                    class="sync-btn"
+                    type="button"
+                    :aria-expanded="syncMenuOpen"
+                    @click="syncMenuOpen = !syncMenuOpen"
+                  >
+                    <span class="ico">
+                      <svg viewBox="0 0 24 24" aria-hidden="true">
+                        <path d="M6.5 17a4 4 0 0 1-.8-7.9A5.5 5.5 0 0 1 17 8.6a3.5 3.5 0 0 1-.5 8.4" />
+                        <path d="m9.5 13 2.5 2.5 2.5-2.5M12 15.5v-6" />
+                      </svg>
+                    </span>
+                    <span>同步</span>
+                    <svg class="chev" :class="{ open: syncMenuOpen }" viewBox="0 0 12 12" aria-hidden="true">
+                      <path d="m3 4.5 3 3 3-3" />
+                    </svg>
+                  </button>
+                  <button
+                    v-if="syncBtnState === 'picked'"
+                    class="sync-btn primary"
+                    type="button"
+                    @click="runSync"
+                  >
+                    <span class="ico">
+                      <svg viewBox="0 0 24 24" aria-hidden="true">
+                        <path d="M5 3.2v9.6L13 8 5 3.2Z" />
+                      </svg>
+                    </span>
+                    <span>{{ syncBtnLabel }}</span>
+                  </button>
+                  <button
+                    v-if="syncBtnState === 'running'"
+                    class="sync-btn run"
+                    type="button"
+                    @click="cancelSyncRun"
+                  >
+                    <span class="spinner" />
+                    <span>{{ syncBtnLabel }}</span>
+                  </button>
+                  <div v-if="syncBtnState === 'running'" class="sync-prog" aria-hidden="true" />
+                  <div v-if="syncMenuOpen" class="sync-menu" role="menu">
+                    <button type="button" role="menuitem" @click="pickSync('full')">
+                      <svg viewBox="0 0 24 24" aria-hidden="true">
+                        <path d="M7 18a4.5 4.5 0 0 1-.8-8.9A5.5 5.5 0 0 1 17.4 9.5 3.8 3.8 0 0 1 17 17" />
+                        <path d="M12 12v6" />
+                        <path d="m9 15.5 3 3 3-3" />
+                      </svg>
+                      全量拉取
+                    </button>
+                    <button type="button" role="menuitem" @click="pickSync('inc')">
+                      <svg viewBox="0 0 24 24" aria-hidden="true">
+                        <path d="M12 5v14" />
+                        <path d="M5 12h14" />
+                      </svg>
+                      增量同步
+                    </button>
+                  </div>
+                </div>
+                <!-- 状态/提示行：按钮下方独立一行（不跟按钮横向挤），认证过期时并列「重新链接」 -->
+                <div class="sync-meta">
+                  <span v-if="syncStatusText || syncProgressText || syncError" class="sync-note">
+                    {{ syncError || syncStatusText || syncProgressText }}
+                  </span>
+                  <button
+                    v-if="authNeedsLink && stats?.library"
+                    class="relink-btn"
+                    type="button"
+                    @click="openAuth({ id: stats.library.id, name: stats.library.name, account: stats.library.account })"
+                  >
+                    需要重新链接
+                  </button>
+                </div>
+              </div>
             </div>
             <div v-if="stats" class="popover-count-area">
               <div class="popover-counts">
@@ -473,10 +710,50 @@ onBeforeUnmount(() => {
               !
             </button>
           </div>
+
+          <!-- 设计稿调整：库信息 / 新建照片库入口移至右上角下拉 + 设置中心，同步下拉不再展示 -->
         </section>
       </div>
 
       <span class="spacer" />
+
+      <!-- P0 设计稿 §3：右上角库切换下拉（当前库名 ▾；切库 = 整页初始化） -->
+      <div class="lib-menu-wrap">
+        <button class="lib-trigger" type="button" :aria-expanded="libMenuOpen" @click="toggleLibMenu">
+          <span class="lib-trigger-name">{{ stats?.library?.name ?? '照片库' }}</span>
+          <svg class="chev" :class="{ open: libMenuOpen }" viewBox="0 0 12 12" aria-hidden="true">
+            <path d="m3 4.5 3 3 3-3" />
+          </svg>
+        </button>
+        <div v-if="libMenuOpen" class="lib-menu" role="menu">
+          <div class="lib-menu-label">照片库</div>
+          <button
+            v-for="lib in libraries"
+            :key="lib.id"
+            class="lib-item"
+            :class="{ current: lib.active }"
+            type="button"
+            role="menuitem"
+            @click="pickLibrary(lib.id)"
+          >
+            <span v-if="lib.active" class="lib-check" aria-hidden="true">✓</span>
+            <span class="lib-item-name">{{ lib.name }}</span>
+          </button>
+          <div class="lib-menu-sep" aria-hidden="true" />
+          <button class="lib-item new" type="button" role="menuitem" @click="libMenuOpen = false; onboardingOpen = true">
+            <span class="lib-plus" aria-hidden="true">+</span>
+            新建照片库
+          </button>
+        </div>
+      </div>
+
+      <!-- P0 设计稿 §3/§4：设置中心入口（齿轮） -->
+      <button class="theme-btn" :title="'设置'" type="button" @click="openSettings">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <circle cx="12" cy="12" r="3.2" stroke="currentColor" stroke-width="1.8" />
+          <path d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1 1.55V21a2 2 0 1 1-4 0v-.09a1.7 1.7 0 0 0-1-1.55 1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.7 1.7 0 0 0 .34-1.87 1.7 1.7 0 0 0-1.55-1H3a2 2 0 1 1 0-4h.09a1.7 1.7 0 0 0 1.55-1 1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.7 1.7 0 0 0 1.87.34h.08a1.7 1.7 0 0 0 1-1.55V3a2 2 0 1 1 4 0v.09a1.7 1.7 0 0 0 1 1.55 1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.7 1.7 0 0 0-.34 1.87v.08a1.7 1.7 0 0 0 1.55 1H21a2 2 0 1 1 0 4h-.09a1.7 1.7 0 0 0-1.55 1z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" />
+        </svg>
+      </button>
 
       <!-- 主题切换：深色显示太阳（点→浅色），浅色显示月亮（点→深色） -->
       <button
@@ -605,6 +882,30 @@ onBeforeUnmount(() => {
         </footer>
       </section>
     </div>
+
+    <!-- P0：无照片库时首次引导 / 手动新建照片库 -->
+    <OnboardingView v-if="onboardingOpen" @close="onOnboardingClose" />
+
+    <!-- P0：iCloud 认证面板（首次链接 / cookie 过期重新链接 / 设置中心重新链接） -->
+    <AuthDialog
+      v-if="authDialogOpen && authTarget"
+      :library-id="authTarget.id"
+      :library-name="authTarget.name"
+      :account="authTarget.account"
+      :auto-start="authTarget.autoStart"
+      @done="onAuthDone"
+      @close="authDialogOpen = false"
+    />
+
+    <!-- P0：设置中心（照片库管理 / 下载与同步 / 关于） -->
+    <SettingsView
+      v-if="settingsOpen"
+      :stats="stats"
+      @close="settingsOpen = false"
+      @open-auth="openAuth"
+      @new-library="settingsOpen = false; onboardingOpen = true"
+      @library-deleted="onLibraryDeleted"
+    />
   </div>
 </template>
 
@@ -661,10 +962,13 @@ onBeforeUnmount(() => {
   font: inherit;
   font-size: 12px;
   cursor: pointer;
-  transition: background 0.15s;
+  transition: background 0.15s, color 0.15s;
 }
 .status-trigger:hover,
-.status-trigger[aria-expanded='true'] { background: var(--bg-field-hover); }
+.status-trigger[aria-expanded='true'] {
+  background: rgb(67 132 238 / 8%);
+  color: #4384ee;
+}
 .status-trigger.tone-done { color: var(--text-1); }
 .status-trigger.tone-warning { color: #a87515; }
 .status-summary { overflow: hidden; font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
@@ -992,6 +1296,215 @@ onBeforeUnmount(() => {
 .failure-item-actions { display: flex; flex: 0 0 auto; gap: 6px; }
 .failure-dialog-footer { padding: 11px 20px; border-top: 1px solid var(--border); }
 
+/* ===== P0 同步按钮（popover heading 内，设计稿：全量/增量合并 + 执行/取消合并 + 行内进度条） ===== */
+.sync-btn-wrap { position: relative; display: inline-flex; align-items: center; gap: 7px; min-width: 0; }
+.sync-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  height: 26px;
+  padding: 0 12px;
+  min-width: 138px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--bg-panel);
+  color: var(--text-1);
+  font: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+  user-select: none;
+  box-shadow: 0 1px 2px rgb(15 23 42 / 4%);
+  transition: all 0.18s ease;
+}
+.sync-btn:hover { border-color: #4384ee; color: #4384ee; box-shadow: 0 2px 6px rgb(10 132 255 / 12%); }
+.sync-btn .ico { display: inline-flex; align-items: center; flex-shrink: 0; color: inherit; }
+.sync-btn .ico svg { width: 12px; height: 12px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.sync-btn .chev { width: 11px; height: 11px; flex-shrink: 0; transition: transform 0.18s ease; }
+.sync-btn .chev.open { transform: rotate(180deg); }
+.sync-btn.primary { border-color: #4384ee; background: #4384ee; color: #fff; }
+.sync-btn.primary:hover { background: #3577dc; color: #fff; }
+.sync-btn.run { background: rgb(67 132 238 / 10%); border-color: #4384ee; color: #4384ee; }
+.sync-btn .spinner {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  flex-shrink: 0;
+  border: 2px solid rgb(67 132 238 / 25%);
+  border-top-color: #4384ee;
+  border-radius: 50%;
+  animation: sync-spin 0.8s linear infinite;
+}
+@keyframes sync-spin { to { transform: rotate(360deg); } }
+/* 执行中行内进度条（设计稿：按钮下方 2px 渐变推进） */
+.sync-prog {
+  position: absolute;
+  left: 0;
+  top: calc(100% + 3px);
+  height: 2px;
+  width: 138px;
+  border-radius: 2px;
+  background: linear-gradient(90deg, #4384ee, #7cc2ff);
+  animation: sync-prog-slide 2.6s linear infinite;
+  z-index: 32;
+  pointer-events: none;
+}
+@keyframes sync-prog-slide {
+  0% { transform: scaleX(0); transform-origin: left; }
+  55% { transform: scaleX(0.9); transform-origin: left; }
+  100% { transform: scaleX(0.9) translateX(30px); transform-origin: left; }
+}
+/* 状态/提示行：按钮下方独立一行，不再跟按钮横向挤 */
+.sync-meta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 6px;
+  min-height: 15px;
+}
+.sync-note {
+  min-width: 0;
+  max-width: 260px;
+  overflow: hidden;
+  color: var(--text-2);
+  font-size: 11px;
+  line-height: 1.4;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sync-meta:empty { display: none; }
+.sync-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  min-width: 138px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 6px 18px rgb(15 23 42 / 14%);
+  z-index: 31;
+  padding: 4px;
+  font-size: 11px;
+  animation: sync-pop 0.12s ease;
+}
+@keyframes sync-pop { from { opacity: 0; transform: translateY(-3px); } to { opacity: 1; transform: none; } }
+.sync-menu button {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  padding: 6px 10px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-1);
+  font: inherit;
+  font-size: 11px;
+  text-align: left;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.sync-menu button:hover { background: rgb(67 132 238 / 9%); color: #4384ee; }
+.sync-menu button svg { width: 12px; height: 12px; flex-shrink: 0; fill: none; stroke: var(--text-3); stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.sync-menu button:hover svg { stroke: #4384ee; }
+
+/* ===== P0 认证过期入口（同步按钮旁，仅 expired 显示） ===== */
+.relink-btn {
+  padding: 3px 8px;
+  border: 1px solid #d9a13b;
+  border-radius: 6px;
+  background: rgb(255 159 10 / 9%);
+  color: #a87515;
+  font: inherit;
+  font-size: 10px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.relink-btn:hover { background: rgb(255 159 10 / 16%); }
+
+/* ===== P0 右上角库切换下拉 ===== */
+.lib-menu-wrap { position: relative; }
+.lib-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 180px;
+  height: 30px;
+  padding: 0 9px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-1);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+.lib-trigger:hover,
+.lib-trigger[aria-expanded='true'] {
+  background: rgb(67 132 238 / 8%);
+  border-color: #4384ee;
+  color: #4384ee;
+}
+.lib-trigger-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lib-trigger .chev {
+  width: 11px;
+  height: 11px;
+  flex: 0 0 auto;
+  fill: none;
+  stroke: var(--text-2);
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  transition: transform 0.15s;
+}
+.lib-trigger .chev.open { transform: rotate(180deg); }
+.lib-menu {
+  position: absolute;
+  top: 36px;
+  right: 0;
+  z-index: 40;
+  width: 210px;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 11px;
+  background: var(--bg-panel);
+  box-shadow: 0 12px 32px rgb(0 0 0 / 16%);
+}
+.lib-menu-label {
+  padding: 4px 8px;
+  color: var(--text-3);
+  font-size: 11px;
+  font-weight: 700;
+}
+.lib-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 9px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-1);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+.lib-item:hover { color: #4384ee; }
+/* 当前库：蓝色浅底 + 蓝色 ✓（唯一带底色的项，避免双底色） */
+.lib-item.current { background: rgb(67 132 238 / 10%); }
+.lib-check { color: #4384ee; font-weight: 700; width: 14px; flex: 0 0 auto; }
+.lib-item-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lib-item.new { color: #4384ee; }
+.lib-item.new:hover { color: #356fd6; }
+.lib-plus { font-weight: 700; width: 14px; flex: 0 0 auto; }
+.lib-menu-sep { height: 1px; margin: 6px 0; background: var(--border); }
+
 /* 主题切换按钮（顶栏最右） */
 .theme-btn {
   display: flex;
@@ -1001,13 +1514,14 @@ onBeforeUnmount(() => {
   height: 30px;
   border: none;
   border-radius: 8px;
-  background: var(--bg-field);
+  background: transparent;
   color: var(--text-1);
   cursor: pointer;
-  transition: background 0.15s, transform 0.15s;
+  transition: background 0.15s, color 0.15s, transform 0.15s;
 }
 .theme-btn:hover {
-  background: var(--bg-field-hover);
+  background: rgb(67 132 238 / 8%);
+  color: #4384ee;
   transform: scale(1.05);
 }
 

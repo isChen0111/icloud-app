@@ -13,6 +13,9 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url))
 /** 项目根：server/src/../.. = F:\iPhone\icloud-app */
 const projectRoot = path.resolve(__dirname, '../..')
 
+/** 导出项目根（建库/路径派生等场景直接引用，避免按 metaDb 层级推导出错） */
+export { projectRoot }
+
 export const config = {
   /** 后端监听端口 */
   port: Number(process.env.PORT ?? 8899),
@@ -25,6 +28,20 @@ export const config = {
 
   /** SQLite 数据库文件位置（支持环境变量覆盖，测试隔离/多实例部署用） */
   dbPath: process.env.DB_PATH ?? path.join(projectRoot, 'server', 'cache', 'library.db'),
+
+  /**
+   * 库注册表 DB（应用级，多库共享一份；固定放 server/cache 根，不随激活库切换）。
+   * 记录每个照片库的 名称/根目录/cache 目录/cookie 目录/账号/同步状态/激活标记。
+   * 随 cache 清理重建 = 重新注册库，可接受。
+   */
+  metaDbPath: process.env.META_DB_PATH ?? path.join(projectRoot, 'server', 'cache', 'meta.db'),
+
+  /**
+   * icloudpd 可执行文件（黑盒调用，版本锁定）。
+   * 默认取 server/vendor 目录（与 ffmpeg 同放 vendor，统一第三方二进制）。
+   * 其他机器可用 ICLOUDPD_EXE 覆盖。
+   */
+  icloudpdExe: process.env.ICLOUDPD_EXE ?? path.join(projectRoot, 'server', 'vendor', 'icloudpd-1.32.3-windows-amd64.exe'),
 
   /** BtbN ffmpeg full 解压目录（含 libheif；postinstall 下载）。可用 FFMPEG_DIR 覆盖 */
   ffmpegDir: process.env.FFMPEG_DIR ?? path.join(projectRoot, 'server', 'vendor', 'ffmpeg-full'),
@@ -61,4 +78,10 @@ export const config = {
 
   /** 扫描上限（调试/验证用）：>0 时只扫描前 N 个文件；0 = 全量 */
   scanLimit: Number(process.env.SCAN_LIMIT ?? 0),
+
+  /**
+   * icloudpd 限量拉取（仅测试/验证用，正式功能不暴露）：>0 时同步命令追加 --recent N
+   * （icloudpd 官方参数：只处理最近 N 张，避免测试时拉全库）。0 = 不限制。
+   */
+  icloudpdRecent: Number(process.env.ICLOUDPD_RECENT ?? 0),
 }

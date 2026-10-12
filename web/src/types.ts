@@ -117,12 +117,22 @@ export interface Stats {
   scan: {
     status: 'idle' | 'scanning' | 'done' | 'error'
     runId: number
-    source: 'idle' | 'manual' | 'watcher' | 'startup'
+    source: 'idle' | 'manual' | 'watcher' | 'startup' | 'switch'
     totalFiles: number
     scannedFiles: number
     assetsFound: number
     message: string
   }
+  /** P0：当前激活库（status 组件展示库名/认证状态） */
+  library: {
+    id: number
+    name: string
+    account: string | null
+    authStatus: 'none' | 'authed' | 'expired'
+    lastSyncAt: string | null
+  } | null
+  /** P0：icloudpd 同步任务状态（同步按钮驱动源） */
+  sync: SyncState
 }
 
 export interface ThumbnailFailure {
@@ -189,3 +199,50 @@ export interface GridDataSource {
 
 /** 缩略图档位 */
 export type ThumbSize = 'grid' | 'detail'
+
+/* ============ P0 照片库同步（icloudpd） ============ */
+
+/** 照片库（列表形态；account 已脱敏） */
+export interface LibraryInfo {
+  id: number
+  name: string
+  account: string | null
+  authStatus: 'none' | 'authed' | 'expired'
+  lastSyncAt: string | null
+  createdAt: string
+  active: boolean
+  /** 照片根目录（展示用） */
+  libraryRoot: string | null
+  /** 缓存目录（展示用） */
+  cacheDir: string | null
+  /** icloudpd 会话 cookie 目录（展示用） */
+  cookieDir: string | null
+  /** 库内照片数量（只读统计，来自该库 library.db） */
+  photos: number
+  /** 库内视频数量 */
+  videos: number
+}
+
+export interface LibrariesResult {
+  libraries: LibraryInfo[]
+  activeId: number | null
+}
+
+/** 认证会话状态（网页端自绘面板轮询） */
+export interface AuthSession {
+  stage: 'starting' | 'waiting_password' | 'waiting_code' | 'done' | 'error'
+  hint: string
+  message: string
+  cookieDir: string
+}
+
+/** icloudpd 同步任务状态 */
+export interface SyncState {
+  status: 'idle' | 'running' | 'waiting_retry' | 'error' | 'cancelled' | 'done'
+  libraryId: number
+  kind: 'full' | 'inc'
+  message: string
+  downloaded: number
+  startedAt: string | null
+  finishedAt: string | null
+}

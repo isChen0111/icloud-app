@@ -11,11 +11,34 @@ import path from 'node:path'
 import { config } from '../config.js'
 import { FTS_SCHEMA_VERSION, SCHEMA_SQL } from './schema.js'
 
-let _db: Database.Database | null = null
+let _real: Database.Database | null = null
+let _realPath: string | null = null
 
-/** 获取数据库实例（首次调用时自动建库 + 建表） */
-export function getDb(): Database.Database {
-  if (_db) return _db
+/** 关闭当前数据库连接（切库前调用） */
+export function closeDb(): void {
+  if (_real) {
+    try {
+      _real.close()
+    } catch {
+      // 连接已关闭等场景忽略
+    }
+    _real = null
+    _realPath = null
+  }
+}
+
+/** 打开（或复用）与 config.dbPath 对应的真实连接，并完成建表/迁移初始化 */
+function ensureOpen(): Database.Database {
+  if (_real && _realPath === config.dbPath) return _real
+  if (_real) {
+    try {
+      _real.close()
+    } catch {
+      // ignore
+    }
+    _real = null
+    _realPath = null
+  }
 
   // 确保 cache 目录存在（数据库与缩略图缓存同目录）
   fs.mkdirSync(path.dirname(config.dbPath), { recursive: true })
@@ -80,8 +103,28 @@ export function getDb(): Database.Database {
     }
   }
 
-  _db = db
+  _real = db
+  _realPath = config.dbPath
   return db
+}
+
+/**
+ * 稳定代理（切库零改动关键）：
+ * 现有路由在 register 时持有 getDb() 的引用（如 const db = getDb()），
+ * 切库后旧引用必须仍然可用且指向新库。这里返回一个永不失效的 Proxy，
+ * 每次属性访问动态转发到"当前激活库"的真实连接——路由代码一行不用改。
+ */
+const proxy = new Proxy({} as Database.Database, {
+  get(_target, prop) {
+    const real = ensureOpen()
+    const value = (real as unknown as Record<string, unknown>)[prop as string]
+    return typeof value === 'function' ? (value as (...args: unknown[]) => unknown).bind(real) : value
+  },
+})
+
+/** 获取数据库实例（首次调用时自动建库 + 建表） */
+export function getDb(): Database.Database {
+  return proxy
 }
 
 /** 资产行类型（与 assets 表字段一一对应） */
