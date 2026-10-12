@@ -12,7 +12,7 @@
  * 多库约束：icloudpd 同步全局单任务——某库执行时其他库点「执行」→ 后端 409 → 提示等待已有任务完成（不排队）；
  * 态（disabled），全局任务释放后自动恢复。
  */
-import { onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { fetchLibraries, startSync, cancelSync, deleteLibrary } from '../api/client'
 import type { LibraryInfo, Stats } from '../types'
 
@@ -35,6 +35,10 @@ const pick = ref<Record<number, 'full' | 'inc' | null>>({})
 const menuOpen = ref<number | null>(null)
 /** 展开「照片库配置」的库 id（点击库卡片的配置下拉展开/收起） */
 const configOpen = ref<number | null>(null)
+/** 展开「运行日志」的库 id（点击折叠展开/收起） */
+const logOpen = ref<number | null>(null)
+/** icloudpd 原始输出日志行（全局单任务，仅当 stats.sync.libraryId 匹配该库时展示） */
+const syncLogLines = computed(() => props.stats?.sync.log ?? [])
 /** 任务刚启动、stats 轮询尚未确认前的本地占位态（防止连点/误开菜单） */
 const starting = ref<Record<number, boolean>>({})
 const syncError = ref('')
@@ -253,6 +257,21 @@ onBeforeUnmount(() => {
                 <div class="config-row"><span class="config-key">增量同步</span><code>--until-found 20</code></div>
                 <div class="config-row"><span class="config-key">会话</span><code>cookie 存于各库 cookies 目录，过期后在主界面/本页重新链接</code></div>
                 <div class="config-note">后续需要自定义参数时，再按官方实际可用命令逐项开放（先出方案确认）。</div>
+                <!-- icloudpd 运行日志（仅展示该库自己任务的输出，随 stats 轮询更新） -->
+                <div v-if="props.stats?.sync.libraryId === lib.id && syncLogLines.length" class="lib-log">
+                  <button
+                    type="button"
+                    class="lib-log-toggle"
+                    :aria-expanded="logOpen === lib.id"
+                    @click="logOpen = logOpen === lib.id ? null : lib.id"
+                  >
+                    <span>运行日志（{{ syncLogLines.length }} 行）</span>
+                    <svg class="chev" :class="{ open: logOpen === lib.id }" viewBox="0 0 12 12" aria-hidden="true">
+                      <path d="m3 4.5 3 3 3-3" />
+                    </svg>
+                  </button>
+                  <pre v-if="logOpen === lib.id" class="lib-log-box">{{ syncLogLines.join('\n') }}</pre>
+                </div>
               </div>
 
               <!-- 每库同步：与主界面同款单按钮（全量/增量合并，执行/取消合并），全局单任务 -->
@@ -553,6 +572,37 @@ onBeforeUnmount(() => {
   border-top: 1px dashed var(--border);
 }
 .lib-sync-wrap { position: relative; display: inline-flex; }
+/* 运行日志折叠面板 */
+.lib-log { margin-top: 10px; border-top: 1px dashed var(--border); padding-top: 8px; }
+.lib-log-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 3px 0;
+  border: none;
+  background: none;
+  color: var(--text-2);
+  font: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.lib-log-toggle:hover { color: var(--text-1); }
+.lib-log-toggle .chev { margin-left: auto; }
+.lib-log-box {
+  margin: 6px 0 2px;
+  max-height: 240px;
+  overflow: auto;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-log, rgb(0 0 0 / 55%));
+  color: #9cdcfe;
+  font: 11px/1.5 Consolas, 'Courier New', monospace;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
 
 /* 与主界面同步按钮同款样式 */
 .sync-btn {

@@ -185,10 +185,6 @@ const syncProgressText = computed(() => {
   if (!s || s.downloaded <= 0) return ''
   return `已下载 ${s.downloaded} 项`
 })
-/** icloudpd 原始输出日志行（后端已截断为最近 200 行） */
-const syncLogLines = computed(() => stats.value?.sync.log ?? [])
-/** 运行日志折叠面板展开态 */
-const syncLogOpen = ref(false)
 /** 认证状态文案 */
 const authText = computed(() => {
   const lib = stats.value?.library
@@ -554,21 +550,6 @@ onBeforeUnmount(() => {
                   >
                     需要重新链接
                   </button>
-                </div>
-                <!-- icloudpd 运行日志（折叠面板，随 stats 轮询更新） -->
-                <div v-if="syncLogLines.length" class="sync-log">
-                  <button
-                    type="button"
-                    class="sync-log-toggle"
-                    :aria-expanded="syncLogOpen"
-                    @click="syncLogOpen = !syncLogOpen"
-                  >
-                    <span>运行日志（{{ syncLogLines.length }} 行）</span>
-                    <svg viewBox="0 0 24 24" aria-hidden="true">
-                      <path :d="syncLogOpen ? 'M6 15l6-6 6 6' : 'M6 9l6 6 6-6'" />
-                    </svg>
-                  </button>
-                  <pre v-if="syncLogOpen" class="sync-log-box">{{ syncLogLines.join('\n') }}</pre>
                 </div>
               </div>
             </div>
@@ -1395,49 +1376,6 @@ onBeforeUnmount(() => {
   white-space: nowrap;
 }
 .sync-meta:empty { display: none; }
-.sync-log {
-  margin-top: 6px;
-  border-top: 1px solid var(--border);
-  padding-top: 5px;
-  min-width: 0;
-}
-.sync-log-toggle {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  width: 100%;
-  padding: 3px 2px;
-  border: none;
-  background: none;
-  color: var(--text-2);
-  font: inherit;
-  font-size: 11px;
-  cursor: pointer;
-}
-.sync-log-toggle:hover { color: var(--text-1); }
-.sync-log-toggle svg {
-  width: 12px;
-  height: 12px;
-  margin-left: auto;
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 2;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-}
-.sync-log-box {
-  margin: 5px 0 2px;
-  max-height: 240px;
-  overflow: auto;
-  padding: 8px 10px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--bg-log, rgba(0, 0, 0, 0.55));
-  color: #9cdcfe;
-  font: 11px/1.5 Consolas, 'Courier New', monospace;
-  white-space: pre-wrap;
-  word-break: break-all;
-}
 .sync-menu {
   position: absolute;
   top: calc(100% + 6px);
