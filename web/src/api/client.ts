@@ -201,6 +201,24 @@ export function switchLibrary(id: number): Promise<{ ok: boolean; activeId: numb
   })
 }
 
+/** 更新单库同步参数：untilFound（增量连续 N 个已存在则停）/ recentLimit（0=全量不限） */
+export function updateLibraryConfig(
+  id: number,
+  patch: { untilFound: number; recentLimit: number },
+): Promise<{ ok: boolean; config: { untilFound: number; recentLimit: number } }> {
+  return fetch(`${BASE}/libraries/${id}/config`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(patch),
+  }).then(async (r) => {
+    if (!r.ok) {
+      const error = (await r.json()) as { error?: unknown }
+      throw new Error(typeof error.error === 'string' ? error.error : `API /libraries/${id}/config → ${r.status}`)
+    }
+    return r.json() as Promise<{ ok: boolean; config: { untilFound: number; recentLimit: number } }>
+  })
+}
+
 /**
  * 删除照片库（仅本地；云端 iCloud 原片不受影响）。
  * removePhotos=true 时连同本地已下载照片副本一起删，否则仅删注册 + 缓存。

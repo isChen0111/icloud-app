@@ -13,7 +13,7 @@
  * 态（disabled），全局任务释放后自动恢复。
  */
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
-import { fetchLibraries, startSync, cancelSync, deleteLibrary } from '../api/client'
+import { fetchLibraries, startSync, cancelSync, deleteLibrary, updateLibraryConfig } from '../api/client'
 import type { LibraryInfo, Stats } from '../types'
 import SyncButton from './SyncButton.vue'
 
@@ -48,6 +48,45 @@ const deleteTarget = ref<LibraryInfo | null>(null)
 const removePhotos = ref(true)
 const deleting = ref(false)
 const deleteError = ref('')
+
+/** 配置区草稿（每库一份）：展开配置时初始化，保存成功后回写 libraries */
+type ConfigDraft = { untilFound: number; recentLimit: number; saving: boolean; saved: boolean }
+const drafts = ref<Record<number, ConfigDraft>>({})
+
+function openConfig(lib: LibraryInfo): void {
+  configOpen.value = configOpen.value === lib.id ? null : lib.id
+  if (configOpen.value === lib.id && !drafts.value[lib.id]) {
+    drafts.value[lib.id] = {
+      untilFound: lib.untilFound ?? 20,
+      recentLimit: lib.recentLimit ?? 0,
+      saving: false,
+      saved: false,
+    }
+  }
+}
+
+async function saveConfig(lib: LibraryInfo): Promise<void> {
+  const d = drafts.value[lib.id]
+  if (!d || d.saving) return
+  const untilFound = Math.max(1, Math.floor(Number(d.untilFound) || 20))
+  const recentLimit = Math.max(0, Math.floor(Number(d.recentLimit) || 0))
+  d.saving = true
+  d.saved = false
+  try {
+    await updateLibraryConfig(lib.id, { untilFound, recentLimit })
+    d.saving = false
+    d.saved = true
+    // 回写本地列表
+    const idx = libraries.value.findIndex((l) => l.id === lib.id)
+    if (idx >= 0) {
+      libraries.value[idx] = { ...libraries.value[idx], untilFound, recentLimit }
+    }
+    window.setTimeout(() => { d.saved = false }, 1500)
+  } catch (err) {
+    d.saving = false
+    syncError.value = err instanceof Error ? err.message : String(err)
+  }
+}
 
 function openDelete(lib: LibraryInfo): void {
   deleteTarget.value = lib
@@ -225,26 +264,57 @@ onBeforeUnmount(() => {
                 <div class="meta-row"><span class="meta-key">最近同步</span><code>{{ lib.lastSyncAt ? new Date(lib.lastSyncAt).toLocaleString('zh-CN') : '从未' }}</code></div>
               </div>
 
-              <!-- 照片库配置（按官方默认值锁死只读，代码预留；删除类参数不提供） -->
+              <!-- 照片库配置：untilFound / recentLimit 可编辑；其他官方参数按默认值锁死只读 -->
               <button
                 class="config-toggle"
                 type="button"
                 :aria-expanded="configOpen === lib.id"
-                @click="configOpen = configOpen === lib.id ? null : lib.id"
+                @click="openConfig(lib)"
               >
                 照片库配置
                 <svg class="chev" :class="{ open: configOpen === lib.id }" viewBox="0 0 12 12" aria-hidden="true">
                   <path d="m3 4.5 3 3 3-3" />
                 </svg>
               </button>
-              <div v-if="configOpen === lib.id" class="lib-config">
-                <div class="config-row"><span class="config-key">命令模式</span><code>download（只下载，不删除云端照片）</code></div>
-                <div class="config-row"><span class="config-key">区域</span><code>--domain cn（中国大陆区）</code></div>
-                <div class="config-row"><span class="config-key">目录结构</span><code>%Y/%m/%d（固定不可更改，代码按此读取）</code></div>
-                <div class="config-row"><span class="config-key">EXIF</span><code>--set-exif-datetime（写入拍摄时间标签）</code></div>
-                <div class="config-row"><span class="config-key">增量同步</span><code>--until-found 20</code></div>
-                <div class="config-row"><span class="config-key">会话</span><code>cookie 存于各库 cookies 目录，过期后在主界面/本页重新链接</code></div>
-                <div class="config-note">后续需要自定义参数时，再按官方实际可用命令逐项开放（先出方案确认）。</div>
+              <div v-if="configOpen === lib.id && drafts[lib.id]" class="lib-config">
+                <div class="config-edit-row">
+                  <div class="config-edit-field">
+                    <label class="config-edit-label" :for="`uf-${lib.id}`">增量 · 连续命中数</label>
+                    <input
+                      :id="`uf-${lib.id}`"
+                      v-model.number="drafts[lib.id].untilFound"
+                      type="number" min="1" max="999"
+                      class="config-input"
+                    >
+                    <p class="config-hint">往回扫描时连续 N 个本地已存在就停。默认 20。</p>
+                  </div>
+                  <div class="config-edit-field">
+                    <label class="config-edit-label" :for="`rl-${lib.id}`">下载限量</label>
+                    <input
+                      :id="`rl-${lib.id}`"
+                      v-model.number="drafts[lib.id].recentLimit"
+                      type="number" min="0" max="99999"
+                      class="config-input"
+                    >
+                    <p class="config-hint">只处理最近 N 张。填 0 = 全量不限（推荐）。</p>
+                  </div>
+                  <div class="config-edit-actions">
+                    <button
+                      class="btn-ghost primary"
+                      type="button"
+                      :disabled="drafts[lib.id].saving"
+                      @click="saveConfig(lib)"
+                    >{{ drafts[lib.id].saving ? '保存中…' : drafts[lib.id].saved ? '已保存 ✓' : '保存' }}</button>
+                  </div>
+                </div>
+
+                <div class="config-readonly">
+                  <div class="config-row"><span class="config-key">命令模式</span><code>download（只下载，不删除云端照片）</code></div>
+                  <div class="config-row"><span class="config-key">区域</span><code>--domain cn（中国大陆区）</code></div>
+                  <div class="config-row"><span class="config-key">目录结构</span><code>%Y/%m/%d（固定不可更改，代码按此读取）</code></div>
+                  <div class="config-row"><span class="config-key">EXIF</span><code>--set-exif-datetime（写入拍摄时间标签）</code></div>
+                  <div class="config-row"><span class="config-key">会话</span><code>cookie 存于各库 cookies 目录，过期后在主界面/本页重新链接</code></div>
+                </div>
               </div>
 
               <!-- 每库同步：共享组件 SyncButton（与主界面视觉/状态机完全一致），全局单任务 -->
@@ -504,11 +574,41 @@ onBeforeUnmount(() => {
 .config-toggle .chev.open { transform: rotate(180deg); }
 .lib-config {
   margin-top: 8px;
-  padding: 12px 14px 4px;
-  border: 1px solid rgb(67 132 238 / 16%);
+  padding: 12px 14px 6px;
+  border: 1px solid var(--border);
   border-radius: 10px;
-  background: rgb(67 132 238 / 5%);
+  background: var(--bg-field);
 }
+/* 可编辑区 */
+.config-edit-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 14px;
+  padding-bottom: 10px;
+  margin-bottom: 8px;
+  border-bottom: 1px solid var(--border);
+}
+.config-edit-field { display: flex; flex-direction: column; gap: 4px; min-width: 140px; }
+.config-edit-label { font-size: 11px; color: var(--text-3); font-weight: 600; }
+.config-input {
+  width: 110px;
+  padding: 5px 9px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--bg-panel);
+  color: var(--text-1);
+  font: inherit;
+  font-size: 12px;
+}
+.config-input:focus { outline: none; border-color: #4384ee; box-shadow: 0 0 0 2px rgb(67 132 238 / 15%); }
+.config-hint { margin: 0; font-size: 10.5px; color: var(--text-3); line-height: 1.4; max-width: 220px; }
+.config-edit-actions { padding-bottom: 1px; }
+.btn-ghost.primary { border-color: #4384ee; color: #4384ee; }
+.btn-ghost.primary:hover { background: rgb(67 132 238 / 10%); }
+.btn-ghost.primary:disabled { opacity: 0.6; cursor: default; }
+/* 只读参数区 */
+.config-readonly { padding-bottom: 4px; }
 .lib-sync-row {
   display: flex;
   align-items: center;

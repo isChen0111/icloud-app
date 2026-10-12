@@ -221,6 +221,10 @@ export interface LibraryInfo {
   photos: number
   /** 库内视频数量 */
   videos: number
+  /** 增量同步：连续 N 个已存在则停（默认 20） */
+  untilFound: number
+  /** 下载限量：0=全量不限 */
+  recentLimit: number
 }
 
 export interface LibrariesResult {

@@ -103,9 +103,10 @@ function spawnOnce(lib: LibraryRow, kind: 'full' | 'inc'): void {
     '--cookie-directory', lib.cookie_dir,
     '--set-exif-datetime',
   ]
-  if (kind === 'inc') args.push('--until-found', '20')
-  // 测试限量（ICLOUDPD_RECENT>0 时只处理最近 N 张；正式功能不设置）
-  if (config.icloudpdRecent > 0) args.push('--recent', String(config.icloudpdRecent))
+  if (kind === 'inc') args.push('--until-found', String(Math.max(1, lib.until_found || 20)))
+  // 下载限量：库配置 recent_limit（0=全量不限）；环境变量仅作兜底（库配置 > 环境变量）
+  const recent = lib.recent_limit > 0 ? lib.recent_limit : config.icloudpdRecent
+  if (recent > 0) args.push('--recent', String(recent))
 
   const child = spawn(config.icloudpdExe, args, { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true })
   proc = child

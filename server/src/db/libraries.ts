@@ -26,6 +26,10 @@ export interface LibraryRow {
   last_sync_at: string | null
   created_at: string
   active: number
+  /** 增量同步：连续 N 个文件本地已存在则停（默认 20） */
+  until_found: number
+  /** 下载限量：只处理最近 N 张（0=全量不限，默认 0） */
+  recent_limit: number
 }
 
 /** Windows 路径非法字符（库名会用作 cache/cookie 目录名，须过滤） */
@@ -60,9 +64,16 @@ export function getMetaDb(): Database.Database {
       auth_status   TEXT NOT NULL DEFAULT 'none',
       last_sync_at  TEXT,
       created_at    TEXT NOT NULL,
-      active        INTEGER NOT NULL DEFAULT 0
+      active        INTEGER NOT NULL DEFAULT 0,
+      until_found   INTEGER NOT NULL DEFAULT 20,
+      recent_limit  INTEGER NOT NULL DEFAULT 0
     );
   `)
+  // 老库迁移：已存在的表补列（CREATE TABLE IF NOT EXISTS 不会加新列）
+  const cols = db.prepare(`PRAGMA table_info(libraries)`).all() as { name: string }[]
+  const colNames = new Set(cols.map((c) => c.name))
+  if (!colNames.has('until_found')) db.exec(`ALTER TABLE libraries ADD COLUMN until_found INTEGER NOT NULL DEFAULT 20`)
+  if (!colNames.has('recent_limit')) db.exec(`ALTER TABLE libraries ADD COLUMN recent_limit INTEGER NOT NULL DEFAULT 0`)
   _meta = db
   return db
 }
@@ -80,6 +91,8 @@ function toRow(row: Record<string, unknown>): LibraryRow {
     last_sync_at: (row.last_sync_at as string | null) ?? null,
     created_at: row.created_at as string,
     active: row.active as number,
+    until_found: (row.until_found as number) ?? 20,
+    recent_limit: (row.recent_limit as number) ?? 0,
   }
 }
 
@@ -173,6 +186,23 @@ export function updateLibraryAuth(id: number, patch: { account?: string; auth_st
 /** 记录最近同步时间 */
 export function touchLibrarySync(id: number): void {
   getMetaDb().prepare(`UPDATE libraries SET last_sync_at = ? WHERE id = ?`).run(new Date().toISOString(), id)
+}
+
+/** 更新同步参数（until_found / recent_limit） */
+export function updateLibraryConfig(id: number, patch: { untilFound?: number; recentLimit?: number }): void {
+  const sets: string[] = []
+  const vals: unknown[] = []
+  if (patch.untilFound !== undefined) {
+    sets.push('until_found = ?')
+    vals.push(Math.max(1, Math.floor(patch.untilFound)))
+  }
+  if (patch.recentLimit !== undefined) {
+    sets.push('recent_limit = ?')
+    vals.push(Math.max(0, Math.floor(patch.recentLimit)))
+  }
+  if (sets.length === 0) return
+  vals.push(id)
+  getMetaDb().prepare(`UPDATE libraries SET ${sets.join(', ')} WHERE id = ?`).run(...vals)
 }
 
 /** 删除库（仅移除注册；不删照片文件。删除前确保切到其他库） */
