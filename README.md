@@ -61,7 +61,7 @@ Copy-Item .env.example .env
 
 ### 生产模式（单端口部署）
 
-开发模式使用前端 5173 和后端 8899 两个端口。生产模式先构建前端，再由后端托管页面，访问 `http://127.0.0.1:8899`：
+开发模式使用前端 5173 和后端 8899 两个端口。生产模式先构建前端，再由后端托管页面，本机访问 `http://127.0.0.1:8899`（后端默认监听 `0.0.0.0`，同一局域网内其他设备用 `http://<服务器IP>:8899` 访问）：
 
 ```powershell
 Set-Location .\web
@@ -97,10 +97,11 @@ npm run start
 | `DB_PATH` | `<项目根>\\server\\cache\\library.db` | 激活库 SQLite 数据库文件（多库下按库目录自动派生） |
 | `META_DB_PATH` | `<项目根>\\server\\cache\\meta.db` | 库注册表 DB（多库共享，不随库切换） |
 | `ICLOUDPD_EXE` | `<项目根>\\server\\vendor\\icloudpd-1.32.3-windows-amd64.exe` | icloudpd 可执行文件（黑盒调用，版本锁定） |
-| `ICLOUDPD_RECENT` | `0`（不限制） | 测试/验证用：>0 时同步命令追加 `--recent N`（正式功能不暴露） |
+| ~~`ICLOUDPD_RECENT`~~ | — | 已废弃（2026-10-13）：同步限量改由设置中心按库 `recentLimit` 配置，不再读取此变量 |
 | `FFMPEG_DIR` | `<项目根>\\server\\vendor\\ffmpeg-full` | BtbN ffmpeg full 解压目录 |
 | `FFMPEG_PATH` / `FFPROBE_PATH` | （自动在 FFMPEG_DIR 内查找） | 直接指定可执行文件 |
 | `PORT` | `8899` | 后端端口 |
+| `HOST` | `0.0.0.0` | 后端监听地址（默认全网卡，同一局域网设备可用 `http://<服务器IP>:8899` 访问；设 `127.0.0.1` 可收回仅本机） |
 | `SCAN_LIMIT` | `0`（全量） | 调试用，>0 只扫前 N 个文件 |
 
 优先级：命令行临时设置 > `.env` 文件 > 代码默认值。同一时间不要两个后端实例连同一个 `library.db`（SQLite 写锁冲突）。
@@ -139,8 +140,8 @@ npm run start
 | DELETE | /api/assets | 批量删除（body: `{ ids }`；会删除对应源文件，不可恢复） |
 | GET | /api/libraries | 照片库列表（含激活标记/链接状态/账号/目录/照片视频计数） |
 | POST | /api/libraries | 创建照片库（body: `{ name }`；已有激活库时不自动切换） |
-| PATCH | /api/libraries/:id/active | 切换激活库（同步执行中 409） |
-| DELETE | /api/libraries/:id | 删除照片库（body: `{ removePhotos }`；必删注册+缓存，勾选才删本地照片） |
+| PATCH | /api/libraries/:id/active | 切换激活库（同步执行中或扫描进行中 409） |
+| DELETE | /api/libraries/:id | 删除照片库（body: `{ removePhotos }`；必删注册+缓存，勾选才删本地照片；同步执行中或扫描进行中 409） |
 | POST | /api/auth | 开始 iCloud 链接（spawn icloudpd webui auth-only） |
 | POST | /api/auth/input | 输入密码/验证码（桥接 webui；防重锁） |
 | GET | /api/auth | 认证状态轮询（starting/密码/校验/验证码/完成/失败） |
