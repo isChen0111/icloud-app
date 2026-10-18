@@ -225,11 +225,13 @@ export function startAuth(username: string, cookieDir: string): AuthSession {
   startPolling()
 
   authTimer = setTimeout(() => {
-    stopAuth()
+    // 审查 P3e：先标记 error（前端轮询能读到"认证超时"文案），再清理进程/轮询；
+    // 不能先 stopAuth()（session 会被置 null，超时文案变成死代码永不生效）
     if (session) {
       session.stage = 'error'
       session.message = '认证超时（10 分钟），请重试'
     }
+    teardownAuthProcess()
   }, AUTH_TIMEOUT_MS)
 
   return s
@@ -305,6 +307,16 @@ export function authStatus(): AuthSession | null {
  *  PyInstaller 打包的 exe 会派生真实子进程，仅 kill 父进程会残留；
  *  故用 taskkill /T 杀整个进程树（Windows）。 */
 export function stopAuth(): void {
+  teardownAuthProcess()
+  session = null
+}
+
+/**
+ * 清理认证进程/轮询/防重锁，但保留 session 引用（审查 P3e）：
+ * 认证超时场景需先设置 error 状态供前端轮询读取，再清理进程；
+ * 若先 stopAuth()（session=null），随后的 `if (session)` 恒为 false，超时文案永不生效。
+ */
+function teardownAuthProcess(): void {
   if (authTimer) {
     clearTimeout(authTimer)
     authTimer = null
@@ -328,7 +340,6 @@ export function stopAuth(): void {
     }
   }
   proc = null
-  session = null
 }
 
 /**
@@ -360,7 +371,20 @@ export function checkAuthValid(username: string, cookieDir: string): Promise<{ v
     let out = ''
     child.stdout.on('data', (d: Buffer) => (out += d.toString('utf8')))
     child.stderr.on('data', (d: Buffer) => (out += d.toString('utf8')))
-    const timer = setTimeout(() => child.kill(), 30_000)
+    // 审查 P3f：超时用 taskkill /T 杀整个进程树（PyInstaller 有真实子进程，
+    // 仅 child.kill() 会残留孤儿进程卡在密码提示等待输入）
+    const timer = setTimeout(() => {
+      try {
+        if (child.pid) {
+          spawnSync('taskkill', ['/F', '/T', '/PID', String(child.pid)], {
+            windowsHide: true,
+            stdio: 'ignore',
+          })
+        }
+      } catch {
+        child.kill()
+      }
+    }, 30_000)
     child.on('error', () => {
       clearTimeout(timer)
       resolve({ valid: false, message: 'icloudpd 启动失败' })

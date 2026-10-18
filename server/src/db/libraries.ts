@@ -32,8 +32,8 @@ export interface LibraryRow {
   recent_limit: number
 }
 
-/** Windows 路径非法字符（库名会用作 cache/cookie 目录名，须过滤） */
-const INVALID_DIR_CHARS = /[\\/:*?"<>|]/g
+/** Windows 路径非法字符（库名会用作 cache/cookie 目录名，须过滤）。不带 g 标志：.test() 无状态（审查 P3c） */
+const INVALID_DIR_CHARS = /[\\/:*?"<>|]/
 
 /** 库名校验：非空、≤32 字符、唯一、不含路径非法字符 */
 export function validateLibraryName(name: string): string | null {

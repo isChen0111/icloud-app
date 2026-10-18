@@ -30,6 +30,7 @@ import { clearThumbnailQueue } from '../pipeline/queue.js'
 import { isSyncBusy } from '../icloudpd/sync.js'
 import { resetSyncState } from '../icloudpd/state.js'
 import fs from 'node:fs'
+import { promises as fsp } from 'node:fs'
 import path from 'node:path'
 import Database from 'better-sqlite3'
 
@@ -118,6 +119,11 @@ export async function registerLibraryRoutes(app: FastifyInstance): Promise<void>
     if (isSyncBusy()) {
       return reply.code(409).send({ error: '同步任务执行中，请先等待完成或取消后再切换照片库' })
     }
+    // 在途扫描未完成时拒绝切换（审查 P1）：旧扫描会在切库后继续经 getDb() 代理写入新库，
+    // 其删除对账会把新库资产判为孤儿批量删除 → 数据记录被清空/污染
+    if (scanProgress.status === 'scanning') {
+      return reply.code(409).send({ error: '照片库扫描进行中，请稍候再切换' })
+    }
     switchToLibrary(id)
     return reply.send({ ok: true, activeId: id })
   })
@@ -162,6 +168,11 @@ export async function registerLibraryRoutes(app: FastifyInstance): Promise<void>
     if (isSyncBusy()) {
       return reply.code(409).send({ error: '同步任务执行中，请先等待完成或取消后再删除照片库' })
     }
+    // 在途扫描未完成时拒绝删除（审查 P1）：删除激活库后旧扫描会经 getDb() 代理写入下一个激活库，
+    // 其删除对账会把新库资产判为孤儿批量删除 → 数据记录被清空/污染
+    if (scanProgress.status === 'scanning') {
+      return reply.code(409).send({ error: '照片库扫描进行中，请稍候再删除' })
+    }
     // 走到这里必然无运行中任务；删除后清全局同步状态残留
     resetSyncState()
 
@@ -176,11 +187,13 @@ export async function registerLibraryRoutes(app: FastifyInstance): Promise<void>
       closeDb()
     }
 
-    // 缓存目录（注册表记录 + 缩略图/DB/cookies）永远删
-    fs.rmSync(lib.cache_dir, { recursive: true, force: true })
+    // 缓存目录（注册表记录 + 缩略图/DB/cookies）永远删。
+    // 用异步 rm（libuv 线程池）而非 rmSync：大目录（缩略图可数十 GB）同步删除会阻塞事件循环，
+    // 期间整个服务无响应（审查 P2）
+    await fsp.rm(lib.cache_dir, { recursive: true, force: true })
     // 本地照片副本：仅勾选时删（云端原片不动）
     if (removePhotos) {
-      fs.rmSync(lib.library_root, { recursive: true, force: true })
+      await fsp.rm(lib.library_root, { recursive: true, force: true })
     }
     // 移除注册
     deleteLibrary(id)
