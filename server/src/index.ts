@@ -54,15 +54,29 @@ async function main(): Promise<void> {
 
   const app = Fastify({ logger: true })
 
-  // 仅允许本机 Vite 开发服务器跨源访问；生产静态页面与 API 同源，无需 CORS。
+  // 仅允许本机 Vite 开发服务器跨源访问（dev 模式经 Vite 代理转发：浏览器 Origin 是 5173，
+  // 而 changeOrigin 已把 Host 改写为后端 8899，两者不同源，必须靠白名单）。
+  // 生产模式（后端静态托管）走同源判定：Origin 的 host 与请求 Host 一致即放行
+  // （127.0.0.1 / localhost / 局域网 IP / 域名均可，无需维护白名单）。
   const devOrigins = new Set([
     'http://localhost:5173',
     'http://127.0.0.1:5173',
     'http://[::1]:5173',
   ])
+  /** 同源判定：Origin 与请求 Host 的 hostname + 端口一致（经 URL 规范化，默认端口 80/443 自动等价） */
+  function isSameOrigin(origin: string | undefined, host: string | undefined): boolean {
+    if (!origin || !host) return false
+    try {
+      const o = new URL(origin)
+      const h = new URL(`http://${host}`)
+      return o.hostname.toLowerCase() === h.hostname.toLowerCase() && o.port === h.port
+    } catch {
+      return false
+    }
+  }
   app.addHook('onRequest', async (request, reply) => {
     const origin = request.headers.origin
-    const allowed = origin !== undefined && devOrigins.has(origin)
+    const allowed = origin !== undefined && (devOrigins.has(origin) || isSameOrigin(origin, request.headers.host))
     if (allowed) {
       reply.header('Access-Control-Allow-Origin', origin)
       reply.header('Vary', 'Origin')
@@ -72,9 +86,10 @@ async function main(): Promise<void> {
     if (request.method === 'OPTIONS') {
       return reply.code(allowed ? 204 : 403).send()
     }
-    // F-04 修复：副作用请求（非 GET/HEAD）带非允许 Origin → 403。
-    // 本地单机威胁模型 = 恶意网页跨站调用本机 API（删照片/触发扫描/操作失败项）；
-    // 跨站必有 Origin 且不在允许集。curl / 本地脚本 / 生产同源浏览器请求无 Origin → 放行，零影响。
+    // 副作用请求（非 GET/HEAD）带非允许 Origin → 403。
+    // 威胁模型 = 恶意网页跨站调用本机 API（删照片/触发扫描/操作失败项）；
+    // 跨站必有 Origin，且其 host 与本机 Host 不一致 → 拒绝。
+    // curl / 本地脚本 / 无 Origin 的直连 → 放行（浏览器外无跨站 Origin 语义）。
     if (origin !== undefined && !allowed && !['GET', 'HEAD'].includes(request.method)) {
       return reply.code(403).send({ error: 'forbidden origin' })
     }
@@ -113,8 +128,8 @@ async function main(): Promise<void> {
       app.log.error(`启动同步失败: ${(err as Error).message}`)
     })
   }
-  // ④ 启动
-  await app.listen({ port: config.port, host: '127.0.0.1' })
+  // ④ 启动（监听地址可配置：默认 0.0.0.0 局域网可访问；设 HOST=127.0.0.1 仅本机）
+  await app.listen({ port: config.port, host: config.host })
   app.log.info(`📸 本地 iCloud 照片浏览器后端已启动`)
   app.log.info(`   照片库: ${config.libraryRoot}`)
   app.log.info(`   数据库: ${config.dbPath}`)

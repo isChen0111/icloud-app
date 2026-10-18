@@ -20,6 +20,12 @@ export const config = {
   /** 后端监听端口 */
   port: Number(process.env.PORT ?? 8899),
 
+  /**
+   * 后端监听地址：默认 0.0.0.0（同一局域网设备可访问，配合同源 Origin 判定）。
+   * 仅本机访问可设 127.0.0.1（外部设备连接被拒）。
+   */
+  host: process.env.HOST ?? '0.0.0.0',
+
   /** 照片库根目录（iCloudPD 输出，只读）：默认 F:\iPhone\icloud-app\iCloudPhoto */
   libraryRoot: process.env.PHOTO_LIBRARY ?? path.join(projectRoot, 'iCloudPhoto'),
 
