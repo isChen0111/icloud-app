@@ -76,6 +76,26 @@ function toPublic(row: LibraryRow) {
   }
 }
 
+/**
+ * 切库/删除守卫：同步任务执行中或照片库扫描进行中 → 返回错误文案（null = 放行）。
+ * 抽出为独立函数便于单元测试（审查 P1 在途扫描守卫 + 同步任务守卫）。
+ */
+export function libraryBusyGuard(action: 'switch' | 'delete'): string | null {
+  if (isSyncBusy()) {
+    return action === 'delete'
+      ? '同步任务执行中，请先等待完成或取消后再删除照片库'
+      : '同步任务执行中，请先等待完成或取消后再切换照片库'
+  }
+  // 在途扫描未完成时拒绝切换/删除（审查 P1）：旧扫描会在切库后继续经 getDb() 代理写入新库，
+  // 其删除对账会把新库资产判为孤儿批量删除 → 数据记录被清空/污染
+  if (scanProgress.status === 'scanning') {
+    return action === 'delete'
+      ? '照片库扫描进行中，请稍候再删除'
+      : '照片库扫描进行中，请稍候再切换'
+  }
+  return null
+}
+
 export async function registerLibraryRoutes(app: FastifyInstance): Promise<void> {
   app.get('/api/libraries', async () => {
     const current = getCurrentLibrary()
@@ -116,14 +136,8 @@ export async function registerLibraryRoutes(app: FastifyInstance): Promise<void>
     if (!target) return reply.code(404).send({ error: '库不存在' })
     if (target.active === 1) return reply.send({ ok: true, activeId: id, unchanged: true })
 
-    if (isSyncBusy()) {
-      return reply.code(409).send({ error: '同步任务执行中，请先等待完成或取消后再切换照片库' })
-    }
-    // 在途扫描未完成时拒绝切换（审查 P1）：旧扫描会在切库后继续经 getDb() 代理写入新库，
-    // 其删除对账会把新库资产判为孤儿批量删除 → 数据记录被清空/污染
-    if (scanProgress.status === 'scanning') {
-      return reply.code(409).send({ error: '照片库扫描进行中，请稍候再切换' })
-    }
+    const busy = libraryBusyGuard('switch')
+    if (busy) return reply.code(409).send({ error: busy })
     switchToLibrary(id)
     return reply.send({ ok: true, activeId: id })
   })
@@ -165,14 +179,8 @@ export async function registerLibraryRoutes(app: FastifyInstance): Promise<void>
     const lib = getLibraryById(id)
     if (!lib) return reply.code(404).send({ error: '库不存在' })
 
-    if (isSyncBusy()) {
-      return reply.code(409).send({ error: '同步任务执行中，请先等待完成或取消后再删除照片库' })
-    }
-    // 在途扫描未完成时拒绝删除（审查 P1）：删除激活库后旧扫描会经 getDb() 代理写入下一个激活库，
-    // 其删除对账会把新库资产判为孤儿批量删除 → 数据记录被清空/污染
-    if (scanProgress.status === 'scanning') {
-      return reply.code(409).send({ error: '照片库扫描进行中，请稍候再删除' })
-    }
+    const busy = libraryBusyGuard('delete')
+    if (busy) return reply.code(409).send({ error: busy })
     // 走到这里必然无运行中任务；删除后清全局同步状态残留
     resetSyncState()
 

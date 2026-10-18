@@ -46,7 +46,8 @@ let proc: ChildProcess | null = null
 let authTimer: NodeJS.Timeout | null = null
 let pollTimer: NodeJS.Timeout | null = null
 
-function newSession(cookieDir: string, stage: AuthStage, hint: string): AuthSession {
+/** 新建认证会话（导出供单元测试设置 session） */
+export function newSession(cookieDir: string, stage: AuthStage, hint: string): AuthSession {
   session = { stage, hint, message: '', cookieDir }
   return session
 }
@@ -224,17 +225,23 @@ export function startAuth(username: string, cookieDir: string): AuthSession {
   // 等内嵌服务起来后开始轮询状态
   startPolling()
 
-  authTimer = setTimeout(() => {
-    // 审查 P3e：先标记 error（前端轮询能读到"认证超时"文案），再清理进程/轮询；
-    // 不能先 stopAuth()（session 会被置 null，超时文案变成死代码永不生效）
-    if (session) {
-      session.stage = 'error'
-      session.message = '认证超时（10 分钟），请重试'
-    }
-    teardownAuthProcess()
-  }, AUTH_TIMEOUT_MS)
+  authTimer = setTimeout(() => onAuthTimeout(), AUTH_TIMEOUT_MS)
 
   return s
+}
+
+/**
+ * 认证超时处理（抽出为独立函数便于单元测试，审查 P3e）：
+ * 先标记 error（前端轮询能读到"认证超时"文案），再清理进程/轮询；
+ * 不能先 stopAuth()（session 会被置 null，超时文案变成死代码永不生效）。
+ * teardownAuthProcess 保留 session 引用：error 状态供前端轮询读取。
+ */
+export function onAuthTimeout(): void {
+  if (session) {
+    session.stage = 'error'
+    session.message = '认证超时（10 分钟），请重试'
+  }
+  teardownAuthProcess()
 }
 
 /** 提交防重锁：同一时刻只处理一次提交，避免并发/连点造成重复发验证请求（用户手机重复收到验证码） */

@@ -31,11 +31,17 @@ let proc: ChildProcess | null = null
 let retryTimer: NodeJS.Timeout | null = null
 let retries = 0
 
-function clearTimers(): void {
+/** 清理重试定时器（导出供单元测试在 after 钩子中清理残留 timer） */
+export function clearTimers(): void {
   if (retryTimer) {
     clearTimeout(retryTimer)
     retryTimer = null
   }
+}
+
+/** 重置索引重试计数（startSync 正常路径也会重置；导出供单元测试隔离用例状态） */
+export function resetRetries(): void {
+  retries = 0
 }
 
 /** 当前是否有同步任务在跑/在等重试 */
@@ -133,35 +139,42 @@ function spawnOnce(lib: LibraryRow, kind: 'full' | 'inc'): void {
     proc = null
   })
 
-  child.on('exit', (code) => {
-    proc = null
-    if (syncState.status === 'cancelled') return // 用户取消，不覆盖状态
-    if (syncState.status === 'waiting_retry') return // 重试定时器已接管
-    // 审查 P3a/P3b：error 是终态（会话失效/重试耗尽已给出具体文案并结束任务）。
-    // 进程随后退出（被杀或自行退出）不得再覆盖为通用异常或 done，防止：
-    //   ① 具体文案（"会话已过期请重新链接"）被"icloudpd 异常退出"冲掉；
-    //   ② 重试耗尽后进程自行退出 0 时 error→done 翻转并错误更新 last_sync_at
-    if (syncState.status === 'error') {
-      if (currentLibRef?.id === lib.id) currentLibRef = null
-      return
-    }
-    if (code === 0) {
-      syncState.status = 'done'
-      syncState.message = '同步完成'
-      syncState.finishedAt = new Date().toISOString()
-      touchLibrarySync(lib.id)
-      updateLibraryAuth(lib.id, { auth_status: 'authed' })
-    } else {
-      syncState.status = 'error'
-      syncState.message = `icloudpd 异常退出（code=${code}）。网络中断或会话失效时请重试（增量可续传）`
-      syncState.finishedAt = new Date().toISOString()
-    }
-    if (currentLibRef?.id === lib.id) currentLibRef = null
-  })
+  child.on('exit', (code) => handleSyncExit(code, lib))
 }
 
-/** 单行输出处理：原始行记入日志缓冲 / 进度计数 / 索引未完成重试 */
-function handleLine(line: string): void {
+/**
+ * 子进程退出后的终态处理（抽出为独立函数便于单元测试，审查 P3a/P3b）：
+ * - cancelled：用户取消，不覆盖状态；
+ * - waiting_retry：重试定时器已接管，不覆盖；
+ * - error：终态（会话失效/重试耗尽已给出具体文案并结束任务）。进程随后退出
+ *   （被杀或自行退出）不得再覆盖为通用异常或 done，防止：
+ *     ① 具体文案（"会话已过期请重新链接"）被"icloudpd 异常退出"冲掉；
+ *     ② 重试耗尽后进程自行退出 0 时 error→done 翻转并错误更新 last_sync_at
+ */
+export function handleSyncExit(code: number | null, lib: LibraryRow): void {
+  proc = null
+  if (syncState.status === 'cancelled') return // 用户取消，不覆盖状态
+  if (syncState.status === 'waiting_retry') return // 重试定时器已接管
+  if (syncState.status === 'error') {
+    if (currentLibRef?.id === lib.id) currentLibRef = null
+    return
+  }
+  if (code === 0) {
+    syncState.status = 'done'
+    syncState.message = '同步完成'
+    syncState.finishedAt = new Date().toISOString()
+    touchLibrarySync(lib.id)
+    updateLibraryAuth(lib.id, { auth_status: 'authed' })
+  } else {
+    syncState.status = 'error'
+    syncState.message = `icloudpd 异常退出（code=${code}）。网络中断或会话失效时请重试（增量可续传）`
+    syncState.finishedAt = new Date().toISOString()
+  }
+  if (currentLibRef?.id === lib.id) currentLibRef = null
+}
+
+/** 单行输出处理：原始行记入日志缓冲 / 进度计数 / 索引未完成重试（导出供单元测试） */
+export function handleLine(line: string): void {
   // 原始输出先进日志（任何状态都记：running / waiting_retry / 重试过程都能看到）
   const raw = line.replace(/\r/g, '').trim()
   if (raw) {
