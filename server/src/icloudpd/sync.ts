@@ -13,7 +13,7 @@
  *   - 断网/进程异常退出 → error，用户可再次执行（增量续传）。
  *   - 进度：行模式 Downloading… / Downloaded… 计数（近似），不做精确条目解析。
  */
-import { spawn, type ChildProcess } from 'node:child_process'
+import { spawn, spawnSync, type ChildProcess } from 'node:child_process'
 import { config } from '../config.js'
 import type { LibraryRow } from '../db/libraries.js'
 import { touchLibrarySync, updateLibraryAuth } from '../db/libraries.js'
@@ -48,7 +48,9 @@ function killProcess(): void {
   if (proc && !proc.killed) {
     const pid = proc.pid
     try {
-      spawn('taskkill', ['/F', '/T', '/PID', String(pid)], { windowsHide: true, stdio: 'ignore' })
+      // 同步等待 taskkill 完成（审查 P3d）：确保旧进程树彻底退出后再允许新任务启动，
+      // 避免取消/重试后立即重开时新旧 icloudpd 并发写同一库目录
+      spawnSync('taskkill', ['/F', '/T', '/PID', String(pid)], { windowsHide: true, stdio: 'ignore' })
     } catch {
       try {
         proc.kill()
@@ -135,6 +137,14 @@ function spawnOnce(lib: LibraryRow, kind: 'full' | 'inc'): void {
     proc = null
     if (syncState.status === 'cancelled') return // 用户取消，不覆盖状态
     if (syncState.status === 'waiting_retry') return // 重试定时器已接管
+    // 审查 P3a/P3b：error 是终态（会话失效/重试耗尽已给出具体文案并结束任务）。
+    // 进程随后退出（被杀或自行退出）不得再覆盖为通用异常或 done，防止：
+    //   ① 具体文案（"会话已过期请重新链接"）被"icloudpd 异常退出"冲掉；
+    //   ② 重试耗尽后进程自行退出 0 时 error→done 翻转并错误更新 last_sync_at
+    if (syncState.status === 'error') {
+      if (currentLibRef?.id === lib.id) currentLibRef = null
+      return
+    }
     if (code === 0) {
       syncState.status = 'done'
       syncState.message = '同步完成'
@@ -197,6 +207,12 @@ function handleLine(line: string): void {
       syncState.status = 'error'
       syncState.message = 'iCloud 索引长时间未就绪（已重试 5 次），请稍后再试'
       syncState.finishedAt = new Date().toISOString()
+      // 审查 P3b：进程仍在跑（可能自行完成或挂起等待输入），须杀掉避免后台残留，
+      // 且后续 exit 事件因 status==='error' 不再改判状态
+      if (proc && !proc.killed) {
+        killProcess()
+      }
+      proc = null
     }
   }
 
