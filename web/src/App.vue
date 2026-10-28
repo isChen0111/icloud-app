@@ -36,7 +36,40 @@ const onboardingOpen = ref(false)
 const authDialogOpen = ref(false)
 const librariesChecked = ref(false)
 const syncPick = ref<'full' | 'inc' | null>(null)
+/**
+ * 顶栏操作错误提示（R-30）。
+ * 以前这个 ref 只赋值、模板从未渲染 → 「同步中切库被 409 拒绝」等失败完全静默：
+ * 菜单直接关掉、库名没变，用户只会反复点。现在由顶栏下方的浮层提示呈现。
+ */
 const syncError = ref('')
+let syncErrorTimer: number | undefined
+/** 自动消失延时：后端文案偏长（如「同步任务执行中，请先等待完成或取消后再切换照片库」），
+ *  8 秒是「能读完但不至于一直挂着」的折中；鼠标悬停时会暂停计时 */
+const SYNC_ERROR_TTL = 8000
+
+/** 启动（或重启）自动消失计时 */
+function armSyncErrorTimer(): void {
+  window.clearTimeout(syncErrorTimer)
+  syncErrorTimer = window.setTimeout(() => {
+    syncError.value = ''
+  }, SYNC_ERROR_TTL)
+}
+
+watch(syncError, (msg) => {
+  window.clearTimeout(syncErrorTimer)
+  if (!msg) return
+  armSyncErrorTimer()
+})
+
+/** 鼠标移入浮层：暂停自动消失（长文案不会读到一半就消失） */
+function holdSyncError(): void {
+  window.clearTimeout(syncErrorTimer)
+}
+
+/** 鼠标移出浮层：重新计满 8 秒 */
+function resumeSyncError(): void {
+  if (syncError.value) armSyncErrorTimer()
+}
 
 /** P0：右上角库切换下拉 + 设置中心 */
 const settingsOpen = ref(false)
@@ -254,8 +287,21 @@ async function checkLibraries(): Promise<void> {
   }
 }
 
+/** 引导期间是否切换过激活库（R-22）：切库后页面数据仍是旧库，关闭引导要整页刷新 */
+let onboardingSwitched = false
+function onOnboardingSwitch(): void {
+  onboardingSwitched = true
+}
+
 function onOnboardingClose(): void {
   onboardingOpen.value = false
+  if (onboardingSwitched) {
+    // R-22：引导期间切过激活库 → 顶栏库名 / stats / 照片墙资产全是旧库的，
+    // 必须整页初始化，否则会出现"后端已换库、页面还是旧库"的错位
+    onboardingSwitched = false
+    location.reload()
+    return
+  }
   void pollStats()
 }
 
@@ -403,6 +449,12 @@ watch(
   },
 )
 onMounted(() => {
+  // 设置中心「切换到此库并同步」在刷新前留下的提示（如切库成功但同步启动失败）
+  const pendingError = sessionStorage.getItem('icloud.pendingError')
+  if (pendingError) {
+    sessionStorage.removeItem('icloud.pendingError')
+    syncError.value = pendingError
+  }
   document.addEventListener('pointerdown', closeStatusDetailsOnOutsideClick)
   document.addEventListener('keydown', closeStatusDetailsOnEscape)
   void checkLibraries()
@@ -410,6 +462,7 @@ onMounted(() => {
 })
 onBeforeUnmount(() => {
   disposed = true
+  window.clearTimeout(syncErrorTimer)
   document.removeEventListener('pointerdown', closeStatusDetailsOnOutsideClick)
   document.removeEventListener('keydown', closeStatusDetailsOnEscape)
   if (retryTimer !== undefined) {
@@ -729,6 +782,24 @@ onBeforeUnmount(() => {
       </button>
     </header>
 
+    <!-- 操作失败提示（R-30）：同步中切库 / 启动同步被拒等后端文案在这里显示。
+         固定定位浮层，不参与布局流——若做成顶栏下方的流内元素会把 .view-host 压矮，
+         进而触发 GridScroller 的 ResizeObserver 重算行高/总高，照片墙会莫名抖一下。
+         8 秒后自动消失，悬停暂停计时，也可点 × 立即关闭 -->
+    <Transition name="toast">
+      <div
+        v-if="syncError"
+        class="top-error"
+        role="alert"
+        @mouseenter="holdSyncError"
+        @mouseleave="resumeSyncError"
+      >
+        <span class="top-error-dot" aria-hidden="true" />
+        <span class="top-error-text">{{ syncError }}</span>
+        <button class="top-error-close" type="button" aria-label="关闭提示" @click="syncError = ''">×</button>
+      </div>
+    </Transition>
+
     <!-- 路由出口：KeepAlive 仅缓存照片墙（返回详情页时保留滚动位置/已加载数据/搜索态），
          详情页不缓存（大图 DOM 无需常驻） -->
     <main class="view-host">
@@ -842,7 +913,7 @@ onBeforeUnmount(() => {
     </div>
 
     <!-- P0：无照片库时首次引导 / 手动新建照片库 -->
-    <OnboardingView v-if="onboardingOpen" @close="onOnboardingClose" />
+    <OnboardingView v-if="onboardingOpen" @close="onOnboardingClose" @switched="onOnboardingSwitch" />
 
     <!-- P0：iCloud 认证面板（首次链接 / cookie 过期重新链接 / 设置中心重新链接） -->
     <AuthDialog
@@ -892,6 +963,64 @@ onBeforeUnmount(() => {
   font-weight: 600;
   letter-spacing: 0.3px;
 }
+/* 操作失败提示浮层（R-30）：fixed 定位悬在照片墙上方，完全不参与布局流。
+   早期版本是顶栏下的流内条，出现时会把 .view-host 压矮 30px 左右，
+   触发 GridScroller 的 ResizeObserver → 重算行高 → 照片墙轻微跳动。
+   层级 50：高于顶栏(10)与资源状态 popover(30)，低于设置中心(105)/引导(110)/认证(120) */
+.top-error {
+  position: fixed;
+  top: 56px; /* 顶栏 44px + 12px 呼吸间距 */
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: min(620px, calc(100vw - 24px));
+  padding: 9px 10px 9px 14px;
+  border: 1px solid rgb(208 82 69 / 30%);
+  border-radius: 10px;
+  /* 兜底：不支持 color-mix 的浏览器直接用顶栏底色，仍可读 */
+  background: var(--bg-topbar);
+  background: color-mix(in srgb, var(--bg-topbar) 92%, #d05245 8%);
+  box-shadow: 0 10px 28px rgb(0 0 0 / 22%);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  color: #d05245;
+  font-size: 12px;
+  line-height: 1.5;
+}
+/* 进出场动画：上方 6px 滑入/滑出 + 淡入淡出。
+   注意 transform 必须带上 -50% 维持水平居中，否则动画期间会跳到左边 */
+.toast-enter-active,
+.toast-leave-active {
+  transition: opacity 0.18s ease, transform 0.18s ease;
+}
+.toast-enter-from,
+.toast-leave-to {
+  opacity: 0;
+  transform: translate(-50%, -6px);
+}
+.top-error-dot {
+  flex-shrink: 0;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+.top-error-text { flex: 1; min-width: 0; word-break: break-word; }
+.top-error-close {
+  flex-shrink: 0;
+  padding: 0 2px;
+  border: 0;
+  background: transparent;
+  color: currentColor;
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0.7;
+}
+.top-error-close:hover { opacity: 1; }
 .spacer { flex: 1; }
 .stat {
   font-size: 12px;

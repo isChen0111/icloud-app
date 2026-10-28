@@ -11,11 +11,15 @@
  * 触发：无任何照片库时自动显示（首次启动引导）；有库时可由状态组件「新建照片库」打开。
  */
 import { onBeforeUnmount, onMounted, ref } from 'vue'
-import { createLibrary, startSync, fetchSync, cancelSync } from '../api/client'
+import { createLibrary, startSync, fetchSync, cancelSync, switchLibrary } from '../api/client'
 import type { SyncState } from '../types'
 import AuthDialog from './AuthDialog.vue'
 
-const emit = defineEmits<{ close: [] }>()
+const emit = defineEmits<{
+  close: []
+  /** 引导期间切换了激活库（R-22）：App 关闭引导时要整页刷新，否则页面数据仍是旧库 */
+  switched: []
+}>()
 
 /** ESC 关闭引导（不想继续可直接退出；若已建库，库保留，稍后在设置中心继续链接） */
 function onKeydown(e: KeyboardEvent): void {
@@ -31,6 +35,8 @@ const creating = ref(false)
 /** 照片库创建成功（先展示成功提示，再手动进入链接步骤） */
 const created = ref(false)
 const libraryId = ref<number | null>(null)
+/** 该库创建后是否就是激活库（已有其他库时后端不激活新库，R-22） */
+const libActive = ref(true)
 const authOpen = ref(false)
 const authDone = ref(false)
 const syncing = ref(false)
@@ -51,6 +57,8 @@ async function submitName(): Promise<void> {
   try {
     const res = await createLibrary(trimmed)
     libraryId.value = res.library.id
+    // 已有其他库时后端只建库不激活（不打断当前照片墙），同步前需要先切过来（见 startFullSync）
+    libActive.value = res.library.active
     created.value = true // 停在步骤①，先让用户看到「已创建」成功提示
   } catch (err) {
     nameError.value = err instanceof Error ? err.message : String(err)
@@ -72,6 +80,16 @@ async function startFullSync(): Promise<void> {
   syncing.value = true
   syncError.value = ''
   try {
+    // R-22：同步接口只允许对「当前激活库」执行，而已有其他库时新建的库不激活
+    // （后端刻意不激活，避免建库就把用户当前照片墙换掉）。
+    // 走到这一步说明用户明确要用这个库了，因此先热切换再同步：
+    // 停旧库 watcher → 清缩略图队列 → 关旧 DB → 覆写路径 → 重扫新库，
+    // 全程不动 location，引导弹窗与已完成的认证都不受影响。
+    if (!libActive.value) {
+      await switchLibrary(libraryId.value)
+      libActive.value = true
+      emit('switched') // 通知 App：关闭引导时要整页刷新
+    }
     const res = await startSync(libraryId.value, 'full')
     sync.value = res.sync
     startPolling()
