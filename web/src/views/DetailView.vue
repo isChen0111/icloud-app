@@ -120,16 +120,20 @@ async function onConfirmDelete(): Promise<void> {
     deleting.value = true
     try {
       const result = await deleteAssets([id])
+      // R-15：文件删不掉时后端保留 DB 行 → 本地也不移除，停留在当前页并提示重试
+      const failedIds = new Set((result.failed ?? []).map((f) => f.id))
+      if (failedIds.has(id)) {
+        confirmDeleteOpen.value = false
+        alert(`这张照片的源文件被占用或权限不足，未能删除。文件仍在原处，可稍后重试。`)
+        return
+      }
       assetStore.removeAssets([id])
       confirmDeleteOpen.value = false
-      if (result.unlinkFail > 0) {
-        alert(`已从图库移除，但有 ${result.unlinkFail} 个源文件未能删除。请检查文件是否被占用或权限是否足够。`)
-      }
       if (next != null) void router.push({ name: 'detail', params: { id: String(next) } })
       else if (prev != null) void router.push({ name: 'detail', params: { id: String(prev) } })
       else void router.push({ name: 'grid' })
-    } catch {
-      alert('删除失败，请检查后端服务')
+    } catch (err) {
+      alert(err instanceof Error ? err.message : '删除失败，请检查后端服务')
     } finally {
       deleting.value = false
     }

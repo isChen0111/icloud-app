@@ -20,6 +20,7 @@ import { config } from '../config.js'
 import fs from 'node:fs'
 import path from 'node:path'
 import { deleteAssetById } from '../scanner/index.js'
+import { libraryBusyGuard } from './libraries.js'
 
 /** 输出给前端的资产结构（不含内部状态字段） */
 export interface AssetDto {
@@ -80,6 +81,39 @@ export function toDto(row: AssetRow): AssetDto {
 /** 编码分页游标 */
 function encodeCursor(dateTaken: string, id: number): string {
   return Buffer.from(`${dateTaken}|${id}`).toString('base64url')
+}
+
+/**
+ * 删除单个资产的磁盘源文件（主文件 + 实况视频），返回未能删除的文件清单。
+ *
+ * - ENOENT（文件本来就不在）视为删除成功：用户手动删过 / 上次删了一半，都不该阻塞记录清理
+ * - 其他错误（EPERM 占用、权限不足）原样报告，调用方据此**保留该资产的 DB 行**（R-15）
+ *
+ * 抽成独立函数并允许注入 unlink，便于单测模拟"文件被占用"而无需真的锁文件。
+ */
+export function unlinkAssetFiles(
+  root: string,
+  assetId: number,
+  rels: (string | null)[],
+  unlink: (p: string) => void = (p) => fs.unlinkSync(p),
+): { id: number; path: string; code: string }[] {
+  const failed: { id: number; path: string; code: string }[] = []
+  for (const rel of rels) {
+    if (!rel) continue
+    try {
+      unlink(path.join(root, rel))
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code ?? 'UNKNOWN'
+      if (code === 'ENOENT') continue
+      failed.push({ id: assetId, path: rel, code })
+    }
+  }
+  return failed
+}
+
+/** 过滤出「文件已处理干净、可以删 DB 行」的资产（R-15 的另一半不变量） */
+export function filterDeletable<T extends { id: number }>(rows: T[], failedIds: Set<number>): T[] {
+  return rows.filter((r) => !failedIds.has(r.id))
 }
 
 /** 解码分页游标；失败返回 null（视为首页） */
@@ -192,46 +226,57 @@ export async function registerAssetRoutes(app: FastifyInstance): Promise<void> {
    * DELETE /api/assets —— 批量删除资产（客户端删除功能，不可逆）
    * body: { ids: number[] }
    * 流程：
-   *   ① 查 DB 拿 file_path / live_video（磁盘源文件位置）
-   *   ② 删磁盘源文件（主文件 + 实况视频）——不存在视为已删；其他失败记录并返回计数
-   *   ③ 事务删 DB 行 + FTS 索引 + 缩略图缓存（deleteAssetById）
+   *   ① 守卫：扫描 / 同步在途 → 409（R-16）
+   *   ② 查 DB 拿 file_path / live_video（磁盘源文件位置）
+   *   ③ 删磁盘源文件 —— 不存在（ENOENT）视为已删；其他失败（占用 / 权限）保留该资产 DB 行（R-15）
+   *   ④ 事务删 DB 行 + FTS 索引 + 缩略图缓存（deleteAssetById）
+   * 返回：全部成功 200；有文件删不掉 207 + failed 清单（前端据此提示"文件可能被占用"）
    * 联动：磁盘 unlink 会触发热监听 → 自动对账（幂等空转，秒级无害）
    */
   app.delete('/api/assets', async (req, reply) => {
+    // ① 守卫（R-16）：扫描在途时删除会与删除对账互相踩（对账基于本轮遍历快照），
+    //    同步在途时 icloudpd 正在写同一目录 —— 两者都等结束后再删。
+    const busy = libraryBusyGuard('delete-asset')
+    if (busy) return reply.code(409).send({ error: busy })
+
     const body = req.body as { ids?: unknown } | null
     const ids = Array.isArray(body?.ids)
       ? [...new Set(body.ids.map(Number).filter((n) => Number.isInteger(n) && n > 0))].slice(0, 1000)
       : []
     if (ids.length === 0) return reply.code(400).send({ error: 'ids required' })
 
-    // ① 查磁盘路径（IN 占位符防注入）
+    // ② 查磁盘路径（IN 占位符防注入）
     const placeholders = ids.map(() => '?').join(',')
     const rows = db
       .prepare(`SELECT id, file_path, live_video FROM assets WHERE id IN (${placeholders})`)
       .all(...ids) as { id: number; file_path: string; live_video: string | null }[]
 
-    // ② 删磁盘源文件（事务外：文件删了，DB 行也必然要删）
-    let unlinkFail = 0
+    // ③ 删磁盘源文件（严格语义，R-15）：任一文件删除失败（非 ENOENT）→ 保留该资产的 DB 行。
+    //    旧实现「文件删不掉也删记录」，结果是文件残留、记录消失，下次扫描以新 id 复活，
+    //    用户的忽略/失败状态随之丢失；且照片墙看不出"其实没删干净"。
+    const unlinkFailedIds = new Set<number>()
+    const failed: { id: number; path: string; code: string }[] = []
     for (const r of rows) {
-      for (const rel of [r.file_path, r.live_video]) {
-        if (!rel) continue
-        try {
-          fs.unlinkSync(path.join(config.libraryRoot, rel))
-        } catch (err) {
-          if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
-            unlinkFail++
-            console.error(`[delete] 源文件删除失败 ${rel}:`, err)
-          }
-        }
+      const fails = unlinkAssetFiles(config.libraryRoot, r.id, [r.file_path, r.live_video])
+      if (fails.length > 0) {
+        unlinkFailedIds.add(r.id)
+        failed.push(...fails)
+        for (const f of fails) console.error(`[delete] 源文件删除失败 ${f.path} (${f.code})`)
       }
     }
 
-    // ③ 事务删 DB + FTS + 缓存
+    // ④ 事务删 DB + FTS + 缓存（仅删文件确实处理干净的行）
+    const deletable = filterDeletable(rows, unlinkFailedIds)
     const delTx = db.transaction((existIds: number[]) => {
       for (const id of existIds) deleteAssetById(id)
     })
-    delTx(rows.map((r) => r.id))
+    delTx(deletable.map((r) => r.id))
 
-    return reply.send({ deleted: rows.length, missing: ids.length - rows.length, unlinkFail })
+    return reply.code(failed.length > 0 ? 207 : 200).send({
+      deleted: deletable.length,
+      missing: ids.length - rows.length,
+      unlinkFail: failed.length,
+      failed,
+    })
   })
 }
