@@ -204,5 +204,4 @@ export interface AssetRow {
   live_video: string | null
   thumb_status: string
   detail_status: string
-  poster_status: string
 }

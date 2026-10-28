@@ -57,7 +57,6 @@ let thumbnailBatchId = 0
 /** 入队参数 */
 export interface EnqueueItem {
   id: number
-  relPath: string
   type: 'photo' | 'video' | 'live'
 }
 

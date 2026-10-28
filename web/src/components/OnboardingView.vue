@@ -23,7 +23,9 @@ const emit = defineEmits<{
 
 /** ESC 关闭引导（不想继续可直接退出；若已建库，库保留，稍后在设置中心继续链接） */
 function onKeydown(e: KeyboardEvent): void {
-  if (e.key === 'Escape') emit('close')
+  // R-27：认证弹窗打开时 Esc 归弹窗自己处理。若这里也响应，会连带把整个引导
+  // 关掉 → AuthDialog 被卸载 → icloudpd 子进程留在后台占着 8080。
+  if (e.key === 'Escape' && !authOpen.value) emit('close')
 }
 onMounted(() => window.addEventListener('keydown', onKeydown))
 onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))

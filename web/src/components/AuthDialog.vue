@@ -142,18 +142,29 @@ function stopPolling(): void {
   }
 }
 
+/** 取消认证（幂等）：handleClose 与卸载钩子都可能触发，避免重复打后端 */
+let cancelRequested = false
+async function requestCancel(): Promise<void> {
+  if (cancelRequested || !started.value) return
+  cancelRequested = true
+  try {
+    await cancelAuth()
+  } catch {
+    // 后端不可达时忽略
+  }
+}
+
 async function handleClose(): Promise<void> {
   // 校验中禁止关闭（密码/验证码提交后等后端确认；点遮罩/× 可能中断认证）
   if (busy.value || submitting.value) return
   stopPolling()
-  if (started.value) {
-    try {
-      await cancelAuth()
-    } catch {
-      // 后端不可达时忽略
-    }
-  }
+  await requestCancel()
   emit('close')
+}
+
+/** Esc 关闭弹窗：弹窗是最上层，Esc 归它处理（引导页的 Esc 会被 authOpen 拦下） */
+function onKeydown(e: KeyboardEvent): void {
+  if (e.key === 'Escape') void handleClose()
 }
 
 /** 成功后用户点「完成」关闭（成功视图停留，让用户明确看到结果） */
@@ -162,10 +173,17 @@ function finish(): void {
   emit('done')
 }
 
-onBeforeUnmount(stopPolling)
+onBeforeUnmount(() => {
+  window.removeEventListener('keydown', onKeydown)
+  stopPolling()
+  // R-27：组件被父级无条件卸载（例如引导页被整体关闭）时也必须收掉 icloudpd
+  // 子进程。它继续占着 8080 会让下次认证直接起不来，而界面上看不出任何原因。
+  void requestCancel()
+})
 
 /** 设置中心/主界面点「刷新链接」（已有 account）打开即自动开始认证，不再要求二次点击 */
 onMounted(() => {
+  window.addEventListener('keydown', onKeydown)
   if (props.autoStart && props.account) void begin()
 })
 </script>
