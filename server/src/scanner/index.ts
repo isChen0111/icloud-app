@@ -61,8 +61,16 @@ interface PairedAsset {
 /**
  * 递归遍历目录，保留已读文件并报告任何未能读取的目录。
  * 目录读取失败不会中断入库，但扫描结果不完整时不能用于删除对账。
+ *
+ * 「不完整」有三种来源，都必须计入 errors（R-03 修复）：
+ *   ① readdir 失败（权限 / 文件被占用 / 目录刚被删）
+ *   ② 符号链接或 Windows 目录联接：Dirent 的 isDirectory()/isFile() 都是 false，
+ *      旧实现两个分支都不进 → 既不递归也不报错，其下资产会被删除对账判为孤儿
+ *   ③ 链接目标不可读（stat 失败）
+ * 本函数与 statSync 失败的白名单（见 runScan）共同保证：只有「明确确认已消失」
+ * 的文件才会被删除对账清理。
  */
-function walkDir(dir: string): { files: string[]; errors: string[] } {
+export function walkDir(dir: string): { files: string[]; errors: string[] } {
   const result = { files: [] as string[], errors: [] as string[] }
   let entries: fs.Dirent[]
   try {
@@ -80,9 +88,50 @@ function walkDir(dir: string): { files: string[]; errors: string[] } {
       result.errors.push(...child.errors)
     } else if (entry.isFile()) {
       result.files.push(full)
+    } else if (entry.isSymbolicLink()) {
+      // 符号链接 / Windows 目录联接：Dirent 的 isDirectory()/isFile() 都为 false。
+      // 目录链接不跟随（避免环路与越界读到库外），但必须记入 errors → 本轮跳过删除对账；
+      // 指向普通文件的链接正常收录（后续 sharp/exifr 读取时由操作系统跟随）。
+      let linkStat: fs.Stats | null = null
+      try {
+        linkStat = fs.statSync(full)
+      } catch {
+        linkStat = null
+      }
+      if (linkStat?.isFile()) {
+        result.files.push(full)
+      } else {
+        const kind = linkStat?.isDirectory() ? '→ directory' : '（目标不可读）'
+        result.errors.push(`${full}: symbolic link ${kind}`)
+      }
     }
   }
   return result
+}
+
+/**
+ * 计算删除对账要清理的孤儿资产 id（R-03 抽出的纯函数，便于单测守住不变量）。
+ *
+ * 「孤儿」的定义非常严格：遍历完整 + 本轮确实扫描过该文件所在目录 + 该路径既没被
+ * 扫描到、也不是 stat 失败（无法确认存在性）。任何一项不确定都不删。
+ *
+ * @param dbRows      库内全部资产（id + 相对库根路径）
+ * @param assetPaths  本轮扫描在磁盘上真实见到的资产路径
+ * @param statFailed  本轮 stat 失败 / 无法确认存在性的路径（必须排除）
+ * @param enabled     是否允许对账（SCAN_LIMIT>0 或遍历不完整 → false，一律不删）
+ */
+export function collectOrphanIds(
+  dbRows: { id: number; file_path: string }[],
+  assetPaths: Set<string>,
+  statFailed: Set<string>,
+  enabled: boolean,
+): number[] {
+  if (!enabled) return []
+  const orphanIds: number[] = []
+  for (const r of dbRows) {
+    if (!assetPaths.has(r.file_path) && !statFailed.has(r.file_path)) orphanIds.push(r.id)
+  }
+  return orphanIds
 }
 
 /**
@@ -116,12 +165,21 @@ export async function runScan(source: 'manual' | 'watcher' | 'startup' | 'switch
     for (const error of traversal.errors) console.warn(`[scan] 无法读取目录: ${error}`)
   }
   const allFiles: RawFile[] = []
+  /**
+   * stat 失败的文件（相对库根的路径）。R-03 修复：
+   * 这些文件在磁盘上大概率仍然存在（只是瞬时不可读 / 被占用），因此
+   *   - 本轮不参与入库（拿不到签名）
+   *   - 必须从删除对账中排除，否则会被判为孤儿 → 删 DB 行 + FTS + 缩略图，
+   *     文件还在、记录没了；下次重扫会以「新 id」复活，用户的忽略/失败状态全丢。
+   */
+  const statFailed = new Set<string>()
   for (const abs of absPaths) {
     const fileName = path.basename(abs).toLowerCase()
     const ext =
       path.extname(abs).toLowerCase() ||
       (IMAGE_EXTS.has(fileName) || VIDEO_EXTS.has(fileName) ? fileName : '')
     if (!IMAGE_EXTS.has(ext) && !VIDEO_EXTS.has(ext)) continue
+    const relPath = path.relative(config.libraryRoot, abs)
     // F-03 修复：收集源文件签名（size + mtimeMs）。stat 是轻量元信息查询（不读内容），
     // 全库 2 万文件总计约 1~2 秒；stat 失败（文件瞬时不可读）跳过本文件，watcher 会再触发。
     let size = 0
@@ -131,9 +189,14 @@ export async function runScan(source: 'manual' | 'watcher' | 'startup' | 'switch
       size = st.size
       mtimeMs = Math.trunc(st.mtimeMs)
     } catch {
+      statFailed.add(relPath)
       continue
     }
-    allFiles.push({ relPath: path.relative(config.libraryRoot, abs), absPath: abs, fileName: path.basename(abs), kind: IMAGE_EXTS.has(ext) ? 'image' : 'video', size, mtimeMs })
+    allFiles.push({ relPath, absPath: abs, fileName: path.basename(abs), kind: IMAGE_EXTS.has(ext) ? 'image' : 'video', size, mtimeMs })
+  }
+  if (statFailed.size > 0) {
+    // 只汇总一行，避免损坏目录下上千文件刷屏；具体路径交给删除对账白名单兜底
+    console.warn(`[scan] ${statFailed.size} 个文件 stat 失败（本轮跳过入库与删除对账）`)
   }
 
   // iCloudPD 常用 YYYY/MM/DD 目录结构。优先处理目录日期较新的媒体，
@@ -411,23 +474,22 @@ export async function runScan(source: 'manual' | 'watcher' | 'startup' | 'switch
   // ⑤ 删除对账（P2+-1）：磁盘文件集合 vs DB 资产集合
   //    磁盘上已消失的文件 → 删资产记录 + FTS 索引 + 缩略图缓存，
   //    保证手动删文件/移动目录后照片墙不再显示"已不存在的图"。
-  //    ⚠ 只删"遍历明确缺失"的文件：stat 瞬时失败的文件在 walkDir 阶段会被跳过，
-  //    不会因 IO 抖动误删；实况视频缺失但主图还在的行不删（配对阶段已降级为 photo）。
+  //    ⚠ 只删「明确确认已消失」的文件（R-03 修复；旧注释声称 stat 失败不会误删，但与实现相反）：
+  //      - 目录遍历不完整（readdir 失败 / 符号链接目录）→ traversalComplete=false，整轮跳过对账
+  //      - 单个文件 stat 失败 → 记入 statFailed 白名单，跳过这些 path 的孤儿判定
+  //      - 实况视频缺失但主图还在的行不删（配对阶段已降级为 photo）
   // SCAN_LIMIT 只用于调试/验证，当前文件集合不完整时不能做删除对账。
   // 以配对后的主资产路径对账，而非原始媒体路径。实况 MOV 虽仍存在于磁盘，
   // 但已作为照片资产的 live_video 附件；若它此前曾以独立视频入库，应清掉旧记录。
   const assetPaths = new Set(assets.map((asset) => asset.image.relPath))
   const dbRows = db.prepare(`SELECT id, file_path FROM assets`).all() as { id: number; file_path: string }[]
-  const orphanIds: number[] = []
-  const orphanSet = new Set<number>()
-  if (config.scanLimit <= 0 && traversalComplete) {
-    for (const r of dbRows) {
-      if (!assetPaths.has(r.file_path)) {
-        orphanIds.push(r.id)
-        orphanSet.add(r.id)
-      }
-    }
-  }
+  const orphanIds = collectOrphanIds(
+    dbRows,
+    assetPaths,
+    statFailed,
+    config.scanLimit <= 0 && traversalComplete,
+  )
+  const orphanSet = new Set(orphanIds)
   if (orphanIds.length > 0) {
     const delTx = db.transaction((ids: number[]) => {
       for (const id of ids) deleteAssetById(id)

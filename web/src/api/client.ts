@@ -159,10 +159,13 @@ export function withCacheBust(url: string, t: number): string {
 /** 批量删除资产（客户端删除：DB 行 + 缓存 + 磁盘源文件，不可逆）
  * 详情页删除单张 = 传 [id]；照片墙多选删除 = 传选中集合 */
 export interface DeleteAssetsResult {
+  /** 已连 DB 记录一起删除的资产数 */
   deleted: number
   missing: number
-  /** 数据库记录已删除，但源文件因权限/占用等原因未能删除的文件数 */
+  /** 数据库记录未删除、源文件因权限/占用等原因未能删除的文件数（R-15：这些资产保留） */
   unlinkFail: number
+  /** 删除失败明细（id 与文件路径），前端据此只从本地列表移除真正删掉的那些 */
+  failed?: { id: number; path: string; code: string }[]
 }
 
 export function deleteAssets(ids: number[]): Promise<DeleteAssetsResult> {
@@ -171,7 +174,17 @@ export function deleteAssets(ids: number[]): Promise<DeleteAssetsResult> {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ ids }),
   }).then(async (r) => {
-    if (!r.ok) throw new Error(`API /assets DELETE → ${r.status}`)
+    if (!r.ok) {
+      // 后端会返回可读文案（如「照片库扫描进行中，请稍候再删除照片」），优先透出
+      let message = `API /assets DELETE → ${r.status}`
+      try {
+        const body = (await r.json()) as { error?: unknown }
+        if (typeof body.error === 'string') message = body.error
+      } catch {
+        // 非 JSON 响应，用状态码兜底
+      }
+      throw new Error(message)
+    }
     return r.json() as Promise<DeleteAssetsResult>
   })
 }

@@ -77,21 +77,25 @@ function toPublic(row: LibraryRow) {
 }
 
 /**
- * 切库/删除守卫：同步任务执行中或照片库扫描进行中 → 返回错误文案（null = 放行）。
+ * 切库 / 删库 / 删照片 守卫：同步任务执行中或照片库扫描进行中 → 返回错误文案（null = 放行）。
  * 抽出为独立函数便于单元测试（审查 P1 在途扫描守卫 + 同步任务守卫）。
+ *
+ * 'delete-asset' 用于 DELETE /api/assets（R-15/R-16）：扫描在途时删除会与删除对账互相踩
+ * （对账基于本轮遍历快照，刚删掉的文件可能被重新插入或被判孤儿），同步在途时 icloudpd
+ * 正在写同一目录，所以同样拒绝。
  */
-export function libraryBusyGuard(action: 'switch' | 'delete'): string | null {
+export function libraryBusyGuard(action: 'switch' | 'delete' | 'delete-asset'): string | null {
   if (isSyncBusy()) {
-    return action === 'delete'
-      ? '同步任务执行中，请先等待完成或取消后再删除照片库'
-      : '同步任务执行中，请先等待完成或取消后再切换照片库'
+    if (action === 'switch') return '同步任务执行中，请先等待完成或取消后再切换照片库'
+    if (action === 'delete-asset') return '同步任务执行中，请先等待完成或取消后再删除照片'
+    return '同步任务执行中，请先等待完成或取消后再删除照片库'
   }
   // 在途扫描未完成时拒绝切换/删除（审查 P1）：旧扫描会在切库后继续经 getDb() 代理写入新库，
   // 其删除对账会把新库资产判为孤儿批量删除 → 数据记录被清空/污染
   if (scanProgress.status === 'scanning') {
-    return action === 'delete'
-      ? '照片库扫描进行中，请稍候再删除'
-      : '照片库扫描进行中，请稍候再切换'
+    if (action === 'switch') return '照片库扫描进行中，请稍候再切换'
+    if (action === 'delete-asset') return '照片库扫描进行中，请稍候再删除照片'
+    return '照片库扫描进行中，请稍候再删除'
   }
   return null
 }

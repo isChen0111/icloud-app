@@ -13,7 +13,7 @@
  * 态（disabled），全局任务释放后自动恢复。
  */
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
-import { fetchLibraries, startSync, cancelSync, deleteLibrary, updateLibraryConfig } from '../api/client'
+import { fetchLibraries, startSync, cancelSync, deleteLibrary, updateLibraryConfig, switchLibrary } from '../api/client'
 import type { LibraryInfo, Stats } from '../types'
 import SyncButton from './SyncButton.vue'
 
@@ -44,10 +44,16 @@ const starting = ref<Record<number, boolean>>({})
 const syncError = ref('')
 /** 删除确认弹窗（仅本地删除；复选框决定是否连同本地照片副本一起删） */
 const deleteTarget = ref<LibraryInfo | null>(null)
-/** 默认勾选「同时删除本地照片副本」（每次打开弹窗重置为 true） */
-const removePhotos = ref(true)
+/** 「同时删除本地照片副本」默认不勾选（R-21：安全默认值，每次打开弹窗重置） */
+const removePhotos = ref(false)
+/** 勾选删照片后的二次确认：第一次点「删除」只做武装，第二次才真正执行 */
+const photoConfirmArmed = ref(false)
 const deleting = ref(false)
 const deleteError = ref('')
+/** 正在切库的库 id（非激活库「切换到此库并同步」的 loading 态） */
+const switchingId = ref<number | null>(null)
+/** 最近一次「切换到此库并同步」失败的库 id（把 409 文案挂到该库卡片下） */
+const switchFailId = ref<number | null>(null)
 
 /** 配置区草稿（每库一份）：展开配置时初始化，保存成功后回写 libraries */
 type ConfigDraft = { untilFound: number; recentLimit: number; saving: boolean; saved: boolean }
@@ -90,13 +96,20 @@ async function saveConfig(lib: LibraryInfo): Promise<void> {
 
 function openDelete(lib: LibraryInfo): void {
   deleteTarget.value = lib
-  removePhotos.value = true
+  // 安全默认值（R-21）：每次打开都从「不删照片副本」开始，删整库原片必须手动勾选 + 二次确认
+  removePhotos.value = false
+  photoConfirmArmed.value = false
   deleteError.value = ''
 }
 
 async function confirmDelete(): Promise<void> {
   const lib = deleteTarget.value
   if (!lib || deleting.value) return
+  // 勾选了「同时删除照片副本」→ 第一次点击只是二次确认（防一次误点递归删掉整库原片）
+  if (removePhotos.value && !photoConfirmArmed.value) {
+    photoConfirmArmed.value = true
+    return
+  }
   deleting.value = true
   deleteError.value = ''
   try {
@@ -184,6 +197,39 @@ async function runSync(libId: number): Promise<void> {
     // 失败（全局已有 icloudpd 任务占用 / 非激活库等）：保留已选操作并提示，用户可稍后重试
     syncError.value = err instanceof Error ? err.message : String(err)
   }
+}
+
+/**
+ * R-22b：非激活库就地「切换到此库并同步」。
+ *
+ * 同步接口只允许对当前激活库执行（routes/sync.ts），而设置中心里非激活库的同步按钮
+ * 以前是可以点的，点了必然 409，用户还得自己跑到顶栏切库再回来。
+ * 这里一次做完：切库（热切换）→ 按已选操作启动同步 → 整页刷新（切库 = 整页初始化）。
+ */
+async function switchAndSync(lib: LibraryInfo): Promise<void> {
+  if (switchingId.value != null) return
+  switchingId.value = lib.id
+  switchFailId.value = null
+  syncError.value = ''
+  try {
+    await switchLibrary(lib.id)
+  } catch (err) {
+    // 同步执行中 / 扫描中会有 409 文案，挂在对应卡片下提示
+    syncError.value = err instanceof Error ? err.message : String(err)
+    switchFailId.value = lib.id
+    switchingId.value = null
+    return
+  }
+  // 切库已生效：按用户已选的操作启动；没选则增量（最省时）
+  const kind = pick.value[lib.id] ?? 'inc'
+  try {
+    await startSync(lib.id, kind)
+  } catch (err) {
+    // 切库成功但同步没起来（如 cookie 过期）：把原因带到刷新后的页面上显示
+    const message = err instanceof Error ? err.message : String(err)
+    sessionStorage.setItem('icloud.pendingError', `已切换到该照片库，但同步启动失败：${message}`)
+  }
+  location.reload()
 }
 
 async function cancelSyncRun(libId: number): Promise<void> {
@@ -317,9 +363,22 @@ onBeforeUnmount(() => {
                 </div>
               </div>
 
-              <!-- 每库同步：共享组件 SyncButton（与主界面视觉/状态机完全一致），全局单任务 -->
+              <!-- 每库同步：激活库用共享组件 SyncButton（与主界面视觉/状态机完全一致）；
+                   非激活库给「切换到此库并同步」入口 —— 同步接口只允许当前激活库（R-22b） -->
               <div class="lib-sync-row">
+                <button
+                  v-if="!lib.active"
+                  class="btn-ghost primary"
+                  type="button"
+                  :disabled="switchingId === lib.id || globalBusy()"
+                  :title="globalBusy() ? '有同步任务正在执行，请等待完成或取消后再切换' : '切换到该照片库并按已选操作同步（未选则增量）'"
+                  @click="switchAndSync(lib)"
+                >
+                  <span v-if="switchingId === lib.id" class="spinner" />
+                  {{ switchingId === lib.id ? '切换中…' : '切换到此库并同步' }}
+                </button>
                 <SyncButton
+                  v-else
                   :busy="thisLibBusy(lib.id)"
                   :kind="props.stats?.sync.kind ?? 'full'"
                   :starting="!!starting[lib.id]"
@@ -329,7 +388,7 @@ onBeforeUnmount(() => {
                   @run="runSync(lib.id)"
                   @cancel="cancelSyncRun(lib.id)"
                 />
-                <span v-if="syncError && (pick[lib.id] || starting[lib.id] || thisLibBusy(lib.id))" class="sync-note err"><i class="sync-dot" aria-hidden="true" />{{ syncError }}</span>
+                <span v-if="syncError && (pick[lib.id] || starting[lib.id] || thisLibBusy(lib.id) || switchFailId === lib.id)" class="sync-note err"><i class="sync-dot" aria-hidden="true" />{{ syncError }}</span>
                 <span v-else-if="thisLibBusy(lib.id)" class="sync-note" :class="syncStatusClass(props.stats!.sync.status)"><i class="sync-dot" aria-hidden="true" />{{ props.stats!.sync.message }}</span>
                 <span v-else-if="props.stats?.sync.status === 'done' && props.stats.sync.libraryId === lib.id" class="sync-note ok">
                   <i class="sync-dot" aria-hidden="true" />同步完成，本次下载 {{ props.stats.sync.downloaded }} 项
@@ -383,14 +442,18 @@ onBeforeUnmount(() => {
           <li>本地缓存目录（缩略图 / 数据库 / cookies 会话）</li>
         </ul>
         <label class="delete-check">
-          <input v-model="removePhotos" type="checkbox" />
+          <input v-model="removePhotos" type="checkbox" @change="photoConfirmArmed = false" />
           <span>同时删除本地已下载的照片副本（<code>{{ deleteTarget.libraryRoot ?? '—' }}</code>）</span>
         </label>
+        <!-- R-21：勾选后必须说清后果，并且要再点一次按钮才真正删（默认不勾选） -->
+        <p v-if="removePhotos" class="delete-danger" role="alert">
+          勾选后上述目录内的原片会被<b>永久删除且不进回收站</b>，无法恢复。云端 iCloud 原片不受影响。
+        </p>
         <p v-if="deleteError" class="delete-error" role="alert">{{ deleteError }}</p>
         <footer class="delete-actions">
           <button class="onboard-btn" type="button" @click="deleteTarget = null">取消</button>
           <button class="onboard-btn danger" type="button" :disabled="deleting" @click="confirmDelete">
-            {{ deleting ? '删除中…' : '确认删除' }}
+            {{ deleting ? '删除中…' : removePhotos && !photoConfirmArmed ? '删除照片副本并移除库' : removePhotos ? '再次点击确认删除照片' : '确认删除' }}
           </button>
         </footer>
       </section>
@@ -619,6 +682,19 @@ onBeforeUnmount(() => {
   padding-top: 10px;
   border-top: 1px dashed var(--border);
 }
+/* 「切换到此库并同步」的加载指示（组件内自带，不依赖 App.vue 的 scoped 样式） */
+.lib-sync-row .spinner {
+  display: inline-block;
+  width: 11px;
+  height: 11px;
+  margin-right: 6px;
+  border: 2px solid color-mix(in srgb, currentColor 22%, transparent);
+  border-top-color: currentColor;
+  border-radius: 50%;
+  animation: lib-switch-spin 0.8s linear infinite;
+  vertical-align: -1px;
+}
+@keyframes lib-switch-spin { to { transform: rotate(360deg); } }
 /* 运行日志折叠面板（同步按钮行下方独立整行） */
 .lib-log { margin: 8px 0 2px; }
 .lib-log-toggle {
@@ -751,6 +827,17 @@ onBeforeUnmount(() => {
 .delete-check input { margin-top: 2px; }
 .delete-check code { font-family: ui-monospace, Consolas, monospace; font-size: 11px; word-break: break-all; }
 .delete-error { margin: 10px 0 0; color: #d05245; font-size: 11px; }
+/* 勾选「删除照片副本」后的后果说明（R-21：二次确认前置提示） */
+.delete-danger {
+  margin: 8px 0 0;
+  padding: 8px 10px;
+  border: 1px solid rgb(208 82 69 / 28%);
+  border-radius: 8px;
+  background: rgb(208 82 69 / 8%);
+  color: #d05245;
+  font-size: 11px;
+  line-height: 1.6;
+}
 .delete-actions { display: flex; justify-content: flex-end; gap: 9px; margin-top: 16px; }
 .onboard-btn {
   padding: 7px 13px;

@@ -31,6 +31,9 @@ desktop.ini
 .vscode/
 .idea/
 
+# WorkBuddy 项目记忆目录（AI 助手的本地工作记录，非项目资产）
+/.workbuddy/
+
 # 环境变量与密钥（本地路径、令牌等绝不入库）
 .env
 .env.*
