@@ -1,6 +1,6 @@
 # 项目上下文快照（供会话压缩/新会话恢复用）
 
-> 生成日期：2026-09-08；最后同步：2026-10-28（四次合并：① 10-27 整体审查报告第一批 7 项修复——扫描对账保护 / 删除接口严格语义与守卫 / 删除后分页空洞 / 引导切库与非激活库同步 / 删库安全默认 / 错误提示浮层；② 多库体验优化——库卡片切换入口、配置摘要、建库预建目录、引导可跳过；③ 审查第二批 6 项——删库竞态 / 缩略图队列竞态三连 / 认证定时器与进程归属；④ 审查第三批 3 项前端——网格 rev 响应式 / 宽度变化重测量 / 切数据源保位；此前 10-12 同步 P0 照片库同步与多库实现 + 文档三件套）。若本会话上下文被压缩或丢失，先读本文件 + 架构设计文档 + README，即可恢复全部关键信息。
+> 生成日期：2026-09-08；最后同步：2026-10-28（五次合并：① 10-27 整体审查报告第一批 7 项修复——扫描对账保护 / 删除接口严格语义与守卫 / 删除后分页空洞 / 引导切库与非激活库同步 / 删库安全默认 / 错误提示浮层；② 多库体验优化——库卡片切换入口、配置摘要、建库预建目录、引导可跳过；③ 审查第二批 6 项——删库竞态 / 缩略图队列竞态三连 / 认证定时器与进程归属；④ 审查第三批 3 项前端——网格 rev 响应式 / 宽度变化重测量 / 切数据源保位；⑤ 审查第四批 7 项正确性——缩略图原子写 / 搜索错误分类 / cli-scan 多库上下文 / offset 校验 / CORS PATCH / FTS 日期表示统一 / 启动时序；此前 10-12 同步 P0 照片库同步与多库实现 + 文档三件套）。若本会话上下文被压缩或丢失，先读本文件 + 架构设计文档 + README，即可恢复全部关键信息。
 
 ## 项目目标与现状
 - 用户已用 iCloudPD 把 iCloud 照片全部拉到本地（照片库根 `F:\iPhone\icloud-app\iCloudPhoto\`）。**源文件数量与容量从略（属个人隐私）：全库照片、实况照片与视频合计为万级资产，磁盘媒体文件为数万级。**
@@ -84,6 +84,15 @@
    - **R-14 切数据源保位**（GridScroller）：原 `watch(props.dataSource)` 无条件 `savedScrollTop = 0` + `scrollTop = 0` → 「滚到某月 → 搜一张图 → 返回」直接回顶部。改为 `WeakMap<GridDataSource, number>` 按数据源记忆位置：切走时存旧源位置、切回时取新源位置写回；`init().then()` 里 measure **之后再写一次** `scrollTop`（骨架重建后总高度变化，切换瞬间的写入会被浏览器截断）。
    - **顺带（搜索换关键词回顶）**：换关键词时 `props.dataSource` 引用不变（同一个 search store），上面的 watch 不触发 → 滚动位置停在旧值，新结果更少时落到末尾空白。GridScroller 新增 `defineExpose({ scrollToTop })`，GridView 在 debounce 回调里 **`nextTick` 之后**调用（早一步会把归零打到照片墙上，连带把它刚缓存的滚动位置写成 0）。
    - **验证**：`vue-tsc -b` 0 错、`vite build` 通过、`dist` 已重建；用户手工验收三项——拖窗口宽度行不错位、滚到某月搜索后返回仍在原处、换关键词回顶部。R-12（覆盖文件后换图）用户决定不单独验，按代码逻辑推导。
+29. **2026-10-28 整体审查第四批修复：正确性（fix/review-batch4 → 合并 main f634ace，已推送）**：后端 12 文件 + 前端 2 文件 + 新增 `server/src/utils/`（date / paging / utils.test）。
+   - **R-17 缩略图原子写**（pipeline/thumbnails.ts）：① 判活从 `fs.existsSync()` 改为 `isCacheUsable()`（`statSync().size > 0`）——0 字节/写一半的文件此前会被永久当成有效缓存（旧代码只在 catch 里删，进程被断电杀死时 catch 根本不执行）；共替换 4 处（ensureThumbnail / routes/thumb / scanner）。② 三处 `sharp().toFile()` 全部改「先写 `.tmp` 再 rename」：`writeAtomicWebp()` 封装，rename 在 Windows 上撞目标被占用（浏览器正读、杀软扫描）时**先删目标再重试一次**。
+   - **R-18 搜索错误分类**（routes/search.ts + web/api/client.ts + GridView）：白名单从 `/syntax error|malformed|parse error|no such column|fts5:/` 收紧为 `fts5: syntax error` / `malformed match expression` / `unterminated string` / `no such column`——宽泛的 `malformed` 会把 `database disk image is malformed`（真损坏）也吞成空结果。新增 `isDbCorruptError()` 单独判 → 500 + `code: DB_CORRUPT`；前端 `get()` 解析响应体 `message`/`code` 一并抛出，搜索失败框直接展示后端文案（不再统一「搜索失败，请重试」）。
+   - **R-20 cli-scan 多库上下文**（cli-scan.ts）：原实现直接 `runScan()`，而扫描内部依赖全局 `config` 路径 → **多库下会按 config 默认值扫，与激活库不一致**。改为启动时 `applyLibraryPaths(getCurrentLibrary())` 与 index.ts 对齐（无库则报错退出）。另扫完 `waitForThumbsIdle()`（新增 `queue.onIdle()`：`queuedCount() === 0` 时 resolve，每 200ms 轮询 + 兜底直接查队列表）再退出，否则进程退出会截断正在生成的缩略图；新增 `--no-thumbs` 传 `enqueueThumbnails: false`（`runScan` 新增第二参 `RunScanOptions`）。
+   - **R-23 offset 校验**（新增 utils/paging.ts `parseOffset()`）：`?offset=Infinity` 之前 `Math.max(0, Math.floor(Infinity)) || 0` → `Infinity` 是 truthy 兜不住 → 绑定 SQLite OFFSET 报错 500。改为 `Number.isFinite` 判定 + 负数归 0 + 向下取整 + 上限 1e6，assets 与 search 共用同一函数（口径统一）。
+   - **R-24 CORS**（index.ts）：`Access-Control-Allow-Methods` 补 `PATCH`。
+   - **R-26 date_compact 两套表示**（新增 utils/date.ts `toDateCompact()`）：扫描入库用 `replace(/[^0-9a-zA-Z]/g,'')` **保留 T** → `20240913T084028`；启动回填用 SQL 四次 replace **删掉 T** → `20240913084028`，同一资产两种索引表示，搜 `20240913T0840` 与 `202409130840` 命中不一致。改为两条路径共用 `toDateCompact()`，回填逻辑抽 `backfillFts(db)`；`FTS_SCHEMA_VERSION` 2 → **3** 触发一次全量重建（万级行毫秒级），历史行随之统一。实测：迁移后 `user_version=3`、fts 行数 = assets 行数。
+   - **R-19（半）启动时序**（index.ts）：`app.listen()` 移到 `runScan('startup')` 之前，端口先开再跑后台扫描（原来扫描先启动、端口后开，前端轮询可能连不上）。`walkDir` 异步化仍在第五批。
+   - **测试**：新增 `utils/utils.test.ts` 6 例（`parseOffset` 四类边界 / `toDateCompact` 保留与去分隔符 / FTS 输入级 vs 库损坏分类），后端合计 **61 例全绿**；`tsc --noEmit` / `vue-tsc -b` 0 错、`vite build` 通过。用户验收：重启后端确认迁移日志、搜索正常、`?offset=Infinity` 返回 200。
 
 ## 照片库实测数据（2026-09-08）
 - 结构：`YYYY/MM/DD/文件名`（iCloudPD 默认），实况配对基名归一（`_HEVC` 后缀），**无时间差校验**。⚠️ **配对必须限定同一目录**——跨目录同名文件（不同设备/编辑版本的同名，如 `2018/02/04/IMG_0040*` 与 `2021/07/27/IMG_0040*`，全库大量基名分布多目录）若只按基名配对会错配丢视频（见「已完成」第 9 条）。
@@ -119,7 +128,7 @@
 
 ## 待办 / 遗留（均不影响使用）
 - 预览图失败记录现在可在顶栏清单中查看、重试或忽略；较早的失败项没有存储原因，会显示“失败时未记录详细原因”。
-- **10-27 审查报告前三批已修完（共 16 项），第四批及以后未动**（详见 `docs/整体审查报告-2026-10-27.md` 第六章实施顺序）：R-04 签名变化重取元数据、R-08 时间基准统一（需一次数据迁移）、R-17~R-20（缓存原子写 / 搜索错误白名单 / 启动时序 / cli-scan 多库上下文）。
+- **10-27 审查报告前四批已修完（共 23 项），第五批及以后未动**（详见 `docs/整体审查报告-2026-10-27.md` 第六章实施顺序）：**R-08** 时间基准 UTC 与 `+08:00` 混存（必须单独一批，需先备份 `library.db` 再迁移）、**R-04** 签名变化只重置缩略图、复用旧元数据、**R-19 剩余** `walkDir` 异步化（扫描核心，单独改+单独验）。
 - ✅ 缩略图生成失败留 0 字节 WebP 兜底：已在 generate() catch 分支补 `fs.rmSync(outPath, {force:true})`（2026-09-08 审查后修复）。
 - ✅ `server\vendor\ffmpeg-full.zip`（163MB 安装包）：已决定保留不删（2026-10-07，.gitignore 已排除不入库，用户自行处理）。
 - ✅ toolbar 调试信息（items/rows/virt）：已定保留（用户确认）。
