@@ -10,6 +10,7 @@
 import exifr from 'exifr'
 import path from 'node:path'
 import { ffprobeJson } from '../ffmpeg.js'
+import { toLocalIso } from '../utils/date.js'
 
 /** 从目录 YYYY/MM/DD 解析日期（iCloudPD 默认结构），失败返回 null */
 export function parseDateFromDir(filePath: string): string | null {
@@ -21,7 +22,9 @@ export function parseDateFromDir(filePath: string): string | null {
   const mo = Number(m[2])
   const d = Number(m[3])
   if (y < 1970 || y > 2100 || mo < 1 || mo > 12 || d < 1 || d > 31) return null
-  return `${m[1]}-${m[2]}-${m[3]}T00:00:00+08:00`
+  // 目录只能精确到天 → 取「本地当天零点」。用本地 Date 构造而不是硬编码 +08:00，
+  // 这样换时区也不会写错偏移（审查 R-08：与 EXIF 路径统一为同一个表示）
+  return toLocalIso(new Date(y, mo - 1, d))
 }
 
 /** 图片元数据（EXIF 提取结果） */
@@ -195,17 +198,38 @@ export async function readVideoMeta(absPath: string): Promise<VideoMeta> {
   }
 }
 
-/** 归一化 EXIF 时间字符串 → ISO8601（exifr 可能返回 Date 或字符串） */
+/**
+ * 归一化 EXIF 时间字符串 → 「本地时间 + 偏移」ISO8601（exifr 可能返回 Date 或字符串）。
+ *
+ * R-08（2026-10-28）：原来 Date 分支返回 `toISOString()`（UTC，带 Z），
+ * 与目录兜底的 `+08:00` 表示混在同一列，导致排序错位、按月分组切到 UTC 月份。
+ * 现在所有分支都收敛到 `toLocalIso()` 的同一个表示。
+ */
 export function normalizeDate(v: unknown): string | null {
   if (!v) return null
-  if (v instanceof Date) return isNaN(v.getTime()) ? null : v.toISOString()
+  if (v instanceof Date) return toLocalIso(v)
   const s = String(v).trim()
   if (!s) return null
-  // 已带时区偏移（如 2025-02-17T18:55:12.000+08:00）直接返回
-  if (/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(s)) return s
-  // "2025:02:17 18:55:12"（EXIF 常见格式）→ 补成 ISO8601
+  // 已含日期时间（如 exifr 的 "2025-02-17T18:55:12.000+08:00"、ffprobe 的
+  // "2024-09-13T00:40:28.000000Z"）→ 解析后统一成本地偏移表示，不再原样返回。
+  // 注意 ffprobe 会给 6 位小数：先截到 3 位再交给 Date，避免个别运行时解析成 Invalid Date。
+  if (/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(s)) {
+    const d = new Date(s.replace(/(\.\d{3})\d+/, '$1'))
+    return Number.isNaN(d.getTime()) ? null : toLocalIso(d)
+  }
+  // "2025:02:17 18:55:12"（EXIF 常见格式，无时区）→ 按本地时间解释后统一表示
   const m = s.match(/(\d{4}):(\d{2}):(\d{2})[ T](\d{2}):(\d{2}):(\d{2})/)
-  if (m) return `${m[1]}-${m[2]}-${m[3]}T${m[4]}:${m[5]}:${m[6]}+08:00`
+  if (m) {
+    const local = new Date(
+      Number(m[1]),
+      Number(m[2]) - 1,
+      Number(m[3]),
+      Number(m[4]),
+      Number(m[5]),
+      Number(m[6]),
+    )
+    return toLocalIso(local)
+  }
   return null
 }
 

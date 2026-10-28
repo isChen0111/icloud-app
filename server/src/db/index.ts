@@ -9,8 +9,8 @@ import Database from 'better-sqlite3'
 import fs from 'node:fs'
 import path from 'node:path'
 import { config } from '../config.js'
-import { FTS_SCHEMA_VERSION, SCHEMA_SQL } from './schema.js'
-import { toDateCompact } from '../utils/date.js'
+import { DATE_BASIS_VERSION, FTS_SCHEMA_VERSION, SCHEMA_SQL } from './schema.js'
+import { hasTimezoneOffset, toDateCompact, toLocalIso } from '../utils/date.js'
 
 let _real: Database.Database | null = null
 let _realPath: string | null = null
@@ -50,6 +50,50 @@ function backfillFts(db: Database.Database): number {
   return rows.length
 }
 
+/**
+ * 把 `assets.date_taken` 统一成「本地时间 + 时区偏移」表示（审查 R-08）。
+ *
+ * 迁移前同一列混着两种基准：EXIF 路径写 UTC（`2026-10-25T08:47:15.000Z`）、
+ * 目录兜底路径写本地零点（`2026-10-24T00:00:00+08:00`）。后果见 utils/date.ts 的 toLocalIso 注释
+ * （字符串排序错位 + 按月分组切到 UTC 月份）。
+ *
+ * 幂等：完成状态记在 `app_meta.date_basis`，重复启动直接跳过。
+ * 单独一行解析失败（脏数据）时保留原值、不阻断其他行。
+ *
+ * @returns 实际改写的行数；0 表示无需迁移或早已完成
+ */
+function migrateDateBasis(db: Database.Database): number {
+  const row = db.prepare(`SELECT value FROM app_meta WHERE key = 'date_basis'`).get() as
+    | { value: string }
+    | undefined
+  const current = row ? Number(row.value) : 0
+  if (current >= DATE_BASIS_VERSION) return 0
+
+  const assets = db.prepare(`SELECT id, date_taken FROM assets`).all() as {
+    id: number
+    date_taken: string
+  }[]
+  const update = db.prepare(`UPDATE assets SET date_taken = ? WHERE id = ?`)
+  const markDone = db.prepare(
+    `INSERT INTO app_meta(key, value) VALUES ('date_basis', ?)
+     ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+  )
+
+  let changed = 0
+  db.transaction(() => {
+    for (const asset of assets) {
+      if (hasTimezoneOffset(asset.date_taken)) continue
+      const parsed = new Date(asset.date_taken)
+      const next = Number.isNaN(parsed.getTime()) ? null : toLocalIso(parsed)
+      if (!next) continue
+      update.run(next, asset.id)
+      changed++
+    }
+    markDone.run(String(DATE_BASIS_VERSION))
+  })()
+  return changed
+}
+
 /** 打开（或复用）与 config.dbPath 对应的真实连接，并完成建表/迁移初始化 */
 function ensureOpen(): Database.Database {
   if (_real && _realPath === config.dbPath) return _real
@@ -81,6 +125,16 @@ function ensureOpen(): Database.Database {
   // F-03 修复：源文件签名列（size + mtimeMs）——旧库补齐，新库建表已含
   if (!assetColumns.has('file_size')) db.exec(`ALTER TABLE assets ADD COLUMN file_size INTEGER`)
   if (!assetColumns.has('file_mtime')) db.exec(`ALTER TABLE assets ADD COLUMN file_mtime INTEGER`)
+
+  // R-08：date_taken 基准统一。必须放在 FTS 判断之前——改了 date_taken 就得重建索引，
+  // 否则 FTS 里还留着旧基准的 date_taken / date_compact（搜索结果与排序会跟主表不一致）。
+  const dateBasisChanged = migrateDateBasis(db)
+  if (dateBasisChanged > 0) {
+    // 清空索引，交给下面的「行数不符 → 回填」分支重新生成。
+    // 不在这里直接回填，是为了让回填逻辑只有一条路径，避免两次实现走偏。
+    db.exec(`DELETE FROM assets_fts`)
+    console.log(`[db] date_taken 已统一为本地偏移表示：${dateBasisChanged} 行`)
+  }
 
   const ftsCount = (db.prepare(`SELECT count(*) AS c FROM assets_fts`).get() as { c: number }).c
   const assetCount = (db.prepare(`SELECT count(*) AS c FROM assets`).get() as { c: number }).c
