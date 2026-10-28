@@ -62,8 +62,24 @@ export function thumbCachePath(size: ThumbSize, assetId: number): string {
  * 进行中的生成任务（in-flight 去重）：
  * 网格一次滚动会并发请求几十个缩略图，同一资产可能被多个请求/后台队列同时命中，
  * 并发写同一文件会损坏。用 Promise 缓存保证同一 (id, size) 全局只生成一次。
+ *
+ * R-07 修复（2026-10-28）：key 必须带库标识。资产 id 是每个库各自从 1 自增的，
+ * lib1 的 id=42 和 lib6 的 id=42 是两张毫不相干的照片；切库后若沿用同一个 key，
+ * 新库会复用旧库在途的 Promise → 回来的路径指向旧库缓存文件（照片墙上串图），
+ * 旧任务 finally 里的 delete 还可能误删新库刚建立的那条。
+ * 用 config.dbPath 做前缀最省事：切库时它必然变化，天然隔离。
  */
 const inFlight = new Map<string, Promise<string | null>>()
+
+/**
+ * in-flight 去重键：库标识 + 资产 id + 档位。
+ *
+ * 抽出为独立函数是为了让单测能直接验证「不同库的同 id 不共键」（R-07），
+ * 生产代码统一经 ensureThumbnail 使用，不直接调用。
+ */
+export function inFlightKey(assetId: number, size: ThumbSize, dbPath: string = config.dbPath): string {
+  return `${dbPath}|${assetId}:${size}`
+}
 
 /**
  * 确保某资产具备指定档位的缩略图；已存在则直接返回路径。
@@ -82,7 +98,8 @@ export function ensureThumbnail(
   if (fs.existsSync(outPath)) return Promise.resolve(outPath)
   if (size === 'grid' && isThumbIgnored(assetId)) return Promise.resolve(null)
 
-  const key = `${assetId}:${size}`
+  // 库标识 + 资产 id + 档位（见上方 inFlight 注释：跨库绝不能共用同一个 key）
+  const key = inFlightKey(assetId, size)
   const pending = inFlight.get(key)
   if (pending) return pending // 已在生成 → 复用同一个 Promise
 

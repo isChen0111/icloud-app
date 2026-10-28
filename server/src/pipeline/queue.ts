@@ -25,6 +25,16 @@ const scheduler = new ThumbnailScheduler({
 
 const queued = new Map<string, Set<number>>() // 去重键 → 等待该任务结果的批次
 
+/**
+ * 队列世代（R-06 修复，2026-10-28）。
+ *
+ * 切库时不再清空 p-queue 的排队任务（`clear()` 会丢弃任务并让它们的 Promise 永不 settle，
+ * 表现为 /api/thumb 请求挂死、占满浏览器同域连接）。改为把世代 +1：
+ * 旧任务仍留在队列里，但轮到执行时发现世代不符就直接返回，Promise 正常结束。
+ * 代价是这些任务会「空转」一遍，单个只花几微秒。
+ */
+let queueGeneration = 0
+
 export interface ThumbnailProgress {
   status: 'idle' | 'preparing' | 'done'
   total: number
@@ -106,10 +116,14 @@ export function getThumbnailProgress(): ThumbnailProgress {
 }
 
 /** 将直接由浏览页面触发的任务放入共享队列，并优先于剩余后台任务执行。 */
-export function runInteractiveThumbnail<T>(task: () => Promise<T>): Promise<T> {
-  let result: T
+export function runInteractiveThumbnail<T>(task: () => Promise<T>): Promise<T | null> {
+  const gen = queueGeneration
+  let result: T | null = null
   return scheduler
     .submit(async () => {
+      // R-06：切库换代后，旧库排队中的交互任务直接空转（不再拿旧 id 去查新库），
+      // Promise 正常 resolve 成 null，请求不会挂死。调用方（thumb.ts）已按 falsy 处理。
+      if (gen !== queueGeneration) return
       result = await task()
     }, 'interactive')
     .then(() => result)
@@ -132,18 +146,31 @@ export function enqueueAsset(item: EnqueueItem, priority: 'background' | 'user' 
   if (thumbnailProgress.status === 'preparing') batches.add(batchId)
   queued.set(key, batches)
 
-  const job = () =>
-    ensureThumbnail(item.id, size, priority === 'background' ? 'background' : 'interactive')
+  const gen = queueGeneration
+  const job = () => {
+    // R-06：切库换代后，旧库的排队任务不再真正生成（否则会用旧 id 去新库里找图）
+    if (gen !== queueGeneration) return Promise.resolve()
+    return ensureThumbnail(item.id, size, priority === 'background' ? 'background' : 'interactive')
       .then((result) => {
         for (const id of batches) recordThumbnailResult(id, result !== null)
       })
       .catch((error: unknown) => {
+        // R-05 修复（2026-10-28）：这里不再 `throw`。
+        // 结果已经记录，再抛出去只会变成「无人处理的 Promise 拒绝」——
+        // Node 15+ 默认把 unhandledRejection 当作未捕获异常直接终止进程，
+        // 即一张缩略图生成失败就足以让整个后端退出。错误就此打住，只写日志。
         for (const id of batches) recordThumbnailResult(id, false)
-        throw error
+        console.error(`[thumb] 生成失败 asset=${item.id} size=${size}:`, error)
       })
       .finally(() => queued.delete(key))
+  }
   // 不 await：任务完成通过 batch 记录/缓存就绪反馈，调用方不需要本任务的 Promise。
-  void scheduler.submit(job, priority === 'user' ? 'interactive' : 'background')
+  // 末尾的 catch 是双保险：即使 job 内部还有未预料到的抛出，也不会升级成 unhandledRejection。
+  void scheduler
+    .submit(job, priority === 'user' ? 'interactive' : 'background')
+    .catch((error: unknown) => {
+      console.error(`[thumb] 队列任务异常 asset=${item.id} size=${size}:`, error)
+    })
 }
 
 function recordThumbnailResult(batchId: number, succeeded: boolean): void {
@@ -171,13 +198,14 @@ export function registerThumbnailCancelled(): void {
 }
 
 /**
- * 清空缩略图队列（切库前调用）：
- * 旧库资产的排队任务全部丢弃（去重表 + 调度器排队），正在运行的旧库任务继续跑完
- * （ensureThumbnail 内部按当前 getDb 查行，切库后旧 id 查不到即跳过，无害）。
+ * 切库时作废旧库的缩略图任务（R-06 修复，2026-10-28）：
+ * 世代 +1 → 排队中的旧库任务轮到执行时直接空转退出，Promise 正常 settle（不再悬挂）；
+ * 正在运行的旧库任务继续跑完（ensureThumbnail 内部按当前 getDb 查行，切库后旧 id 查不到即跳过，无害）。
  * 进度账本复位，避免旧库进度串到新库。
  */
 export function clearThumbnailQueue(): void {
-  scheduler.clear()
+  queueGeneration++
   queued.clear()
+  scheduler.resetCounters()
   resetThumbnailProgress()
 }
