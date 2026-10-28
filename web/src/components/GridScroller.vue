@@ -320,6 +320,25 @@ function jumpToMonth(offset: number): void {
 /** 列数变化 → 骨架/行高重算 → 重新测量（滚动位置保持） */
 watch(colCount, () => rowVirtualizer.value?.measure())
 
+/**
+ * 重测量并保持首可视行不动。
+ * 行高 = f(容器宽)，行高变了而 scrollTop 不变 → 视口内容会整体跳几十行
+ * （8 列时 1200px→900px，行高 148→110，在 scrollTop=10000 处约跳 23 行）。
+ * 因此 measure 前后要用首个可视行做锚点，把它拉回行顶。
+ */
+function remeasureKeepingAnchor(): void {
+  const v = rowVirtualizer.value
+  const el = scrollEl.value
+  if (!v || !el) return
+  const anchor = v.getVirtualItems()[0]?.index ?? 0
+  v.measure()
+  if (anchor > 0) v.scrollToIndex(anchor, { align: 'start' })
+  el.dispatchEvent(new Event('scroll'))
+}
+
+/** 容器宽度变化后的重测量（rAF 合并：拖窗口时每帧最多一次，且总用最新宽度） */
+let widthMeasureRaf = 0
+
 /** 容器宽度监听 */
 function observeWidth(): void {
   if (!scrollEl.value) return
@@ -327,7 +346,17 @@ function observeWidth(): void {
     // 忽略 0：KeepAlive 缓存期间组件 DOM 被移出文档，clientWidth 变为 0，
     // 若写入会让 itemWidth 走兜底值 200 → 虚拟器按错误行高测量 → 返回后行错位（重叠/间距异常）
     const w = scrollEl.value?.clientWidth ?? 0
-    if (w > 0) viewportWidth.value = w
+    if (w <= 0) return
+    // 宽度没变（高度变化、滚动条进出等）→ 行高不变，无需重算
+    if (w === viewportWidth.value) return
+    viewportWidth.value = w
+    // R-13：itemWidth/rowHeight 是 computed，但虚拟器的 estimateSize 不在其响应式依赖里，
+    // 已测量行高不会自动失效 → 必须显式 measure，否则行与行重叠/留白、滚动条位置错乱
+    if (widthMeasureRaf) cancelAnimationFrame(widthMeasureRaf)
+    widthMeasureRaf = requestAnimationFrame(() => {
+      widthMeasureRaf = 0
+      remeasureKeepingAnchor()
+    })
   })
   ro.observe(scrollEl.value)
   viewportWidth.value = scrollEl.value.clientWidth
@@ -393,30 +422,57 @@ onActivated(() => {
   // 先等一帧：DOM 重新插入 + ResizeObserver 把真实宽度写回后，
   // measure 用真实 rowHeight 重算 measurements，再派发 scroll 更新可视窗口，
   // 否则会用 deactivate 期间被污染的兜底行高（200px）测量 → 行与行重叠/间距异常
-  requestAnimationFrame(() => {
-    rowVirtualizer.value?.measure()
-    el.dispatchEvent(new Event('scroll'))
-  })
+  requestAnimationFrame(() => remeasureKeepingAnchor())
 })
 
 /**
- * 数据源切换（照片墙 ↔ 搜索）：组件实例不销毁，只换数据 + 重置视图。
- *  - 骨架/吸顶缓存清零，滚动归零（搜索从顶部开始）
- *  - init() 重新拉取骨架 + 首屏；完成后 measure + 派发 scroll 驱动加载
+ * 各数据源的滚动位置（R-14）：
+ * 照片墙 ↔ 搜索共用同一个 GridScroller 实例（组件不销毁），原实现切换时无条件归零，
+ * 于是「滚到某月 → 搜一张图 → 返回」直接回到顶部，与 KeepAlive 保位的预期不符。
+ * 按数据源缓存位置即可：两个 store 都是单例对象，WeakMap 不需要额外清理。
+ */
+const scrollBySource = new WeakMap<GridDataSource, number>()
+
+/**
+ * 数据源切换（照片墙 ↔ 搜索）：组件实例不销毁，只换数据 + 恢复该数据源的视图位置。
+ *  - 骨架/吸顶缓存清零
+ *  - 滚动位置按数据源记忆：切走时存旧源位置，切回时恢复（首次为 0）
+ *  - init() 重新拉取骨架 + 首屏；完成后 measure + 再写一次位置 + 派发 scroll 驱动加载
  */
 watch(
   () => props.dataSource,
-  () => {
+  (next, prev) => {
+    if (prev) scrollBySource.set(prev, savedScrollTop)
+    const restore = scrollBySource.get(next) ?? 0
     lastRange.value = ''
-    savedScrollTop = 0
     dateNavOpen.value = false
-    if (scrollEl.value) scrollEl.value.scrollTop = 0
-    void props.dataSource.init().then(() => {
+    savedScrollTop = restore
+    if (scrollEl.value) scrollEl.value.scrollTop = restore
+    void next.init().then(() => {
       rowVirtualizer.value?.measure()
+      // 骨架重建后总高度变了，切换瞬间写的 scrollTop 可能已被浏览器截断 → measure 后再写一次
+      if (scrollEl.value && savedScrollTop > 0) scrollEl.value.scrollTop = savedScrollTop
       scrollEl.value?.dispatchEvent(new Event('scroll'))
     })
   },
 )
+
+/**
+ * 滚回顶部（搜索换关键词时由 GridView 调用）：
+ * 换关键词时 props.dataSource 引用不变（同一个 search store），上面的 watch 不会触发，
+ * 滚动位置会停在旧值上 —— 新结果更少时直接落到末尾空白。
+ */
+function scrollToTop(): void {
+  savedScrollTop = 0
+  const el = scrollEl.value
+  if (!el) return
+  el.scrollTop = 0
+  requestAnimationFrame(() => {
+    rowVirtualizer.value?.measure()
+    el.dispatchEvent(new Event('scroll'))
+  })
+}
+defineExpose({ scrollToTop })
 
 watch(
   () => props.dataSource.months,
@@ -450,6 +506,7 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(() => {
+  if (widthMeasureRaf) cancelAnimationFrame(widthMeasureRaf)
   window.removeEventListener('keydown', onKeydown)
   window.removeEventListener('pointerup', onWindowPointerUp)
   window.removeEventListener('pointercancel', onWindowPointerUp)

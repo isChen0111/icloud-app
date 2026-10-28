@@ -14,7 +14,7 @@
  *    按页拉取全量匹配流，虚拟滚动浏览（搜「2025」几千条也流畅）。
  *  - 删除仅照片墙态（搜索态无删除，search store 选中集恒空）。
  */
-import { computed, ref, watch } from 'vue'
+import { computed, nextTick, ref, watch } from 'vue'
 import { deleteAssets } from '../api/client'
 import { useAssetStore } from '../stores/assets'
 import { useSearchStore } from '../stores/search'
@@ -34,6 +34,8 @@ const hasSearched = ref(false)
 /** 删除确认弹框 + 删除请求进行中 */
 const confirmDeleteOpen = ref(false)
 const deleting = ref(false)
+/** GridScroller 实例：换关键词时手动回到顶部（同一数据源内切换，组件 watch 不触发） */
+const scroller = ref<{ scrollToTop: () => void } | null>(null)
 const emit = defineEmits<{ deleted: [] }>()
 /** 防抖计时器句柄 */
 let debounceTimer: number | undefined
@@ -67,6 +69,11 @@ watch(query, (q) => {
   debounceTimer = window.setTimeout(() => {
     hasSearched.value = true
     searchStore.setQuery(t)
+    // 换关键词 = 同一数据源内重新查询，GridScroller 的数据源 watch 不会触发，
+    // 滚动位置要手动归零，否则新结果更少时会停在末尾空白处。
+    // 必须等 nextTick：props.dataSource 的切换在组件更新时生效，
+    // 立刻调用可能还把滚动归零打到照片墙上（连带把它缓存的滚动位置写成 0）
+    void nextTick(() => scroller.value?.scrollToTop())
     void searchStore.init() // 重置缓存 + 拉第一页（响应带回 total/months）
   }, 300)
 })
@@ -152,7 +159,7 @@ function onKeydown(e: KeyboardEvent): void {
 
     <!-- 照片墙 / 搜索结果：同一 GridScroller，数据源切换（组件不销毁，照片墙状态保留） -->
     <div class="grid-wrap">
-      <GridScroller :data-source="searchActive ? searchStore : assetStore" class="scroller" />
+      <GridScroller ref="scroller" :data-source="searchActive ? searchStore : assetStore" class="scroller" />
       <!-- 搜索态空态 / 错误态（墙区中央，替代原独立提示行）：覆盖层不拦截照片墙滚动 -->
       <div v-if="emptyResult" class="search-state">
         <div class="search-state-box">没有匹配「{{ query }}」的内容</div>
