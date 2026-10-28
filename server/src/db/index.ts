@@ -10,6 +10,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { config } from '../config.js'
 import { FTS_SCHEMA_VERSION, SCHEMA_SQL } from './schema.js'
+import { toDateCompact } from '../utils/date.js'
 
 let _real: Database.Database | null = null
 let _realPath: string | null = null
@@ -25,6 +26,28 @@ export function closeDb(): void {
     _real = null
     _realPath = null
   }
+}
+
+/**
+ * 全量回填 FTS 索引（R-26）：date_compact 统一由 toDateCompact() 生成。
+ *
+ * 原实现用 SQL 四次 replace 依次去掉 - : . T → "20240913084028"，
+ * 而扫描入库用 `replace(/[^0-9a-zA-Z]/g, '')` 保留 T → "20240913T084028"，
+ * 同一资产因此有两种索引表示（搜 "20240913T0840" 只命中前者、搜 "202409130840" 只命中后者）。
+ * 现在两条路径共用同一个工具函数；万级行在 JS 里算一次是毫秒级，
+ * 且回填只在「结构版本不符」或「行数不符」时发生，不影响常规启动。
+ */
+function backfillFts(db: Database.Database): number {
+  const rows = db.prepare(`SELECT id, filename, date_taken FROM assets`).all() as {
+    id: number
+    filename: string
+    date_taken: string | null
+  }[]
+  const insert = db.prepare(
+    `INSERT INTO assets_fts(rowid, search_text, date_taken, date_compact) VALUES (?, lower(?), ?, ?)`,
+  )
+  for (const row of rows) insert.run(row.id, row.filename, row.date_taken, toDateCompact(row.date_taken))
+  return rows.length
 }
 
 /** 打开（或复用）与 config.dbPath 对应的真实连接，并完成建表/迁移初始化 */
@@ -74,33 +97,17 @@ function ensureOpen(): Database.Database {
            tokenize = 'trigram'
          )`,
       )
-      db.exec(
-        `INSERT INTO assets_fts(rowid, search_text, date_taken, date_compact)
-         SELECT id,
-                lower(filename),
-                date_taken,
-                replace(replace(replace(replace(date_taken, '-', ''), ':', ''), '.', ''), 'T', '')
-         FROM assets`,
-      )
+      backfillFts(db)
       db.pragma(`user_version = ${FTS_SCHEMA_VERSION}`)
     })()
     console.log(`[db] FTS 表结构 v${FTS_SCHEMA_VERSION} 已重建：${assetCount} 行`)
-  } else {
-    // 结构已是最新：行数不一致只回填（DELETE + 全量 INSERT，11k 行毫秒级）
-    if (ftsCount !== assetCount) {
-      db.transaction(() => {
-        db.exec(`DELETE FROM assets_fts`)
-        db.exec(
-          `INSERT INTO assets_fts(rowid, search_text, date_taken, date_compact)
-           SELECT id,
-                  lower(filename),
-                  date_taken,
-                  replace(replace(replace(replace(date_taken, '-', ''), ':', ''), '.', ''), 'T', '')
-           FROM assets`,
-        )
-      })()
-      console.log(`[db] FTS 索引已回填：${assetCount} 行`)
-    }
+  } else if (ftsCount !== assetCount) {
+    // 结构已是最新：行数不一致只回填（万级行毫秒级）
+    db.transaction(() => {
+      db.exec(`DELETE FROM assets_fts`)
+      backfillFts(db)
+    })()
+    console.log(`[db] FTS 索引已回填：${assetCount} 行`)
   }
 
   _real = db

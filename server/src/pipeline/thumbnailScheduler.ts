@@ -99,6 +99,15 @@ export class ThumbnailScheduler {
     return this.queue.size + this.queue.pending
   }
 
+  /**
+   * 等待队列彻底空闲（排队与运行都归零）。
+   * R-20：cli-scan 扫完要等缩略图预热跑完再退出进程，
+   * 否则 process.exit 会把正在写的任务切断（R-17 保证不会留下坏缓存，但预热白做）。
+   */
+  onIdle(): Promise<void> {
+    return this.queue.onIdle()
+  }
+
   /** 当前正在运行的任务数（单测断言并发不变量用） */
   get runningCount(): number {
     return this.queue.pending

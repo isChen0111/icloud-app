@@ -23,6 +23,7 @@
  *  - 长度：整串过滤后为空或 <3 字符 → 直接返回空（前端提示至少 3 字符）。
  */
 import type { FastifyInstance } from 'fastify'
+import { parseOffset } from '../utils/paging.js'
 import { getDb } from '../db/index.js'
 import { toDto, type AssetRow } from './assets.js'
 
@@ -38,14 +39,29 @@ function sanitizeQuery(raw: string): string {
 }
 
 /**
- * 预期输入级错误判定（修复审查 F-05）：
- * 清洗后仍有极少数畸形输入（超长输入/畸形 token 组合）会让 FTS5 抛语法类错误——
- * 这类是「输入问题」，返回空结果而非 500；其余（DB 错误、FTS 表损坏、磁盘等）
- * 是真异常，必须返回 500，不能让真异常伪装成「没有结果」。
+ * 预期输入级错误判定（修复审查 F-05；收紧于 R-18）：
+ * 清洗后仍有极少数畸形输入会让 FTS5 抛语法类错误——这类是「输入问题」，
+ * 返回空结果而非 500；其余（DB 错误、磁盘等）是真异常，必须返回 500。
+ *
+ * ⚠️ R-18：原白名单里有宽泛的 `/malformed/`，把 SQLite 的
+ * "database disk image is malformed"（库文件损坏）也划成了「输入问题」——
+ * 正是 F-05 想消灭的「真异常伪装成没有结果」。现在只认明确由查询文本触发的消息，
+ * 库损坏走 isDbCorruptError 单独判 5xx。
  */
-function isExpectedFtsInputError(err: unknown): boolean {
+export function isExpectedFtsInputError(err: unknown): boolean {
   const msg = err instanceof Error ? err.message : String(err)
-  return /(syntax error|malformed|parse error|no such column|fts5:)/i.test(msg)
+  return /(fts5: syntax error|malformed match expression|unterminated string|unknown special query|no such column|parse error)/i.test(
+    msg,
+  )
+}
+
+/**
+ * 数据库/索引文件损坏（R-18）：必须 5xx + 明确 code，前端才能提示「重建索引」。
+ * 注意必须在 isExpectedFtsInputError 之前判断——损坏消息里也含 "malformed"。
+ */
+export function isDbCorruptError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err)
+  return /(database disk image is malformed|database corruption|file is not a database)/i.test(msg)
 }
 
 export async function registerSearchRoutes(app: FastifyInstance): Promise<void> {
@@ -62,7 +78,8 @@ export async function registerSearchRoutes(app: FastifyInstance): Promise<void> 
     if (!Number.isInteger(limit) || limit < 1 || limit > 500) {
       return reply.code(400).send({ error: 'limit must be an integer between 1 and 500' })
     }
-    const offset = Math.min(1_000_000, Math.max(0, Math.floor(Number(offsetRaw ?? 0) || 0)))
+    // 与 /api/assets 共用 parseOffset（R-23）：非有限值归 0、负数归 0、上限 1e6
+    const offset = parseOffset(offsetRaw)
     const query = sanitizeQuery(q ?? '')
 
     // trigram 最小 3 字符；不足时无法走索引，直接返回空（不降级为 LIKE 全扫）
@@ -159,6 +176,15 @@ export async function registerSearchRoutes(app: FastifyInstance): Promise<void> 
     } catch (err) {
       // 修复审查 F-05：分类处理——预期输入级错误返回空结果（console.warn），
       // 真异常返回 500（console.error），不再把所有错误都伪装成「没有结果」。
+      // R-18：库文件损坏要单独识别（顺序在输入级判断之前），给前端可操作的 code
+      if (isDbCorruptError(err)) {
+        console.error(`[search] 数据库/索引损坏，返回 500: ${query}`, err)
+        return reply.code(500).send({
+          error: 'index corrupt',
+          code: 'DB_CORRUPT',
+          message: '搜索索引已损坏，请重建索引后再试',
+        })
+      }
       if (isExpectedFtsInputError(err)) {
         console.warn(`[search] FTS 输入级查询失败，返回空: ${query}`, (err as Error).message)
       } else {

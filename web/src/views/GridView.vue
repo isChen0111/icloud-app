@@ -166,7 +166,8 @@ function onKeydown(e: KeyboardEvent): void {
       </div>
       <div v-else-if="searchActive && searchStore.searchError" class="search-state">
         <div class="search-state-box">
-          <span>搜索失败，请重试</span>
+          <!-- R-18：索引损坏时后端会给出「请重建索引」之类的可操作文案，直接展示 -->
+          <span>{{ searchStore.searchError }}</span>
           <button class="search-retry" type="button" @click="retrySearch">重试</button>
         </div>
       </div>
