@@ -7,7 +7,7 @@
  *    - type='video'  ：普通视频
  *    - type='live'   ：实况照片（静止帧为主资产，live_video 字段指向配对视频）
  * 2. file_path 为唯一键，支持「增量重扫」——同一路径再次扫描时 UPSERT 更新。
- * 3. thumb_status / detail_status / poster_status 记录缩略图生成状态；
+ * 3. thumb_status / detail_status 记录缩略图生成状态；
  *    thumb_error 与 thumb_ignored 支持解释和管理网格预览图失败项。
  */
 
@@ -50,7 +50,6 @@ CREATE TABLE IF NOT EXISTS assets (
   thumb_error   TEXT,
   thumb_ignored INTEGER NOT NULL DEFAULT 0,
   detail_status TEXT DEFAULT 'pending',
-  poster_status TEXT DEFAULT 'pending',
 
   -- 源文件签名（F-03 修复）：扫描时 stat 的 size + mtimeMs（取整）。
   -- 同路径文件被覆盖/内容变化时签名变化 → 删旧缩略图缓存 + thumb_status 置 pending 重新生成。

@@ -101,7 +101,6 @@ export async function registerThumbnailErrorRoutes(app: FastifyInstance): Promis
     for (const asset of assets) {
       const item: EnqueueItem = {
         id: asset.id,
-        relPath: asset.filePath,
         type: asset.type,
       }
       enqueueAsset(item, 'user')

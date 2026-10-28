@@ -594,7 +594,7 @@ export async function runScan(
   } else {
     beginThumbnailBatch()
     for (const r of realPendingThumbs) {
-      enqueueAsset({ id: r.id, relPath: r.file_path, type: r.type as 'photo' | 'video' | 'live' })
+      enqueueAsset({ id: r.id, type: r.type as 'photo' | 'video' | 'live' })
     }
   }
 

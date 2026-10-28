@@ -19,10 +19,18 @@ import path from 'node:path'
 import { getDb } from '../db/index.js'
 import { config } from '../config.js'
 
-/** 解析 "bytes=start-end" 请求头 → { start, end }，不合法返回 null（回退整文件） */
-function parseRange(rangeHeader: string | undefined, total: number): { start: number; end: number } | null {
+/**
+ * 解析 "bytes=start-end" 请求头 → { start, end }，不合法返回 null（回退整文件）
+ *
+ * R-28：多段 Range（Safari 会发 `bytes=0-1,100-200` 这类）只满足首段。
+ * RFC 7233 允许服务端只回一个 range，但旧实现用 `^...$` 对整串锚定匹配，
+ * 多段一律解析失败 → 调用方见到「有 Range 头但解析不出」直接 416，
+ * 表现为 Safari 里视频完全播不了。
+ */
+export function parseRange(rangeHeader: string | undefined, total: number): { start: number; end: number } | null {
   if (!rangeHeader) return null
-  const m = rangeHeader.match(/^bytes=(\d*)-(\d*)$/)
+  const first = rangeHeader.split(',')[0].trim()
+  const m = first.match(/^bytes=(\d*)-(\d*)$/)
   if (!m) return null
   const [, startStr, endStr] = m
   // 支持 "bytes=-500"（末尾 500 字节）与 "bytes=100-"（100 到结尾）
