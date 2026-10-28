@@ -11,6 +11,10 @@
  * 安全边界：
  *   全程只操作 `os.tmpdir()` 下新建的临时库，不改 `config.dbPath` 的默认值（用例结束恢复），
  *   不读写任何真实照片库或 `server/cache`。
+ *
+ * 覆盖两类迁移：
+ *   - R-26 FTS 结构版本与 date_compact 表示统一（3 例）
+ *   - R-08 date_taken 基准统一为「本地时间 + 偏移」+ 幂等（2 例）
  */
 import test from 'node:test'
 import assert from 'node:assert/strict'
@@ -20,8 +24,8 @@ import path from 'node:path'
 import Database from 'better-sqlite3'
 import { config } from '../config.js'
 import { closeDb, getDb } from './index.js'
-import { FTS_SCHEMA_VERSION, SCHEMA_SQL } from './schema.js'
-import { toDateCompact } from '../utils/date.js'
+import { DATE_BASIS_VERSION, FTS_SCHEMA_VERSION, SCHEMA_SQL } from './schema.js'
+import { hasTimezoneOffset, toDateCompact } from '../utils/date.js'
 
 /** 用例期间会临时改写 config.dbPath，结束后恢复成进程启动时的值 */
 const originalDbPath = config.dbPath
@@ -202,6 +206,100 @@ test('全新空库：首次打开即建表、版本置为当前值，且不误�
     ).run(toDateCompact('2024-09-13T08:40:28'))
     const hit = db.prepare(`SELECT count(*) AS c FROM assets_fts WHERE assets_fts MATCH ?`).get('20240913')
     assert.equal((hit as { c: number }).c, 1, '写入后应能用紧凑日期搜到')
+  } finally {
+    cleanup(dbPath)
+  }
+})
+
+test('R-08 回归：date_taken 统一为本地偏移表示，跨月边界归到正确的本地月份', () => {
+  const dbPath = makeTmpDbPath()
+  try {
+    // 三种情况各一行：
+    //  A 普通 UTC 表示（EXIF 路径的产物）
+    //  B UTC 表示但本地已跨月（按月分组 bug 的复现点）
+    //  C 已经是本地偏移表示（迁移必须原样跳过，不能二次换算）
+    const assets: SeedAsset[] = [
+      { id: 1, filePath: '2024/09/13/A.HEIC', filename: 'A.HEIC', dateTaken: '2024-09-13T00:40:28.000Z' },
+      { id: 2, filePath: '2024/10/01/B.HEIC', filename: 'B.HEIC', dateTaken: '2024-09-30T20:00:00.000Z' },
+      { id: 3, filePath: '2024/10/01/C.HEIC', filename: 'C.HEIC', dateTaken: '2024-10-01T00:00:00+08:00' },
+    ]
+    seedLegacyDb({ dbPath, assets, ftsVersion: FTS_SCHEMA_VERSION })
+
+    config.dbPath = dbPath
+    const db = getDb()
+    const rows = db.prepare(`SELECT id, date_taken FROM assets ORDER BY id`).all() as {
+      id: number
+      date_taken: string
+    }[]
+
+    for (const row of rows) {
+      const original = assets.find((a) => a.id === row.id)!
+      assert.ok(hasTimezoneOffset(row.date_taken), `id=${row.id} 应统一为带偏移的表示: ${row.date_taken}`)
+      // 不变量一：时刻不变（迁移只换写法，不能挪动照片的真实时间）
+      assert.equal(
+        new Date(row.date_taken).getTime(),
+        new Date(original.dateTaken).getTime(),
+        `id=${row.id} 迁移后时刻必须与迁移前一致`,
+      )
+      // 不变量二：按月分组用 substr(date_taken,1,7)，结果必须等于该时刻在本机的年月
+      const d = new Date(row.date_taken)
+      const expectedYm = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
+      assert.equal(row.date_taken.slice(0, 7), expectedYm, `id=${row.id} 月份切片应等于本地年月`)
+    }
+    // 已带偏移的行保持字节级不变（不二次换算）
+    assert.equal(rows[2].date_taken, '2024-10-01T00:00:00+08:00', '已完成的行不应被二次改写')
+
+    // FTS 里的日期必须跟着主表一起更新，否则搜索与排序是两套数据
+    const ftsRows = db.prepare(`SELECT rowid, date_taken, date_compact FROM assets_fts ORDER BY rowid`).all() as {
+      rowid: number
+      date_taken: string
+      date_compact: string
+    }[]
+    assert.equal(ftsRows.length, assets.length, '迁移后索引行数应等于资产数')
+    for (const row of ftsRows) {
+      const main = rows.find((r) => r.id === row.rowid)!
+      assert.equal(row.date_taken, main.date_taken, `rowid=${row.rowid} 的 FTS date_taken 应与主表一致`)
+      assert.equal(
+        row.date_compact,
+        toDateCompact(main.date_taken),
+        `rowid=${row.rowid} 的 date_compact 应同步重算`,
+      )
+    }
+
+    const mark = db.prepare(`SELECT value FROM app_meta WHERE key = 'date_basis'`).get() as { value: string }
+    assert.equal(Number(mark.value), DATE_BASIS_VERSION, '迁移完成状态应写入 app_meta')
+  } finally {
+    cleanup(dbPath)
+  }
+})
+
+test('R-08：迁移幂等——再次打开库不再改写已迁移的值', () => {
+  const dbPath = makeTmpDbPath()
+  try {
+    const assets: SeedAsset[] = [
+      { id: 1, filePath: '2024/09/13/A.HEIC', filename: 'A.HEIC', dateTaken: '2024-09-13T00:40:28.000Z' },
+    ]
+    seedLegacyDb({ dbPath, assets, ftsVersion: FTS_SCHEMA_VERSION })
+
+    config.dbPath = dbPath
+    const firstRead = getDb().prepare(`SELECT id, date_taken FROM assets`).all() as {
+      id: number
+      date_taken: string
+    }[]
+    assert.ok(hasTimezoneOffset(firstRead[0].date_taken), '首次打开应完成迁移')
+
+    // 关掉连接再重新打开 —— 模拟第二次启动（Proxy 会重新走 ensureOpen）
+    closeDb()
+    const secondRead = getDb().prepare(`SELECT id, date_taken FROM assets`).all() as {
+      id: number
+      date_taken: string
+    }[]
+    assert.deepEqual(secondRead, firstRead, '第二次打开不应产生任何变化（幂等的意义）')
+
+    const mark = getDb().prepare(`SELECT value FROM app_meta WHERE key = 'date_basis'`).get() as {
+      value: string
+    }
+    assert.equal(Number(mark.value), DATE_BASIS_VERSION)
   } finally {
     cleanup(dbPath)
   }

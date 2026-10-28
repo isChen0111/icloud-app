@@ -86,6 +86,14 @@ CREATE VIRTUAL TABLE IF NOT EXISTS assets_fts USING fts5(
   date_compact,
   tokenize = 'trigram'
 );
+
+-- ============ 应用级键值记录 ============
+-- 与 PRAGMA user_version 分开：user_version 已被 FTS 结构版本占用（见 FTS_SCHEMA_VERSION），
+-- 再往里塞别的迁移标记会互相踩。这里按 key 各存一个版本，各迁移独立推进。
+CREATE TABLE IF NOT EXISTS app_meta (
+  key   TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
 `
 
 /**
@@ -98,3 +106,14 @@ export const FTS_SCHEMA_VERSION = 3
 // v3（R-26，2026-10-28）：date_compact 生成方式统一（扫描入库保留 T、启动回填却删掉了 T，
 // 同一资产两种索引表示，搜 "20240913T0840" 与 "202409130840" 命中不一致）。
 // 列结构没变，但需要一次全量回填把历史行修正成同一表示，故 bump 触发重建。
+
+/**
+ * 日期基准迁移版本（R-08，2026-10-28）：记录在 `app_meta` 表的 `date_basis` 键下。
+ *
+ * v1：把 `assets.date_taken` 统一成「本地时间 + 偏移」表示（如 `2026-10-25T16:47:15+08:00`）。
+ * 迁移前同一列混着 UTC（`...Z`，EXIF 路径）与 `+08:00`（目录兜底路径）两种基准，
+ * 导致 ① `ORDER BY date_taken` 字符串比较错位、② `substr(date_taken,1,7)` 按月分组切到 UTC 月份。
+ *
+ * 不用 PRAGMA user_version：那个已被 FTS_SCHEMA_VERSION 占用，两个迁移会互相覆盖版本号。
+ */
+export const DATE_BASIS_VERSION = 1

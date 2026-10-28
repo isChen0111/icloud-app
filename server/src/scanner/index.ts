@@ -19,7 +19,7 @@ import { getDb } from '../db/index.js'
 import { readImageMeta, readVideoMeta, normalizeDate, parseDateFromDir, baseName } from '../metadata/index.js'
 import { beginThumbnailBatch, enqueueAsset, resetThumbnailProgress } from '../pipeline/queue.js'
 import { isCacheUsable, thumbCachePath } from '../pipeline/thumbnails.js'
-import { toDateCompact } from '../utils/date.js'
+import { toDateCompact, toLocalIso } from '../utils/date.js'
 
 /** 支持的媒体扩展名（小写） */
 const IMAGE_EXTS = new Set(['.heic', '.heif', '.jpg', '.jpeg', '.png', '.gif', '.tiff'])
@@ -438,7 +438,9 @@ export async function runScan(
     if (!dateTaken) {
       try {
         const st = fs.statSync(absPath)
-        dateTaken = st.mtime.toISOString()
+        // R-08：与 EXIF / 目录两条路径统一为「本地时间 + 偏移」表示。
+        // 原来这里用 toISOString()（UTC，带 Z），同一天里会与 +08:00 表示排序错位。
+        dateTaken = toLocalIso(st.mtime) ?? st.mtime.toISOString()
       } catch {
         // 文件瞬时不可读（刚被移动/删除）：跳过本资产，下次重扫再试
         console.warn(`[scan] 跳过不可读文件: ${a.image.relPath}`)
