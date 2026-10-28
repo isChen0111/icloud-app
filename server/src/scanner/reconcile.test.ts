@@ -48,12 +48,12 @@ test('collectOrphanIds：白名单只影响自己，不影响其他孤儿判定'
   assert.deepEqual(collectOrphanIds(dbRows, new Set(), new Set(['a.HEIC']), true), [2])
 })
 
-test('walkDir：普通目录递归收录媒体文件，无 error', () => {
+test('walkDir：普通目录递归收录媒体文件，无 error', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'icloud-walk-'))
   try {
     fs.mkdirSync(path.join(root, '2024', '09', '01'), { recursive: true })
     fs.writeFileSync(path.join(root, '2024', '09', '01', 'IMG_1.HEIC'), 'x')
-    const r = walkDir(root)
+    const r = await walkDir(root)
     assert.equal(r.errors.length, 0)
     assert.equal(r.files.length, 1)
   } finally {
@@ -61,7 +61,7 @@ test('walkDir：普通目录递归收录媒体文件，无 error', () => {
   }
 })
 
-test('walkDir：指向目录的链接计入 errors（不静默跳过）', (t) => {
+test('walkDir：指向目录的链接计入 errors（不静默跳过）', async (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'icloud-link-'))
   const target = path.join(root, 'real')
   const link = path.join(root, 'linked')
@@ -77,7 +77,7 @@ test('walkDir：指向目录的链接计入 errors（不静默跳过）', (t) =>
     return
   }
   try {
-    const r = walkDir(root)
+    const r = await walkDir(root)
     // 不跟随链接（避免环路/越界），但必须报「遍历不完整」→ 本轮跳过删除对账
     assert.equal(r.errors.length, 1)
     assert.match(r.errors[0], /symbolic link/)
@@ -86,6 +86,37 @@ test('walkDir：指向目录的链接计入 errors（不静默跳过）', (t) =>
   } finally {
     // 先断开链接再删目录：某些平台递归删除会跟随目录链接
     try { fs.unlinkSync(link) } catch { /* 已不存在 */ }
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('walkDir：遍历期间让出事件循环（R-19）', async () => {
+  // 旧实现全同步（readdirSync），整库遍历期间定时器/HTTP 请求都排不上队：
+  // 启动时端口还没 listen，前端表现为「后端没起来」。
+  // 造足够多的目录，让「定时器能否在遍历结束前跑到」成为可判定的事实。
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'icloud-yield-'))
+  try {
+    for (let i = 0; i < 120; i++) {
+      const d = path.join(root, `${2024 + (i % 2)}`, String((i % 12) + 1).padStart(2, '0'), String((i % 28) + 1).padStart(2, '0'), `sub${i}`)
+      fs.mkdirSync(d, { recursive: true })
+      fs.writeFileSync(path.join(d, `IMG_${i}.HEIC`), 'x')
+    }
+    let timerFired = false
+    const timer = new Promise<void>((resolve) =>
+      setTimeout(() => {
+        timerFired = true
+        resolve()
+      }, 0),
+    )
+    const walk = walkDir(root)
+    const r = await walk
+    // 关键：必须在 await walk 之后、await timer 之前取样——
+    // 先等 timer 再断言的话它必然为 true，测不出任何东西。
+    const firedBeforeWalkDone = timerFired
+    await timer
+    assert.equal(r.files.length, 120)
+    assert.equal(firedBeforeWalkDone, true, '遍历必须让出事件循环，不能独占主线程')
+  } finally {
     fs.rmSync(root, { recursive: true, force: true })
   }
 })

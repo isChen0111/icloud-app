@@ -60,6 +60,14 @@ interface PairedAsset {
 }
 
 /**
+ * 让出一次事件循环（R-19）：纯同步循环（stat 结果处理）分批插调用它，
+ * 避免整库遍历期间把 HTTP 请求全部堵住。
+ */
+function yieldToEventLoop(): Promise<void> {
+  return new Promise((resolve) => setImmediate(resolve))
+}
+
+/**
  * 递归遍历目录，保留已读文件并报告任何未能读取的目录。
  * 目录读取失败不会中断入库，但扫描结果不完整时不能用于删除对账。
  *
@@ -71,11 +79,13 @@ interface PairedAsset {
  * 本函数与 statSync 失败的白名单（见 runScan）共同保证：只有「明确确认已消失」
  * 的文件才会被删除对账清理。
  */
-export function walkDir(dir: string): { files: string[]; errors: string[] } {
+export async function walkDir(dir: string): Promise<{ files: string[]; errors: string[] }> {
   const result = { files: [] as string[], errors: [] as string[] }
   let entries: fs.Dirent[]
   try {
-    entries = fs.readdirSync(dir, { withFileTypes: true })
+    // R-19：原实现用 readdirSync，整库遍历期间事件循环被完全占满，端口还没 listen 时
+    // 前端表现为「后端没起来」；改 fs.promises 后每次目录读取都会让出主线程。
+    entries = await fs.promises.readdir(dir, { withFileTypes: true })
   } catch (err) {
     result.errors.push(`${dir}: ${(err as NodeJS.ErrnoException).code ?? (err as Error).message}`)
     return result
@@ -84,7 +94,7 @@ export function walkDir(dir: string): { files: string[]; errors: string[] } {
     if (entry.name.startsWith('.') && entry.isDirectory()) continue // 忽略隐藏目录；文件再由媒体扩展名筛选
     const full = path.join(dir, entry.name)
     if (entry.isDirectory()) {
-      const child = walkDir(full)
+      const child = await walkDir(full)
       result.files.push(...child.files)
       result.errors.push(...child.errors)
     } else if (entry.isFile()) {
@@ -95,7 +105,7 @@ export function walkDir(dir: string): { files: string[]; errors: string[] } {
       // 指向普通文件的链接正常收录（后续 sharp/exifr 读取时由操作系统跟随）。
       let linkStat: fs.Stats | null = null
       try {
-        linkStat = fs.statSync(full)
+        linkStat = await fs.promises.stat(full)
       } catch {
         linkStat = null
       }
@@ -170,7 +180,7 @@ export async function runScan(
 
   try {
   // ① 收集所有媒体文件
-  const traversal = walkDir(config.libraryRoot)
+  const traversal = await walkDir(config.libraryRoot)
   const absPaths = traversal.files
   const traversalComplete = traversal.errors.length === 0
   if (!traversalComplete) {
@@ -186,7 +196,12 @@ export async function runScan(
    *     文件还在、记录没了；下次重扫会以「新 id」复活，用户的忽略/失败状态全丢。
    */
   const statFailed = new Set<string>()
+  let statIndex = 0
   for (const abs of absPaths) {
+    // R-19：stat 是同步调用（比 promises 版快一个量级，20k 文件约 1~2 秒），
+    // 单次耗时可忽略，但整轮连续执行仍会占住事件循环；每 200 个让出一次，
+    // 前端轮询 /api/stats 与其它接口在扫描期间照常响应。
+    if (++statIndex % 200 === 0) await yieldToEventLoop()
     const fileName = path.basename(abs).toLowerCase()
     const ext =
       path.extname(abs).toLowerCase() ||
@@ -350,6 +365,8 @@ export async function runScan(
   // 复用分支里签名变化的 relPath（scanAll 里按 r[0] 匹配拿 id，事务内统一重置）
   const changedRelPaths = new Set<string>()
   const changedIds: number[] = []
+  /** R-04：签名变了但元数据重新提取不到任何值（文件损坏/写入中）而回退旧值的数量 */
+  let metaFallbackCount = 0
 
   const scanAll = db.transaction((rows: unknown[][]) => {
     for (const r of rows) {
@@ -376,15 +393,19 @@ export async function runScan(
     if (a.liveVideo) type = 'live'
 
     // —— 配对修正（本次修复重点）——
-    // 已入库的文件：复用现有元数据（文件内容不变，iCloudPD 只读快照），
+    // 已入库的文件：文件内容未变则复用现有元数据（iCloudPD 只读快照），
     // 但仍执行 UPSERT，让 type / live_video 按新的「目录+基名」配对结果修正，
     // 同时把之前因跨目录同名而漏掉的视频（现在是独立 video 或新 live）补进来。
     const exist = existingMeta.get(a.image.relPath)
-    if (exist) {
-      // F-03 修复：已有签名且与当前不一致 → 该资产缩略图缓存失效重生成（收集到 scanAll 统一重置）
-      const changed =
-        exist.size !== null && (exist.size !== a.image.size || exist.mtimeMs !== a.image.mtimeMs)
-      if (changed) changedRelPaths.add(a.image.relPath)
+    // F-03 + R-04：签名（size + mtime）与上次不同 = 同一路径已被换成别的文件：
+    //   - 缩略图缓存必须失效（changedRelPaths → scanAll 内置 pending，末尾删缓存）
+    //   - 元数据也不能再复用。旧实现只做了前者，覆盖同一路径的照片/视频后
+    //     date_taken / 宽高 / 时长永远是旧值 → 排序位置错、网格宽高比错、详情信息错。
+    const changed =
+      exist != null &&
+      exist.size !== null &&
+      (exist.size !== a.image.size || exist.mtimeMs !== a.image.mtimeMs)
+    if (exist && !changed) {
       batch.push([
         a.image.relPath,
         type,
@@ -407,6 +428,7 @@ export async function runScan(
       }
       continue
     }
+    if (changed) changedRelPaths.add(a.image.relPath)
 
     let dateTaken: string | null = null
     let width: number | null = null
@@ -431,6 +453,26 @@ export async function runScan(
       width = im.width
       height = im.height
       // EXIF 拿不到尺寸时用 sharp 兜底（见 pipeline/thumbnails.ts 的 ensureSize）
+    }
+
+    // R-04：签名变化的文件重新提取。若提取结果「全空」（文件损坏、只写了一半、
+    // 或该格式本来就没有 EXIF），不能把库里已有的一整套值抹成 null —— 回退旧值并计数。
+    // 签名仍按新文件写入，避免下次扫描又把它当变化重提一次；
+    // 真正写完后 watcher 会带新 mtime 再来一轮，那时就能正常提取。
+    if (exist) {
+      const freshUsable = isVideo
+        ? duration != null || width != null || dateTaken != null
+        : dateTaken != null || width != null || height != null || orientation != null || gpsLat != null
+      if (!freshUsable) {
+        dateTaken = exist.dateTaken
+        width = exist.width
+        height = exist.height
+        duration = exist.duration
+        orientation = exist.orientation
+        gpsLat = exist.gpsLat
+        gpsLon = exist.gpsLon
+        metaFallbackCount++
+      }
     }
 
     // 时间兜底链：EXIF/ffprobe → 目录 YYYY/MM/DD → 文件修改时间
@@ -484,6 +526,10 @@ export async function runScan(
       }
     }
     console.log(`[scan] 源文件签名变化：${changedIds.length} 个资产的缩略图缓存已失效并重新入队`)
+  }
+  if (metaFallbackCount > 0) {
+    // 只汇总一行：损坏目录/半写文件可能成批出现，逐条打会刷屏
+    console.warn(`[scan] ${metaFallbackCount} 个签名变化的文件元数据提取为空，已保留库中原值`)
   }
 
   // ⑤ 删除对账（P2+-1）：磁盘文件集合 vs DB 资产集合
