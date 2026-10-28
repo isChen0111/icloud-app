@@ -1,6 +1,6 @@
 # 项目上下文快照（供会话压缩/新会话恢复用）
 
-> 生成日期：2026-09-08；最后同步：2026-10-12（P0 照片库同步与多库实现 + 文档三件套同步：iCloudPD同步架构功能设计按实现回填、架构设计文档新增 §3.8/§5 P0 模块/§6 路线图/§8 风险、README 补多库启动与 API；删除已过时的「资源状态顶部UI方案.html」）。若本会话上下文被压缩或丢失，先读本文件 + 架构设计文档 + README，即可恢复全部关键信息。
+> 生成日期：2026-09-08；最后同步：2026-10-28（10-27 整体审查报告第一批 7 项修复合并：扫描对账保护 / 删除接口严格语义与守卫 / 删除后分页空洞 / 引导切库与非激活库同步 / 删库安全默认 / 错误提示浮层；此前 10-12 同步 P0 照片库同步与多库实现 + 文档三件套）。若本会话上下文被压缩或丢失，先读本文件 + 架构设计文档 + README，即可恢复全部关键信息。
 
 ## 项目目标与现状
 - 用户已用 iCloudPD 把 iCloud 照片全部拉到本地（照片库根 `F:\iPhone\icloud-app\iCloudPhoto\`）。**源文件数量与容量从略（属个人隐私）：全库照片、实况照片与视频合计为万级资产，磁盘媒体文件为数万级。**
@@ -51,7 +51,16 @@
    - **前端**：① App.vue——右上角库切换下拉（当前库名 ▾ + 列表 + 新建）+ 设置齿轮；移除 popover 红框库信息/新建库区块；`pickLibrary` 切库后 location.reload()；`onLibraryDeleted` 非激活库仅移除下拉项；`openAuth` 按 account 传 autoStart（刷新链接打开即自动认证）。② `SettingsView.vue`（新）——左侧分组导航（照片库/应用）、每库卡片（当前标识/照片 N·视频 M/完整账号/目录缓存会话/最近同步独立行/新建链接·刷新链接/删除确认弹窗默认勾选删副本）、照片库配置 ▾ 浅蓝面板锁死只读、每库同步四态按钮 + 多库「等待执行…」（全局单任务 409→waiting 自动恢复）；设置窗口 880px。③ `OnboardingView.vue`——弹窗化（半透明遮罩+×+ESC）：「创建照片库」按钮（动画+成功提示，**创建完不自动切换页面/不自动进下一步**）→ 手动「下一步：链接 iCloud」。④ `AuthDialog.vue`——**分步状态机**（starting 无输入框 → 输密码独立步 → submitting 校验中仅转圈文案 → 输验证码 → done/error 绿✓/红✗弹出动画结果停留）+ 步骤指示器（1密码→2验证码→3完成）+ 输入框三态（默认白底边框/聚焦蓝光晕/禁用浅灰）+ 校验中全链路禁点（×/遮罩/输入框/按钮）；**固定邮箱页已删**（设置中心/主界面「刷新链接」打开即 autoStart 自动认证，免二次点击）；邮箱格式校验。⑤ `types.ts` LibraryInfo 补 libraryRoot/cacheDir/cookieDir/photos/videos；`api/client.ts` deleteLibrary。
    - **cli-scan / watcher**：激活库化（仅当前库启停扫描/监听）。
    - **文档**：`docs/iCloudPD照片库同步-架构功能设计.html` 按实现全面回填（§3.1.1 webui 桥接/状态机/防重、§4.1/4.4 设置中心与首次引导、§5 表结构与真实 API、§6 路线图、§7 问题 8）；架构设计文档新增 §3.8 P0 同步与多库 + §5 结构 + §6 路线图行 + §8 风险；README 补多库启动/环境变量/API/功能概览；删除已过时 `docs/资源状态顶部UI方案.html`（产品设计稿保留）。
-24. **2026-10-18 局域网访问修复 + P0 复审（feat/lan-access）**：① 生产 build 模式 403 回归（F-04 Origin 白名单漏生产同源，见 §20 F-04 附注）——index.ts 改 dev 白名单 ∪ 同源判定（Origin host == 请求 Host，端口规范化）；config 新增 `HOST`（默认 `0.0.0.0`，局域网设备可访问；`.env.example` 已注释）。commit 5db8137 已提交。② P0 复审 8 项修复（tsc 0 错 + 测试 12/12 + API 回归全绿：同源 PATCH/POST 放行、跨站 403 保留）：P1 切库/删除时在途扫描 409 守卫、P2 删库 rmSync→fsp.rm 异步化、P3a exit 不覆盖 error 终态、P3b 重试耗尽杀进程且终态不翻转、P3c 库名校验正则去 /g、P3d killProcess 同步等待、P3e 认证超时文案死代码修复、P3f checkAuthValid 超时改 taskkill /T。**工作区 4 文件（routes/libraries.ts、icloudpd/sync.ts、icloudpd/auth.ts、db/libraries.ts）未提交，待用户验收后提交；本次文档同步同分支。**
+24. **2026-10-18 局域网访问修复 + P0 复审（feat/lan-access）**：① 生产 build 模式 403 回归（F-04 Origin 白名单漏生产同源，见 §20 F-04 附注）——index.ts 改 dev 白名单 ∪ 同源判定（Origin host == 请求 Host，端口规范化）；config 新增 `HOST`（默认 `0.0.0.0`，局域网设备可访问；`.env.example` 已注释）。commit 5db8137 已提交。② P0 复审 8 项修复（tsc 0 错 + 测试 12/12 + API 回归全绿：同源 PATCH/POST 放行、跨站 403 保留）：P1 切库/删除时在途扫描 409 守卫、P2 删库 rmSync→fsp.rm 异步化、P3a exit 不覆盖 error 终态、P3b 重试耗尽杀进程且终态不翻转、P3c 库名校验正则去 /g、P3d killProcess 同步等待、P3e 认证超时文案死代码修复、P3f checkAuthValid 超时改 taskkill /T。**上述 4 文件已随 `ead5e7f`（merge: 复审修复单元测试 + 可测性重构）提交合并推送，工作区已干净，本条原「待验收后提交」已结清。**
+25. **2026-10-28 整体审查（10-27 报告）第一批修复（fix/review-batch1 → 合并 main 37526a6，已推送）**：审查报告 `docs/整体审查报告-2026-10-27.md` 共记录 3 项 P1 / 19 项 P2 / 7 项 P3，本次按「数据安全优先」修复第一批 7 项：
+   - **R-03/R-29 扫描对账保护**（scanner/index.ts）：`statSync` 失败的文件记入 `statFailed` 白名单、不参与孤儿判定（原先静默 continue 却仍在 dbRows 中 → 磁盘还在的资产被删记录+缩略图，重扫以新 id 复活、忽略状态丢失）；`walkDir` 显式处理符号链接（文件链接收录、目录链接记 errors → `traversalComplete=false` 跳过本轮对账）；对账抽成纯函数 `collectOrphanIds()`；修正与实现相反的注释。
+   - **R-15/R-16 删除接口**（routes/assets.ts + libraries.ts）：ENOENT 视为已删，EPERM/EBUSY 等真实失败**保留 DB 行**并返回 207 + `failed` 清单（原先无条件删行 → 文件残留后以新 id 复活）；DELETE 前置 `libraryBusyGuard('delete-asset')`，扫描/同步中 409。前端 GridView/DetailView 只移除真正删掉的 id，client.ts 透出后端 message。
+   - **R-01 分页空洞**（stores/assets.ts）：受影响页原先只 filter 掉被删 id 却保留页起点，页长变短 k 条 → 页尾 k 个全局位置无人持有、永久空白。改为整页丢弃 + 立即重拉。
+   - **R-22/R-22b 引导与同步入口**（OnboardingView + App.vue + SettingsView）：已有库时新建的库 `active=0`，而同步只允许激活库 → 引导第 3 步必 409。改为拉取前先 `switchLibrary()` 热切换（不动 location，弹窗与已完成的认证不受影响）+ 关闭引导时整页 reload；设置中心非激活库不再显示「可点但必 409」的同步按钮，改为「切换到此库并同步」。
+   - **R-21 删库安全默认**（SettingsView）：`removePhotos` 默认由 `true` 改为 `false`（§23 描述的「默认勾选删副本」已作废），勾选后显示红色后果说明并需二次点击才真删。
+   - **R-30 静默失败**（App.vue）：`syncError` 此前只赋值、模板从未渲染 → 同步中切库被拒等于零提示。改为顶栏下方**固定浮层**（`fixed; top:56px; 居中; z-index:50`）：不参与布局流（避免压矮 `.view-host` 触发 GridScroller 的 ResizeObserver 重算导致照片墙抖动）、180ms 滑入淡出、8 秒自动消失、悬停暂停计时、可点 × 关闭。
+   - **测试**：新增 `scanner/reconcile.test.ts`（6 例）、`routes/assets.test.ts`（8 例），后端合计 **50 例全绿**；`tsc --noEmit` / `vue-tsc -b` 0 错、`vite build` 通过。用户手工验收 7 项全部通过（涉真实同步的项用「启动后 1~2 秒内取消」验证，不触发实际下载）。
+   - **本批未修、已明确规避方式**：R-02 删除激活库竞态（`closeDb()` 后 `await rm` 期间 5 秒轮询经 `ensureOpen()` 重建 DB → Windows EPERM/500）——**删除激活库前先切到其他库**；R-05/R-06/R-07 缩略图队列三连（未处理拒绝杀进程 / `p-queue.clear()` 使排队 Promise 永不 settle / `inFlight` 跨库不清理）；R-04 签名变化只重置缩略图复用旧元数据；R-08 时间基准 UTC 与 `+08:00` 混存需迁移。
 
 ## 照片库实测数据（2026-09-08）
 - 结构：`YYYY/MM/DD/文件名`（iCloudPD 默认），实况配对基名归一（`_HEVC` 后缀），**无时间差校验**。⚠️ **配对必须限定同一目录**——跨目录同名文件（不同设备/编辑版本的同名，如 `2018/02/04/IMG_0040*` 与 `2021/07/27/IMG_0040*`，全库大量基名分布多目录）若只按基名配对会错配丢视频（见「已完成」第 9 条）。
@@ -86,6 +95,7 @@
 
 ## 待办 / 遗留（均不影响使用）
 - 预览图失败记录现在可在顶栏清单中查看、重试或忽略；较早的失败项没有存储原因，会显示“失败时未记录详细原因”。
+- **10-27 审查报告第一批已修完，第二批及以后未动**（详见 `docs/整体审查报告-2026-10-27.md` 第六章实施顺序）：R-02 删库竞态（**规避：删激活库前先切到其他库**）、R-05/R-06/R-07 缩略图队列三连、R-09/R-10 认证定时器与 cookie 双写、R-12/R-13/R-14 前端（rev 响应式 / ResizeObserver 调 measure / 搜索返回丢滚动位置）、R-04 签名变化重取元数据、R-08 时间基准统一（需一次数据迁移）、R-17~R-20（缓存原子写 / 搜索错误白名单 / 启动时序 / cli-scan 多库上下文）。
 - ✅ 缩略图生成失败留 0 字节 WebP 兜底：已在 generate() catch 分支补 `fs.rmSync(outPath, {force:true})`（2026-09-08 审查后修复）。
 - ✅ `server\vendor\ffmpeg-full.zip`（163MB 安装包）：已决定保留不删（2026-10-07，.gitignore 已排除不入库，用户自行处理）。
 - ✅ toolbar 调试信息（items/rows/virt）：已定保留（用户确认）。
