@@ -449,12 +449,6 @@ watch(
   },
 )
 onMounted(() => {
-  // 设置中心「切换到此库并同步」在刷新前留下的提示（如切库成功但同步启动失败）
-  const pendingError = sessionStorage.getItem('icloud.pendingError')
-  if (pendingError) {
-    sessionStorage.removeItem('icloud.pendingError')
-    syncError.value = pendingError
-  }
   document.addEventListener('pointerdown', closeStatusDetailsOnOutsideClick)
   document.addEventListener('keydown', closeStatusDetailsOnEscape)
   void checkLibraries()

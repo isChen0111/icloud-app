@@ -50,9 +50,9 @@ const removePhotos = ref(false)
 const photoConfirmArmed = ref(false)
 const deleting = ref(false)
 const deleteError = ref('')
-/** 正在切库的库 id（非激活库「切换到此库并同步」的 loading 态） */
+/** 正在切换的库 id（「切换照片库」按钮的 loading 态，兼防连点） */
 const switchingId = ref<number | null>(null)
-/** 最近一次「切换到此库并同步」失败的库 id（把 409 文案挂到该库卡片下） */
+/** 最近一次切换失败的库 id（把 409 文案挂到该库卡片下） */
 const switchFailId = ref<number | null>(null)
 
 /** 配置区草稿（每库一份）：展开配置时初始化，保存成功后回写 libraries */
@@ -200,13 +200,14 @@ async function runSync(libId: number): Promise<void> {
 }
 
 /**
- * R-22b：非激活库就地「切换到此库并同步」。
+ * 切换照片库（只切换，不启动同步）。
  *
- * 同步接口只允许对当前激活库执行（routes/sync.ts），而设置中心里非激活库的同步按钮
- * 以前是可以点的，点了必然 409，用户还得自己跑到顶栏切库再回来。
- * 这里一次做完：切库（热切换）→ 按已选操作启动同步 → 整页刷新（切库 = 整页初始化）。
+ * 与顶栏下拉的 pickLibrary 同一语义：后端热切换（停旧 watcher → 清缩略图队列 → 关旧 DB →
+ * 覆写 config → 重开 DB → 扫新库 → 启 watcher），前端随后整页刷新做完整初始化。
+ * 之所以单独给一个按钮：有时用户只想切过去看看，并不想拉取；同步中/扫描中后端会 409，
+ * 文案挂在对应卡片下。
  */
-async function switchAndSync(lib: LibraryInfo): Promise<void> {
+async function switchTo(lib: LibraryInfo): Promise<void> {
   if (switchingId.value != null) return
   switchingId.value = lib.id
   switchFailId.value = null
@@ -214,22 +215,32 @@ async function switchAndSync(lib: LibraryInfo): Promise<void> {
   try {
     await switchLibrary(lib.id)
   } catch (err) {
-    // 同步执行中 / 扫描中会有 409 文案，挂在对应卡片下提示
+    // 同步执行中 / 扫描中会有 409 文案，就地提示
     syncError.value = err instanceof Error ? err.message : String(err)
     switchFailId.value = lib.id
     switchingId.value = null
     return
   }
-  // 切库已生效：按用户已选的操作启动；没选则增量（最省时）
-  const kind = pick.value[lib.id] ?? 'inc'
-  try {
-    await startSync(lib.id, kind)
-  } catch (err) {
-    // 切库成功但同步没起来（如 cookie 过期）：把原因带到刷新后的页面上显示
-    const message = err instanceof Error ? err.message : String(err)
-    sessionStorage.setItem('icloud.pendingError', `已切换到该照片库，但同步启动失败：${message}`)
-  }
   location.reload()
+}
+
+/**
+ * 照片库配置摘要（折叠状态下也显示）：把两个最常调、也最容易忘的参数摆在明面上。
+ * - 连续命中数：只作用于增量同步（--until-found），是「停」的条件而不是数量；
+ * - 下载限量：--recent，全量与增量都会追加，0 = 全部。
+ */
+function configBrief(lib: LibraryInfo): string {
+  const untilFound = lib.untilFound ?? 20
+  const recentLimit = lib.recentLimit ?? 0
+  return `增量：命中 ${untilFound} 个即停 · 下载：${recentLimit > 0 ? `最近 ${recentLimit} 张` : '全部'}`
+}
+
+/** 摘要行的完整解释（hover 提示），把「作用范围」也讲清楚 */
+function configBriefTitle(lib: LibraryInfo): string {
+  const untilFound = lib.untilFound ?? 20
+  const recentLimit = lib.recentLimit ?? 0
+  const limitText = recentLimit > 0 ? `只处理最近 ${recentLimit} 张` : '全部（不限数量）'
+  return `增量同步：往回扫描时连续遇到 ${untilFound} 个本地已存在的文件即停止。下载限量：${limitText}，全量与增量同步都生效。`
 }
 
 async function cancelSyncRun(libId: number): Promise<void> {
@@ -295,6 +306,24 @@ onBeforeUnmount(() => {
                   </span>
                 </div>
                 <div class="lib-card-actions">
+                  <!-- 非激活库：只切换，不启动同步（有时只是想切过去看看）。
+                       蓝色描边 + 双向箭头：与灰描边的「刷新链接/删除」拉开层级，一眼能找到 -->
+                  <button
+                    v-if="!lib.active"
+                    class="btn-ghost switch"
+                    type="button"
+                    :disabled="switchingId === lib.id || globalBusy()"
+                    :title="globalBusy() ? '有同步任务正在执行，请等待完成或取消后再切换' : '切换到这个照片库（不会启动同步）'"
+                    @click="switchTo(lib)"
+                  >
+                    <span v-if="switchingId === lib.id" class="spinner" />
+                    <svg v-else class="switch-ico" viewBox="0 0 16 16" aria-hidden="true">
+                      <path d="M2.4 8h7.2" />
+                      <path d="M7 5 10 8l-3 3" />
+                      <path d="M13.2 3.4v9.2" />
+                    </svg>
+                    {{ switchingId === lib.id ? '切换中…' : '切换照片库' }}
+                  </button>
                   <button class="btn-ghost" type="button" @click="emit('open-auth', { id: lib.id, name: lib.name, account: lib.account })">
                     {{ lib.authStatus === 'none' ? '新建链接' : '刷新链接' }}
                   </button>
@@ -310,17 +339,20 @@ onBeforeUnmount(() => {
                 <div class="meta-row"><span class="meta-key">最近同步</span><code>{{ lib.lastSyncAt ? new Date(lib.lastSyncAt).toLocaleString('zh-CN') : '从未' }}</code></div>
               </div>
 
-              <!-- 照片库配置：untilFound / recentLimit 可编辑；其他官方参数按默认值锁死只读 -->
+              <!-- 照片库配置：untilFound / recentLimit 可编辑；其他官方参数按默认值锁死只读。
+                   折叠状态下也显示当前两个关键参数，顺序为「标题 → 折叠箭头 → 参数摘要」 -->
               <button
                 class="config-toggle"
                 type="button"
                 :aria-expanded="configOpen === lib.id"
+                :title="configBriefTitle(lib)"
                 @click="openConfig(lib)"
               >
-                照片库配置
+                <span class="config-toggle-label">照片库配置</span>
                 <svg class="chev" :class="{ open: configOpen === lib.id }" viewBox="0 0 12 12" aria-hidden="true">
                   <path d="m3 4.5 3 3 3-3" />
                 </svg>
+                <span class="config-brief">{{ configBrief(lib) }}</span>
               </button>
               <div v-if="configOpen === lib.id && drafts[lib.id]" class="lib-config">
                 <div class="config-edit-row">
@@ -363,32 +395,23 @@ onBeforeUnmount(() => {
                 </div>
               </div>
 
-              <!-- 每库同步：激活库用共享组件 SyncButton（与主界面视觉/状态机完全一致）；
-                   非激活库给「切换到此库并同步」入口 —— 同步接口只允许当前激活库（R-22b） -->
+              <!-- 每库同步：共享组件 SyncButton（与主界面视觉/状态机完全一致）。
+                   同步接口只允许当前激活库，非激活库用 locked 真正禁用（不是仅灰显），
+                   要同步请先点上方的「切换照片库」 -->
               <div class="lib-sync-row">
-                <button
-                  v-if="!lib.active"
-                  class="btn-ghost primary"
-                  type="button"
-                  :disabled="switchingId === lib.id || globalBusy()"
-                  :title="globalBusy() ? '有同步任务正在执行，请等待完成或取消后再切换' : '切换到该照片库并按已选操作同步（未选则增量）'"
-                  @click="switchAndSync(lib)"
-                >
-                  <span v-if="switchingId === lib.id" class="spinner" />
-                  {{ switchingId === lib.id ? '切换中…' : '切换到此库并同步' }}
-                </button>
                 <SyncButton
-                  v-else
                   :busy="thisLibBusy(lib.id)"
                   :kind="props.stats?.sync.kind ?? 'full'"
                   :starting="!!starting[lib.id]"
                   :picked="pick[lib.id] ?? null"
                   :disabled="otherBusy(lib.id)"
+                  :locked="!lib.active"
                   @pick="(k) => pickSync(lib.id, k)"
                   @run="runSync(lib.id)"
                   @cancel="cancelSyncRun(lib.id)"
                 />
-                <span v-if="syncError && (pick[lib.id] || starting[lib.id] || thisLibBusy(lib.id) || switchFailId === lib.id)" class="sync-note err"><i class="sync-dot" aria-hidden="true" />{{ syncError }}</span>
+                <span v-if="!lib.active" class="sync-note">该库不是当前激活库，切换后才能同步</span>
+                <span v-else-if="syncError && (pick[lib.id] || starting[lib.id] || thisLibBusy(lib.id) || switchFailId === lib.id)" class="sync-note err"><i class="sync-dot" aria-hidden="true" />{{ syncError }}</span>
                 <span v-else-if="thisLibBusy(lib.id)" class="sync-note" :class="syncStatusClass(props.stats!.sync.status)"><i class="sync-dot" aria-hidden="true" />{{ props.stats!.sync.message }}</span>
                 <span v-else-if="props.stats?.sync.status === 'done' && props.stats.sync.libraryId === lib.id" class="sync-note ok">
                   <i class="sync-dot" aria-hidden="true" />同步完成，本次下载 {{ props.stats.sync.downloaded }} 项
@@ -445,15 +468,31 @@ onBeforeUnmount(() => {
           <input v-model="removePhotos" type="checkbox" @change="photoConfirmArmed = false" />
           <span>同时删除本地已下载的照片副本（<code>{{ deleteTarget.libraryRoot ?? '—' }}</code>）</span>
         </label>
-        <!-- R-21：勾选后必须说清后果，并且要再点一次按钮才真正删（默认不勾选） -->
-        <p v-if="removePhotos" class="delete-danger" role="alert">
-          勾选后上述目录内的原片会被<b>永久删除且不进回收站</b>，无法恢复。云端 iCloud 原片不受影响。
+        <!-- R-21：勾选后必须说清后果，并且要再点一次按钮才真正删（默认不勾选）。
+             文案随二次确认状态切换，两段共用一个提示框（不在弹窗里堆两条红字） -->
+        <p v-if="removePhotos" class="delete-danger" :class="{ armed: photoConfirmArmed }" role="alert">
+          <template v-if="photoConfirmArmed">
+            <b>已进入确认状态</b>：再点一次下方按钮，本地照片副本将被永久删除，且不进回收站、无法恢复。云端 iCloud 原片不受影响。
+          </template>
+          <template v-else>
+            勾选后上述目录内的原片会被<b>永久删除且不进回收站</b>，无法恢复。云端 iCloud 原片不受影响。
+          </template>
         </p>
         <p v-if="deleteError" class="delete-error" role="alert">{{ deleteError }}</p>
         <footer class="delete-actions">
           <button class="onboard-btn" type="button" @click="deleteTarget = null">取消</button>
-          <button class="onboard-btn danger" type="button" :disabled="deleting" @click="confirmDelete">
-            {{ deleting ? '删除中…' : removePhotos && !photoConfirmArmed ? '删除照片副本并移除库' : removePhotos ? '再次点击确认删除照片' : '确认删除' }}
+          <button
+            class="onboard-btn danger"
+            :class="{ 'armed-wait': removePhotos && !photoConfirmArmed, armed: photoConfirmArmed }"
+            type="button"
+            :disabled="deleting"
+            @click="confirmDelete"
+          >
+            <svg v-if="photoConfirmArmed" class="armed-ico" viewBox="0 0 16 16" aria-hidden="true">
+              <path d="M8 2.2 14.4 13.4H1.6L8 2.2Z" />
+              <path d="M8 6.2v3.4M8 11.6v.1" />
+            </svg>
+            {{ deleting ? '删除中…' : photoConfirmArmed ? '确认永久删除照片' : removePhotos ? '删除照片副本并移除库' : '确认删除' }}
           </button>
         </footer>
       </section>
@@ -582,6 +621,27 @@ onBeforeUnmount(() => {
 .btn-ghost:hover { background: var(--bg-field-hover); color: var(--text-1); }
 .btn-ghost.danger { color: #d05245; }
 .btn-ghost.danger:hover { background: rgb(208 82 69 / 9%); color: #d05245; }
+/* 「切换照片库」：蓝色描边 + 图标，比灰描边的「刷新链接/删除」高一级，
+   但不用实心块——卡片里已有蓝色「当前」徽标，再加实心按钮会打架 */
+.btn-ghost.switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border-color: #4384ee;
+  color: #4384ee;
+}
+.btn-ghost.switch:hover { background: rgb(67 132 238 / 10%); color: #4384ee; }
+.btn-ghost.switch:disabled { opacity: 0.5; cursor: not-allowed; }
+.switch-ico {
+  width: 12px;
+  height: 12px;
+  flex-shrink: 0;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
 .btn-ghost:disabled { opacity: 0.45; cursor: not-allowed; }
 /* 信息列表：label 固定宽灰色，value 主色，扫读对齐 */
 .lib-card-meta {
@@ -611,9 +671,10 @@ onBeforeUnmount(() => {
 
 /* 照片库配置展开区 */
 .config-toggle {
-  display: inline-flex;
+  display: flex;
   align-items: center;
   gap: 5px;
+  width: 100%;
   margin-top: 9px;
   padding: 3px 2px;
   border: 0;
@@ -622,9 +683,25 @@ onBeforeUnmount(() => {
   font: inherit;
   font-size: 11.5px;
   font-weight: 600;
+  text-align: left;
   cursor: pointer;
 }
+.config-toggle-label { flex-shrink: 0; }
+/* 参数摘要：跟在折叠箭头之后，灰字细体，靠颜色与字重区分层级；
+   不做 flex:1 / 右对齐——那样会被中间留白拉成互不相干的左右两块。
+   窄屏时先压缩这一段（ellipsis），保证标题与箭头始终可见 */
+.config-brief {
+  min-width: 0;
+  margin-left: 4px;
+  overflow: hidden;
+  color: var(--text-3);
+  font-size: 11px;
+  font-weight: 400;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .config-toggle .chev {
+  flex-shrink: 0;
   width: 11px;
   height: 11px;
   fill: none;
@@ -682,7 +759,7 @@ onBeforeUnmount(() => {
   padding-top: 10px;
   border-top: 1px dashed var(--border);
 }
-/* 「切换到此库并同步」的加载指示（组件内自带，不依赖 App.vue 的 scoped 样式） */
+/* 「切换照片库」按钮的加载指示（组件内自带，不依赖 App.vue 的 scoped 样式） */
 .lib-sync-row .spinner {
   display: inline-block;
   width: 11px;
@@ -838,8 +915,14 @@ onBeforeUnmount(() => {
   font-size: 11px;
   line-height: 1.6;
 }
+/* 进入二次确认：框线由淡红转实红、底色加深，与按钮的深红一起表达「已经进入下一步」 */
+.delete-danger.armed { border-color: #d05245; background: rgb(208 82 69 / 16%); }
 .delete-actions { display: flex; justify-content: flex-end; gap: 9px; margin-top: 16px; }
 .onboard-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
   padding: 7px 13px;
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -851,5 +934,34 @@ onBeforeUnmount(() => {
   cursor: pointer;
 }
 .onboard-btn.danger { border-color: #d05245; background: #d05245; color: #fff; }
+/* 预备态（勾选删副本后的第一次点击前）：描边而非实心，与最终确认拉开差异 */
+.onboard-btn.danger.armed-wait { background: transparent; color: #d05245; }
+.onboard-btn.danger.armed-wait:hover { background: rgb(208 82 69 / 9%); }
+/* 最终确认态：只把底色加深 + 弹跳一次。
+   不再加 box-shadow 外光环——那圈半透明红外扩会和按钮自身的 1px 边框叠成「双层框」，很显脏 */
+.onboard-btn.armed {
+  background: #b83c30;
+  border-color: #b83c30;
+  animation: armed-pop 0.32s ease-out;
+}
+.onboard-btn.armed:hover { background: #a5342a; border-color: #a5342a; }
+@keyframes armed-pop {
+  0% { transform: scale(0.96); }
+  55% { transform: scale(1.03); }
+  100% { transform: scale(1); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .onboard-btn.armed { animation: none; }
+}
+.armed-ico {
+  width: 12px;
+  height: 12px;
+  flex-shrink: 0;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
 .onboard-btn:disabled { opacity: 0.55; cursor: wait; }
 </style>

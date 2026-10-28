@@ -97,6 +97,25 @@ function toRow(row: Record<string, unknown>): LibraryRow {
 }
 
 /**
+ * 预建目录（recursive，幂等）。返回创建失败的目录路径列表，空数组表示全部成功。
+ *
+ * 抽成独立函数的原因：`createLibrary` 依赖真实的项目根与 meta.db，单测里直接跑会污染
+ * 用户自己的 iCloudPhoto 目录；而「建库时把三层目录真的建出来」这个行为本身值得覆盖，
+ * 因此把目录创建单独抽出来，用临时目录测试。
+ */
+export function ensureDirs(dirs: string[]): string[] {
+  const failed: string[] = []
+  for (const dir of dirs) {
+    try {
+      fs.mkdirSync(dir, { recursive: true })
+    } catch {
+      failed.push(dir)
+    }
+  }
+  return failed
+}
+
+/**
  * 建库（首次引导流程用）。目录自动派生，不开放手填。
  *
  * 目录规则（多库分离设计）：
@@ -127,6 +146,15 @@ export function createLibrary(name: string): LibraryRow {
   meta
     .prepare(`UPDATE libraries SET library_root = ?, cache_dir = ?, cookie_dir = ? WHERE id = ?`)
     .run(photosRoot, cacheDir, cookieDir, id)
+  // 建库即建三层目录（2026-10-28）：照片根 / 缓存 / cookies。
+  // 动机：设置中心直接展示这三个路径，而原先只有 icloudpd 首次下载（照片根）和认证成功（cookies）
+  // 才会创建它们，用户刚建完库去看设置，三个目录全都不存在，容易被当成建库失败。
+  // 失败不阻断建库：三者只是「存放位置」，同步/认证时 icloudpd 会自行创建，
+  // 预建仅为了可见性与可预期，因此只记日志不抛错（也不回滚注册记录）。
+  const failedDirs = ensureDirs([photosRoot, cacheDir, cookieDir])
+  for (const dir of failedDirs) {
+    console.warn(`[libraries] 预建目录失败 ${dir}（不影响建库，同步时会再次尝试创建）`)
+  }
   // 激活新库时（首次建库）清掉其他库的 active 标记
   if (active === 1) {
     meta.prepare(`UPDATE libraries SET active = 0 WHERE id <> ?`).run(id)
