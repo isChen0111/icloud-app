@@ -173,7 +173,7 @@
 <tr><td><b>video poster</b></td><td>ffmpeg 优先抽第 1 秒帧；短视频按时长选择片段内时间点，无帧时回退到开头 → 320px WebP</td><td>视频缩略图</td><td>~60KB × 视频数（具体从略）≈ <b>0.2GB 级</b></td></tr>
 </table>
 <p>生成策略：缩略图按请求惰性生成，并由后台队列补齐缓存。前端请求某张缩略图 → 后端查缓存未命中 → 生成并写入磁盘缓存（ETag 缓存到浏览器）；扫描后待生成资产只将 <code>grid</code> 档加入后台队列。后台补图与照片墙、搜索及详情触发的交互任务共享最多 8 个并发槽位：后台任务始终入队（priority=0），交互任务 priority=10 永远先出队，PQueue 一次启动 8 个任务时交互不足则用后台填满剩余槽位——<b>浏览优先调度 + 后台填满空闲槽位</b>（事件让位，2026-10-07 替换原「浏览租约 30s 挂起 + 60s 强制放行」机制，零时间参数、零槽位浪费）。运行中的任务不被抢占：首次启动大量后台任务占满槽位时，新到达的交互任务需等运行中的后台任务完成（单任务有 ffmpeg 60s 超时上限，通常几百 ms），属可接受的短期等待。照片墙慢速滚动和滚轮操作持续懒加载，浏览器侧最多并发派发 8 个网格图请求；拖动浏览器滚动条时<b>按速度拆开</b>——慢速拖动（250ms 内位移 ≤ 1/5 屏）与普通滚动同体验（rAF 合并每帧派发、始终带一行预载），快速拖动才跳过中间经过的位置（不派发，防请求风暴）；停止移动后继续派发当前位置，松开后等待 180ms，再按最终视口及一行邻近范围排序、逐张补位加载。日期导航跳转立即加载，不经过滚动条拖动延迟。扫描流程不受该调度影响。Sharp 全局并发限制为 2，视频/HEIC 后台抽帧的 FFmpeg 解码线程限制为 1（交互任务为 2）。照片墙格子接近视口时请求 grid，图片加载完成前显示稳定的底色占位，成功加载后淡入。同一资产、同一档位的并发生成由 <code>in-flight Map</code> 去重。F-03：资产表维护源文件签名（size + mtimeMs），扫描比对签名变化 → 该资产状态置待生成并删除旧缓存 → 重建，配合前端 rev（= file_mtime）联动 URL，浏览器 1 年强缓存下的旧图自动失效。</p>
-<div class="callout"><b>调度器实现（F-01 落地 2026-10-06 / 事件让位 2026-10-07，server/src/pipeline/thumbnailScheduler.ts）</b>：单一 p-queue 统一管理交互与后台任务——<code>priority 10 = 交互</code>（浏览中的图插队先跑）、<code>priority 0 = 后台</code>（始终入队；交互任务不足时后台填满剩余槽位，事件让位，原「浏览租约 30s 挂起 + <code>backgroundMaxDeferMs=60s</code> 强制放行」已移除）；总并发 = <code>config.thumbConcurrency</code>（默认 8），旧双队列（后台 8 + 交互 1 = 9 并发）合并后严格 ≤ 8，单元测试 <code>thumbnailScheduler.test.ts</code> 10 用例 + <code>ffmpeg.test.ts</code> 2 用例 = 12 全绿（并发不变量 / 交互插队 / 后台填槽 / 积压计数 / 队列指标）。F-02 轻量版：<code>/api/thumb</code> 与 <code>/api/video/poster</code> 任务开始执行时检查 <code>req.raw.destroyed / aborted</code>，断开则跳过生成并计入「已跳过」（<code>cancelled</code>）。<code>/api/stats</code> 新增 <code>thumbConcurrency</code>（前端调度器并发上限的唯一来源，防前后端漂移）与 <code>thumbQueueMetrics { running, interactiveRunning, interactiveWaiting, cancelled }</code>（诊断指标）。前端调度器（web/src/composables/gridThumbnailScheduler.ts）挂载后从 <code>/api/stats</code> 校准并发上限，滚动触发经 rAF 合并。完整机制见 4.12。</div>
+<div class="callout"><b>调度器实现（F-01 落地 2026-10-06 / 事件让位 2026-10-07，server/src/pipeline/thumbnailScheduler.ts）</b>：单一 p-queue 统一管理交互与后台任务——<code>priority 10 = 交互</code>（浏览中的图插队先跑）、<code>priority 0 = 后台</code>（始终入队；交互任务不足时后台填满剩余槽位，事件让位，原「浏览租约 30s 挂起 + <code>backgroundMaxDeferMs=60s</code> 强制放行」已移除）；总并发 = <code>config.thumbConcurrency</code>（默认 8），旧双队列（后台 8 + 交互 1 = 9 并发）合并后严格 ≤ 8，单元测试 <b>78 例全绿</b>（<code>thumbnailScheduler.test.ts</code> 10 例覆盖并发不变量 / 交互插队 / 后台填槽 / 积压计数 / 队列指标，其余覆盖扫描对账与端到端扫描、数据库迁移、接口、工具函数、视频 Range 解析、watcher 会话代数）。F-02 轻量版：<code>/api/thumb</code> 与 <code>/api/video/poster</code> 任务开始执行时检查 <code>req.raw.destroyed / aborted</code>，断开则跳过生成并计入「已跳过」（<code>cancelled</code>）。<code>/api/stats</code> 新增 <code>thumbConcurrency</code>（前端调度器并发上限的唯一来源，防前后端漂移）与 <code>thumbQueueMetrics { running, interactiveRunning, interactiveWaiting, cancelled }</code>（诊断指标）。前端调度器（web/src/composables/gridThumbnailScheduler.ts）挂载后从 <code>/api/stats</code> 校准并发上限，滚动触发经 rAF 合并。完整机制见 4.12。</div>
 <div class="note"><b>性能取舍：移除独立 blur 档</b>：blur 小图虽小，生成时仍需读取、解码源媒体并缩放/编码；若与 grid 到达间隔很短，额外占位的视觉收益有限。本实现已移除独立 blur 档：后台队列只预热 grid，格子先显示底色，待 grid 图片加载成功后淡入；扫描时会清理旧的 <code>cache/thumbs/blur/</code> 缓存。详情页仍可复用 grid 图并通过 CSS 模糊作为临时占位，不会额外生成或请求 blur 文件。</div>
 
 <h3>3.5 视频播放与转码（关键风险点）</h3>
@@ -244,7 +244,6 @@ CREATE TABLE IF NOT EXISTS assets (
   thumb_error   TEXT,                        <span class="c">-- 最近一次网格预览图失败原因（最长 1000 字符）</span>
   thumb_ignored INTEGER NOT NULL DEFAULT 0,  <span class="c">-- 用户是否忽略失败提醒（失败清单三态）</span>
   detail_status TEXT DEFAULT 'pending',
-  poster_status TEXT DEFAULT 'pending',
   file_size     INTEGER,                     <span class="c">-- F-03 源文件签名：字节数</span>
   file_mtime    INTEGER,                     <span class="c">-- F-03 源文件签名：mtimeMs（同时作为前端缩略图 URL 的 rev）</span>
   checksum      TEXT
@@ -391,7 +390,7 @@ ICLOUDPD_RECENT （已废弃；同步限量改由设置中心每库 recentLimit 
 
 <h3>4.9 P2+-1 目录热监听 + 删除对账 + 启动同步（已落地；一键拉取已由 P0 同步模块承接）</h3>
 <ul>
-<li><b>热监听（scanner/watcher.ts）</b>：chokidar 监听 <code>iCloudPhoto/</code> 目录树——<code>ignoreInitial</code>（启动时已有文件不触发，由启动同步负责）+ <code>awaitWriteFinish 2s</code>（拷贝完成才视为落盘）+ 忽略隐藏文件；add/change/unlink/unlinkDir 任一事件 → 防抖 1.5s 合并 → 触发一次 <code>runScan('watcher')</code>（幂等增量）。扫描互斥：扫描中延后 2s 补一次（dirty 标志）。</li>
+<li><b>热监听（scanner/watcher.ts）</b>：chokidar 监听 <code>iCloudPhoto/</code> 目录树——<code>ignoreInitial</code>（启动时已有文件不触发，由启动同步负责）+ <code>awaitWriteFinish 2s</code>（拷贝完成才视为落盘）+ 忽略隐藏文件；add/change/unlink/unlinkDir 任一事件 → 防抖 1.5s 合并 → 触发一次 <code>runScan('watcher')</code>（幂等增量）。扫描互斥：扫描中延后 2s 补一次（dirty 标志）。<b>会话代数（R-11）</b>：每次 <code>startWatcher()</code> / <code>stopWatcher()</code> 都递增 <code>watcherGeneration</code>，事件回调闭包捕获注册时的代数，<code>scheduleScan(gen)</code> 与防抖/重试定时器回调都先校验、不符即丢弃。原因：chokidar 的 <code>close()</code> 是 fire-and-forget，<code>awaitWriteFinish</code> 又会把事件压后 2s——换库后迟到的事件仍会触发 <code>runScan</code>，而它读的是已被替换的 <code>config.libraryRoot</code>（新库），表现为对刚切过去的库白跑一次全量扫描。</li>
 <li><b>删除/配对对账</b>：runScan 末尾按配对后的主资产路径核对 DB——只有根目录和所有可见子目录都成功读取时才清理已删除资产，或清除已从独立视频转为实况附件的旧视频记录及 FTS/缩略图缓存；配对 MOV 仍在磁盘但不作为照片墙独立资产。任一目录读取失败则保留数据库记录并跳过本次对账。完整扫描后再清理孤儿缩略图。</li>
 <li><b>启动同步</b>：index.ts 启动即后台 <code>runScan('startup')</code>（不 await 不阻塞），手动拷入的文件开机即被发现。</li>
 <li><b>扫描期间刷新</b>：前端保留每 5 秒一次的 <code>/api/stats</code> 轮询，但扫描期间不因资产数变化自动刷新照片墙，避免清空已加载页并导致格子/缩略图反复重载；用户可手动刷新查看已入库内容。扫描完成或失败后自动做一次最终刷新，并尽量保留滚动位置。为避免事件推送和高频重查带来额外复杂度，当前不使用 WebSocket/SSE。</li>
@@ -522,7 +521,7 @@ F:\iPhone\icloud-app\
 <tr><td>P0 Apple 端照片库索引间歇性不可用</td><td>拉取任务报错/挂起</td><td>内置 waiting_retry（识别 has not finished indexing → 60s×5 自动重试）✅；仍失败标记 error 可手动重试</td></tr>
 <tr><td>P0 多库切换串库</td><td>旧库任务写入新库目录/状态串扰</td><td>单活跃库模型：切库 = 停旧任务→清队列→关旧 DB→覆写 config→重扫；同步仅限当前激活库（其他库 409）；切库/删除后 resetSyncState 防旧库状态残留</td></tr>
 <tr><td>调试扫描截断文件清单</td><td>误把未扫描资产判定为孤儿并删除</td><td><code>SCAN_LIMIT&gt;0</code> 时跳过删除对账；仅全量扫描才根据完整磁盘清单清理孤儿</td></tr>
-<tr><td>非法视频 Range</td><td>反向或空文件范围导致无效流</td><td>严格校验起止位置；不满足 RFC 7233 时返回 <code>416 Range Not Satisfiable</code></td></tr>
+<tr><td>非法视频 Range</td><td>反向或空文件范围导致无效流</td><td>严格校验起止位置；<b>多段请求</b>（Safari 会发 <code>bytes=0-1,100-200</code>）只满足首段——RFC 7233 允许服务端只回一个 range，解析时先取逗号前首段再匹配；其余不合法情况返回 <code>416 Range Not Satisfiable</code></td></tr>
 <tr><td>容量统计过期</td><td>新增/删除文件后仍显示旧容量</td><td>统计缓存记录资产数和扫描批次，扫描或资产数变化后自动失效并重算</td></tr>
 <tr><td>原片误删</td><td>数据丢失</td><td>删除为<b>直接删源文件（不可逆，用户已确认）</b>：确认弹框 + 文案「永久删除、无法恢复」；仅本地应用，无「最近删除」回收站</td></tr>
 </table>
