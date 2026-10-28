@@ -202,8 +202,10 @@ onBeforeUnmount(stopPolling)
       <div v-else-if="step === 2" class="onboard-body">
         <div class="onboard-intro">
           <p>登录你的 Apple ID，应用将调用官方 icloudpd 工具建立本机会话（cookie 保存在本机照片库目录内）。</p>
+          <p class="onboard-hint">暂时不登录也可以先跳过：照片库已经建好，之后在设置中心的照片库卡片里点「新建链接」即可继续。</p>
         </div>
         <footer class="onboard-actions">
+          <button class="onboard-btn" type="button" @click="finish">稍后链接</button>
           <button class="onboard-btn primary" type="button" @click="authOpen = true">链接 iCloud</button>
         </footer>
       </div>
@@ -237,9 +239,10 @@ onBeforeUnmount(stopPolling)
           </template>
           <template v-else-if="sync?.status === 'error' || sync?.status === 'cancelled'">
             <button class="onboard-btn" type="button" @click="startFullSync">重新拉取</button>
-            <button class="onboard-btn primary" type="button" @click="finish">先跳过，稍后再说</button>
+            <button class="onboard-btn primary" type="button" @click="finish">稍后拉取</button>
           </template>
           <template v-else>
+            <button class="onboard-btn" type="button" :disabled="syncing" @click="finish">稍后拉取</button>
             <button class="onboard-btn primary" type="button" :disabled="syncing" @click="startFullSync">
               {{ syncing ? '启动中…' : '开始全量拉取' }}
             </button>
@@ -401,6 +404,8 @@ onBeforeUnmount(stopPolling)
   100% { transform: scale(1); opacity: 1; }
 }
 .onboard-intro p { margin: 0; color: var(--text-2); font-size: 12px; line-height: 1.6; }
+/* 「稍后链接」的补充说明：更淡更小，把「跳过也是正常选择」讲清楚，别让人以为必须现在登录 */
+.onboard-intro .onboard-hint { margin-top: 6px; color: var(--text-3); font-size: 11.5px; }
 .onboard-warn { color: #a87515 !important; }
 .onboard-error { margin: 0; color: #d05245; font-size: 11px; line-height: 1.5; }
 .onboard-actions { display: flex; justify-content: flex-end; gap: 9px; }

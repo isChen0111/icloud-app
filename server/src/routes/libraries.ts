@@ -206,6 +206,15 @@ export async function registerLibraryRoutes(app: FastifyInstance): Promise<void>
     // 本地照片副本：仅勾选时删（云端原片不动）
     if (removePhotos) {
       await fsp.rm(lib.library_root, { recursive: true, force: true })
+    } else {
+      // 未勾选时：照片根若是建库预建的空目录（2026-10-28 起建库会预建），顺手清掉避免留空壳。
+      // 用 rmdir（非递归）而不是 rm：目录里还有照片时必然抛 ENOTEMPTY，
+      // 正好保证这条清理逻辑永远不会误删任何照片。
+      try {
+        await fsp.rmdir(lib.library_root)
+      } catch {
+        // 非空（有照片）或本就不存在 → 保持原样
+      }
     }
     // 移除注册
     deleteLibrary(id)

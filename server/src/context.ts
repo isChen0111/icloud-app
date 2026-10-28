@@ -12,7 +12,7 @@
 import path from 'node:path'
 import { config, projectRoot } from './config.js'
 import type { LibraryRow } from './db/libraries.js'
-import { getActiveLibrary } from './db/libraries.js'
+import { ensureDirs, getActiveLibrary } from './db/libraries.js'
 
 /**
  * 当前激活库（实时读 meta.db 的 active 标记）。
@@ -28,6 +28,13 @@ export function applyLibraryPaths(lib: LibraryRow): void {
   config.libraryRoot = lib.library_root
   config.cacheDir = lib.cache_dir
   config.dbPath = path.join(lib.cache_dir, 'library.db')
+  // 补齐库目录（2026-10-28）：建库时已预建三层目录，这里再兜一层——
+  // 本版本之前建的库、或目录被手动删掉的情况，在启动/切库时即可恢复，
+  // 避免设置中心展示的「目录/缓存/会话」实际并不存在。幂等，失败只记日志。
+  const failed = ensureDirs([lib.library_root, lib.cache_dir, lib.cookie_dir])
+  for (const dir of failed) {
+    console.warn(`[context] 库目录创建失败 ${dir}（同步时 icloudpd 会再次尝试创建）`)
+  }
 }
 
 /** 重置为默认路径（删除最后一个照片库后回到无库状态；前端整页刷新走首次引导） */
