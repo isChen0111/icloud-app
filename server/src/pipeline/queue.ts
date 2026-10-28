@@ -187,6 +187,15 @@ export function queueSize(): number {
   return scheduler.queuedCount()
 }
 
+/**
+ * 等待缩略图队列彻底空闲（R-20）。
+ * 命令行扫描跑完若直接 process.exit，正在写的任务会被切断；
+ * cli-scan 在退出前 await 本函数（--no-thumbs 时不入队，也就无需等待）。
+ */
+export function waitForThumbnailIdle(): Promise<void> {
+  return scheduler.onIdle()
+}
+
 /** 队列指标快照（运行中 / 交互运行中 / 交互等待 / 已跳过），供 /api/stats 展示 */
 export function getQueueMetrics(): ThumbnailQueueMetrics {
   return scheduler.metrics()

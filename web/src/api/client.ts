@@ -86,11 +86,26 @@ export function fetchDates(): Promise<{ unit: string; items: MonthGroup[] }> {
 }
 
 /** FTS5 搜索（文件名 / 日期子串，至少 3 字符；offset 跳页 = 匹配流照片墙化分页） */
-export function searchAssets(q: string, opts: { offset?: number; limit?: number } = {}): Promise<SearchResult> {
+export async function searchAssets(q: string, opts: { offset?: number; limit?: number } = {}): Promise<SearchResult> {
   const limit = opts.limit ?? 200
   let path = `/search?q=${encodeURIComponent(q)}&limit=${limit}`
   if (opts.offset != null && opts.offset > 0) path += `&offset=${opts.offset}`
-  return get<SearchResult>(path)
+  const res = await fetch(`${BASE}${path}`)
+  if (!res.ok) {
+    // R-18：后端对「索引/库文件损坏」返回 code=DB_CORRUPT + 可操作文案（如「请重建索引」），
+    // 直接透出给用户，否则用户会把损坏当成「没搜到这个关键词」。
+    // 其余失败沿用统一文案（搜索失败重试即可）。
+    let message = '搜索失败，请重试'
+    try {
+      const body = (await res.json()) as { message?: string; error?: string }
+      if (body.message) message = body.message
+      else if (body.error) message = body.error
+    } catch {
+      // 响应不是 JSON（如代理返回的 HTML 错误页）→ 保留统一文案
+    }
+    throw new Error(message)
+  }
+  return res.json() as Promise<SearchResult>
 }
 
 /** 触发扫描 */

@@ -11,7 +11,7 @@ import type { FastifyInstance, FastifyRequest } from 'fastify'
 import fs from 'node:fs'
 import { getDb } from '../db/index.js'
 import { registerThumbnailCancelled, runInteractiveThumbnail } from '../pipeline/queue.js'
-import { ensureThumbnail, ensureSize, type ThumbSize } from '../pipeline/thumbnails.js'
+import { ensureThumbnail, ensureSize, isCacheUsable, type ThumbSize } from '../pipeline/thumbnails.js'
 
 const VALID_SIZES = new Set<ThumbSize>(['grid', 'detail'])
 
@@ -57,7 +57,7 @@ export async function registerThumbRoutes(app: FastifyInstance): Promise<void> {
       }
       return ensureThumbnail(assetId, size)
     })
-    if (!outPath || !fs.existsSync(outPath)) {
+    if (!outPath || !isCacheUsable(outPath)) {
       // 断开与真失败区分：客户端已断开时静默结束，不算生成失败（不进失败清单）
       if (clientDisconnected(req)) return reply.raw.end()
       return reply.code(500).send({ error: 'thumbnail generation failed' })
@@ -111,7 +111,7 @@ export async function registerThumbRoutes(app: FastifyInstance): Promise<void> {
       }
       return ensureThumbnail(Number(id), size)
     })
-    if (!outPath || !fs.existsSync(outPath)) {
+    if (!outPath || !isCacheUsable(outPath)) {
       // 断开与真失败区分：客户端已断开时静默结束，不算封面生成失败
       if (clientDisconnected(req)) return reply.raw.end()
       return reply.code(404).send({ error: 'poster not found' })

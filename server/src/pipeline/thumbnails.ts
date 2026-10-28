@@ -12,6 +12,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import sharp from 'sharp'
+import type { Sharp } from 'sharp'
 import { config } from '../config.js'
 import { getDb } from '../db/index.js'
 import { ffprobeJson, runFfmpeg } from '../ffmpeg.js'
@@ -59,6 +60,51 @@ export function thumbCachePath(size: ThumbSize, assetId: number): string {
 }
 
 /**
+ * 缓存是否可用（R-17）。
+ *
+ * 只判 `existsSync` 不够：断电 / 强杀 / 磁盘满会留下 0 字节或截断的 .webp，
+ * 而 `sharp(...).toFile()` 是直接写目标路径的非原子操作。
+ * 这种坏文件一旦存在就被永久当有效 —— 前端 <img> 显示破图，点「重试」也命中缓存直接返回。
+ * 因此要求 size > 0；stat 失败（并发删除等）同样视为不可用。
+ */
+export function isCacheUsable(filePath: string): boolean {
+  try {
+    return fs.statSync(filePath).size > 0
+  } catch {
+    return false
+  }
+}
+
+/**
+ * 原子写缩略图（R-17）：先写同目录临时文件再 rename 到目标路径。
+ *
+ * rename 在同一分区上是原子的 —— 中途断电只会留下 .tmp 垃圾（无人引用），
+ * 不会出现「目标路径存在但内容不完整」的窗口。
+ * Windows 上目标文件被其他进程占用时 rename 会 EPERM：删掉目标再试一次，
+ * 仍失败则清理临时文件并抛出（调用方 catch 会删目标路径，见 generate 的兜底）。
+ */
+async function writeAtomicWebp(pipeline: Sharp, outPath: string): Promise<void> {
+  const tmpPath = `${outPath}.${process.pid}-${Math.random().toString(36).slice(2, 10)}.tmp`
+  await pipeline.toFile(tmpPath)
+  try {
+    fs.renameSync(tmpPath, outPath)
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code
+    if (code === 'EPERM' || code === 'EBUSY' || code === 'EEXIST') {
+      fs.rmSync(outPath, { force: true })
+      try {
+        fs.renameSync(tmpPath, outPath)
+        return
+      } catch {
+        /* 落到下方统一清理 */
+      }
+    }
+    fs.rmSync(tmpPath, { force: true })
+    throw err
+  }
+}
+
+/**
  * 进行中的生成任务（in-flight 去重）：
  * 网格一次滚动会并发请求几十个缩略图，同一资产可能被多个请求/后台队列同时命中，
  * 并发写同一文件会损坏。用 Promise 缓存保证同一 (id, size) 全局只生成一次。
@@ -95,7 +141,8 @@ export function ensureThumbnail(
   priority: 'interactive' | 'background' = 'interactive',
 ): Promise<string | null> {
   const outPath = thumbCachePath(size, assetId)
-  if (fs.existsSync(outPath)) return Promise.resolve(outPath)
+  // R-17：size > 0 才算命中，0 字节/截断的坏缓存视为未生成（否则永久破图且重试无效）
+  if (isCacheUsable(outPath)) return Promise.resolve(outPath)
   if (size === 'grid' && isThumbIgnored(assetId)) return Promise.resolve(null)
 
   // 库标识 + 资产 id + 档位（见上方 inFlight 注释：跨库绝不能共用同一个 key）
@@ -150,11 +197,13 @@ async function generate(
       // —— 视频：ffmpeg 抽帧 → sharp 缩放 ——
       const framePath = await extractVideoFrame(abs, target, row.duration, priority)
       try {
-        await sharp(framePath, { failOn: 'none' })
-          .resize(target, target, { fit: 'inside', withoutEnlargement: true })
-          .keepIccProfile()
-          .webp({ quality })
-          .toFile(outPath)
+        await writeAtomicWebp(
+          sharp(framePath, { failOn: 'none' })
+            .resize(target, target, { fit: 'inside', withoutEnlargement: true })
+            .keepIccProfile()
+            .webp({ quality }),
+          outPath,
+        )
       } finally {
         // 修复（审查 P2-B5）：异常路径也必须删临时帧，否则 tmp 目录累积垃圾
         fs.rmSync(framePath, { force: true })
@@ -163,21 +212,25 @@ async function generate(
       // —— HEIC：sharp 官方预编译无 HEVC 解码器 → 用 ffmpeg(libheif) 解码为 PNG 再处理 ——
       const pngPath = await heicToPng(abs, priority)
       try {
-        await sharp(pngPath, { failOn: 'none' })
-          .resize(target, target, { fit: 'inside', withoutEnlargement: true })
-          .webp({ quality })
-          .toFile(outPath)
+        await writeAtomicWebp(
+          sharp(pngPath, { failOn: 'none' })
+            .resize(target, target, { fit: 'inside', withoutEnlargement: true })
+            .webp({ quality }),
+          outPath,
+        )
       } finally {
         fs.rmSync(pngPath, { force: true })
       }
     } else {
       // —— 其他图片（JPG/PNG/…）：sharp 直接解码 ——
-      await sharp(abs, { failOn: 'none' }) // failOn: 容忍 EXIF 损坏的半坏图
-        .rotate() // 应用 EXIF 方向（rotate 是链式方法，不是构造选项）
-        .resize(target, target, { fit: 'inside', withoutEnlargement: true })
-        .keepIccProfile()
-        .webp({ quality })
-        .toFile(outPath)
+      await writeAtomicWebp(
+        sharp(abs, { failOn: 'none' }) // failOn: 容忍 EXIF 损坏的半坏图
+          .rotate() // 应用 EXIF 方向（rotate 是链式方法，不是构造选项）
+          .resize(target, target, { fit: 'inside', withoutEnlargement: true })
+          .keepIccProfile()
+          .webp({ quality }),
+        outPath,
+      )
     }
 
     // 更新状态（detail 生成成功时也顺带记录宽高兜底）
@@ -197,8 +250,9 @@ async function generate(
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
     console.error(`[thumb] 生成失败 asset=${assetId} size=${size}`, message)
-    // 兜底（审查 #7）：删除可能留下的 0 字节/半成品文件——否则 ensureThumbnail 的
-    // existsSync 会把"存在"的坏文件永久当有效返回，修复后也不会重新生成
+    // 兜底（审查 #7 / R-17）：失败时清掉目标路径上的残留。
+    // 写入已改原子（先 .tmp 再 rename），正常失败不会留下半成品；但这里仍要删——
+    // 目标路径可能躺着上次遗留的坏文件（截断但长度非 0），留着会被 isCacheUsable 判为可用
     fs.rmSync(outPath, { force: true })
     if (size === 'grid') {
       // grid 失败持久化 thumb_status='error' → 进失败清单（浮层可忽略/重试）。

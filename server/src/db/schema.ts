@@ -94,4 +94,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS assets_fts USING fts5(
  * db/index.ts 启动时用 PRAGMA user_version 对比：不一致才 DROP+CREATE + 全量回填，
  * 一致时只按行数差做回填（新增资产场景），正常启动零重建。
  */
-export const FTS_SCHEMA_VERSION = 2
+export const FTS_SCHEMA_VERSION = 3
+// v3（R-26，2026-10-28）：date_compact 生成方式统一（扫描入库保留 T、启动回填却删掉了 T，
+// 同一资产两种索引表示，搜 "20240913T0840" 与 "202409130840" 命中不一致）。
+// 列结构没变，但需要一次全量回填把历史行修正成同一表示，故 bump 触发重建。

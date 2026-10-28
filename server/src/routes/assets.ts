@@ -17,6 +17,7 @@
 import type { FastifyInstance } from 'fastify'
 import { getDb } from '../db/index.js'
 import { config } from '../config.js'
+import { parseOffset } from '../utils/paging.js'
 import fs from 'node:fs'
 import path from 'node:path'
 import { deleteAssetById } from '../scanner/index.js'
@@ -139,9 +140,10 @@ export async function registerAssetRoutes(app: FastifyInstance): Promise<void> {
       return reply.code(400).send({ error: 'limit must be an integer between 1 and 500' })
     }
     const cursor = decodeCursor(query.cursor)
-    // offset 校验（与 search 路由同口径）：非数字/负数归 0、非整数向下取整。
-    // 旧实现只做 Number(...)||0，?offset=1.5 之类非整数绑定到 SQLite OFFSET 可能报错 500。
-    const offset = Math.max(0, Math.floor(Number(query.offset ?? 0))) || 0
+    // offset 校验（与 search 路由共用 parseOffset，口径一致）：
+    // 非有限值（NaN / Infinity）归 0、负数归 0、小数向下取整、上限 1e6。
+    // R-23：旧实现 `... || 0` 兜不住 Infinity（truthy）→ 绑定 SQLite OFFSET 报错 500。
+    const offset = parseOffset(query.offset)
 
     // 优先游标模式（滚动续载）；提供 offset 时走跳页模式（日期定位）
     const rows = (

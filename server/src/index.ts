@@ -81,7 +81,7 @@ async function main(): Promise<void> {
       reply.header('Access-Control-Allow-Origin', origin)
       reply.header('Vary', 'Origin')
       reply.header('Access-Control-Allow-Headers', 'Content-Type, Range')
-      reply.header('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS')
+      reply.header('Access-Control-Allow-Methods', 'GET, POST, PATCH, DELETE, OPTIONS')
     }
     if (request.method === 'OPTIONS') {
       return reply.code(allowed ? 204 : 403).send()
@@ -118,8 +118,18 @@ async function main(): Promise<void> {
     app.log.info(`   前端:    http://127.0.0.1:${config.port}/`)
   }
 
-  // ③ 启动后台全量同步（P2+-1）：幂等增量，新增入库 + 删除对账 + 配对修正。
-  //    不 await、不阻塞启动；前端轮询 /api/stats 获取状态并在结束时刷新照片墙。
+  // ③ 启动监听（R-19：必须排在启动扫描之前）。
+  //    runScan 的首段是全同步遍历（readdirSync + 每文件 statSync），
+  //    放在 listen 之前会把「端口打开」一起拖住几秒，前端表现为「后端没起来」。
+  //    监听地址可配置：默认 0.0.0.0 局域网可访问；设 HOST=127.0.0.1 仅本机。
+  await app.listen({ port: config.port, host: config.host })
+  app.log.info(`📸 本地 iCloud 照片浏览器后端已启动`)
+  app.log.info(`   照片库: ${config.libraryRoot}`)
+  app.log.info(`   数据库: ${config.dbPath}`)
+  app.log.info(`   API:    http://127.0.0.1:${config.port}/api/stats`)
+
+  // ④ 启动后台全量同步（P2+-1）：幂等增量，新增入库 + 删除对账 + 配对修正。
+  //    不 await；前端轮询 /api/stats 获取状态并在结束时刷新照片墙。
   //    无库时不启动（引导流程建库后再扫描）。
   if (lib) {
     void runScan('startup').catch((err) => {
@@ -128,12 +138,6 @@ async function main(): Promise<void> {
       app.log.error(`启动同步失败: ${(err as Error).message}`)
     })
   }
-  // ④ 启动（监听地址可配置：默认 0.0.0.0 局域网可访问；设 HOST=127.0.0.1 仅本机）
-  await app.listen({ port: config.port, host: config.host })
-  app.log.info(`📸 本地 iCloud 照片浏览器后端已启动`)
-  app.log.info(`   照片库: ${config.libraryRoot}`)
-  app.log.info(`   数据库: ${config.dbPath}`)
-  app.log.info(`   API:    http://127.0.0.1:${config.port}/api/stats`)
 
   // ⑤ 目录热监听（P2+-1）：手动拷入/删除/重命名文件 → 自动触发同步
   if (lib) startWatcher()

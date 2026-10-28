@@ -18,7 +18,8 @@ import { config } from '../config.js'
 import { getDb } from '../db/index.js'
 import { readImageMeta, readVideoMeta, normalizeDate, parseDateFromDir, baseName } from '../metadata/index.js'
 import { beginThumbnailBatch, enqueueAsset, resetThumbnailProgress } from '../pipeline/queue.js'
-import { thumbCachePath } from '../pipeline/thumbnails.js'
+import { isCacheUsable, thumbCachePath } from '../pipeline/thumbnails.js'
+import { toDateCompact } from '../utils/date.js'
 
 /** 支持的媒体扩展名（小写） */
 const IMAGE_EXTS = new Set(['.heic', '.heif', '.jpg', '.jpeg', '.png', '.gif', '.tiff'])
@@ -144,7 +145,19 @@ export function collectOrphanIds(
  *  - 增量续跑：已入库的 file_path 直接复用元数据（照片库是 iCloudPD
  *    只读快照，文件内容不变），中断后重跑只补新文件，无需全量重来。
  */
-export async function runScan(source: 'manual' | 'watcher' | 'startup' | 'switch' = 'manual'): Promise<void> {
+export interface RunScanOptions {
+  /**
+   * 是否把待生成的缩略图入队预热（默认 true）。
+   * R-20：cli-scan 加 --no-thumbs 时传 false —— 命令行进程扫完就退出，
+   * 预热任务会被立即切断，不如直接不排队。
+   */
+  enqueueThumbnails?: boolean
+}
+
+export async function runScan(
+  source: 'manual' | 'watcher' | 'startup' | 'switch' = 'manual',
+  options: RunScanOptions = {},
+): Promise<void> {
   scanProgress.source = source
   scanProgress.runId++
   const db = getDb()
@@ -342,7 +355,7 @@ export async function runScan(source: 'manual' | 'watcher' | 'startup' | 'switch
     for (const r of rows) {
       const { id } = insert.get(...r) as { id: number } // 数组展开为 13 个位置参数（注意：值不能是数组，better-sqlite3 会把数组值再展开）
       const dateTaken = r[3] as string
-      upsertFts.run(id, r[2] as string, dateTaken, dateTaken.replace(/[^0-9a-zA-Z]/g, '')) // filename → search_text（lower 由 SQL 处理），dateTaken + 紧凑日期
+      upsertFts.run(id, r[2] as string, dateTaken, toDateCompact(dateTaken)) // filename → search_text（lower 由 SQL 处理），dateTaken + 紧凑日期（R-26：与启动回填共用同一实现）
       // F-03 修复：同路径源文件签名变化 → 状态置 pending（旧缩略图缓存随后统一删除）
       if (changedRelPaths.has(r[0] as string)) {
         resetThumb.run(id)
@@ -517,7 +530,7 @@ export async function runScan(source: 'manual' | 'watcher' | 'startup' | 'switch
   )
   let reconciled = 0
   for (const r of pendingThumbs) {
-    if (fs.existsSync(thumbCachePath('grid', r.id))) {
+    if (isCacheUsable(thumbCachePath('grid', r.id))) {
       reconcileDone.run(r.id)
       reconciled++
     }
@@ -528,9 +541,13 @@ export async function runScan(source: 'manual' | 'watcher' | 'startup' | 'switch
   const realPendingThumbs = db
     .prepare(`SELECT id, file_path, type FROM assets WHERE thumb_status = 'pending'`)
     .all() as { id: number; file_path: string; type: string }[]
-  beginThumbnailBatch()
-  for (const r of realPendingThumbs) {
-    enqueueAsset({ id: r.id, relPath: r.file_path, type: r.type as 'photo' | 'video' | 'live' })
+  if (options.enqueueThumbnails === false) {
+    console.log(`[scan] 跳过缩略图预热入队（--no-thumbs）：${realPendingThumbs.length} 个待生成`)
+  } else {
+    beginThumbnailBatch()
+    for (const r of realPendingThumbs) {
+      enqueueAsset({ id: r.id, relPath: r.file_path, type: r.type as 'photo' | 'video' | 'live' })
+    }
   }
 
   scanProgress.status = 'done'

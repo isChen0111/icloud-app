@@ -11,7 +11,7 @@
     "dev": "tsx watch --env-file-if-exists=.env src/index.ts",
     "start": "tsx --env-file-if-exists=.env src/index.ts",
     "scan": "tsx --env-file-if-exists=.env src/cli-scan.ts",
-    "test": "node --import tsx --test src/pipeline/thumbnailScheduler.test.ts src/pipeline/queue.test.ts src/ffmpeg.test.ts src/db/libraries.test.ts src/routes/libraries.test.ts src/routes/assets.test.ts src/scanner/reconcile.test.ts src/icloudpd/sync.test.ts src/icloudpd/auth.test.ts",
+    "test": "node --import tsx --test src/pipeline/thumbnailScheduler.test.ts src/pipeline/queue.test.ts src/ffmpeg.test.ts src/db/libraries.test.ts src/routes/libraries.test.ts src/routes/assets.test.ts src/scanner/reconcile.test.ts src/icloudpd/sync.test.ts src/icloudpd/auth.test.ts src/utils/utils.test.ts",
     "postinstall": "powershell -ExecutionPolicy Bypass -File scripts/install-ffmpeg-full.ps1 && powershell -ExecutionPolicy Bypass -File scripts/install-icloudpd.ps1"
   },
   "dependencies": {
