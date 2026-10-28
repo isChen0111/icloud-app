@@ -18,7 +18,6 @@ import { config } from '../config.js'
 import type { LibraryRow } from '../db/libraries.js'
 import { touchLibrarySync, updateLibraryAuth } from '../db/libraries.js'
 import { syncState, resetSyncState } from './state.js'
-import { checkAuthValid } from './auth.js'
 
 /** 索引未完成重试：等待 60s，最多 5 次（含首次后的 4 次） */
 const RETRY_WAIT_MS = 60_000
@@ -83,13 +82,13 @@ export function startSync(lib: LibraryRow, kind: 'full' | 'inc'): SyncTaskStateL
     return { ok: false, message: '该库尚未链接 iCloud，请先认证' }
   }
   currentLibRef = lib
-  // 同步前预检 cookie 有效性（后台异步）：无效 → 标记 expired（前端提示重新链接）；
-  // 不阻塞任务启动，真实结果以进程输出为准（会话失效时进程会报错，见 handleLine）
-  void checkAuthValid(lib.account, lib.cookie_dir).then((result) => {
-    if (currentLibRef?.id === lib.id) {
-      updateLibraryAuth(lib.id, { auth_status: result.valid ? 'authed' : 'expired' })
-    }
-  })
+  // R-10 修复（2026-10-28）：这里原先会再 spawn 一个 icloudpd 跑 checkAuthValid 做「同步前预检」，
+  // 但它和主同步进程共用同一个 cookie 目录，两边都会回写 session token（可能把 cookie 写坏）；
+  // 它不受取消控制（取消同步只杀主进程，预检进程仍在后台跑到 30s 超时）；
+  // 它的结果还是异步写回的，可能覆盖主进程给出的更准确判断
+  // （handleLine 检测到 session 过期会标 expired，随后被预检写回 authed）。
+  // 会话是否有效一律以主同步进程的输出为准（见 handleLine 的 expired 分支），
+  // checkAuthValid 保留给未来的「启动时巡检」，不在同步流程里调用。
 
   resetSyncState()
   syncState.status = 'running'

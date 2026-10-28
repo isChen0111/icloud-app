@@ -191,40 +191,64 @@ export async function registerLibraryRoutes(app: FastifyInstance): Promise<void>
     const body = request.body as { removePhotos?: boolean } | null
     const removePhotos = body?.removePhotos === true
     const isActive = lib.active === 1
+    /** 删除后要接管的库（删除前算好；无剩余库则为 null） */
+    let next: ReturnType<typeof getLibraryById> = null
 
     // 删除激活库：先停 watcher / 清缩略图队列 / 关库 DB，避免删到打开的文件
     if (isActive) {
       stopWatcher()
       clearThumbnailQueue()
       closeDb()
+
+      // R-02 修复（2026-10-28 竞态）：closeDb() 之后 config.dbPath 仍指向被删库，
+      // 而下面的 fsp.rm 是异步的（缓存目录可能有几万个缩略图，耗时数十秒），
+      // 这期间事件循环会让出 —— 前端每 5 秒的 /api/stats 轮询就会经 getDb() 的
+      // ensureOpen() 在这个「正在被删」的目录里重新 mkdir + 建 library.db，
+      // Windows 上删除已打开文件 → EPERM → 接口 500，且库只删了一半。
+      //
+      // 因此在任何 await 之前先把激活标记与 config 指向「下一个库」；
+      // 没有剩余库时指向默认无库路径。这样后续所有 DB 访问都落在安全的库上，
+      // 被删目录里不会再有人重建文件。
+      next = listLibraries().filter((l) => l.id !== id)[0] ?? null
+      if (next) {
+        setActiveLibrary(next.id)
+        applyLibraryPaths(next)
+      } else {
+        resetLibraryPaths()
+      }
     }
 
     // 缓存目录（注册表记录 + 缩略图/DB/cookies）永远删。
     // 用异步 rm（libuv 线程池）而非 rmSync：大目录（缩略图可数十 GB）同步删除会阻塞事件循环，
-    // 期间整个服务无响应（审查 P2）
-    await fsp.rm(lib.cache_dir, { recursive: true, force: true })
-    // 本地照片副本：仅勾选时删（云端原片不动）
-    if (removePhotos) {
-      await fsp.rm(lib.library_root, { recursive: true, force: true })
-    } else {
-      // 未勾选时：照片根若是建库预建的空目录（2026-10-28 起建库会预建），顺手清掉避免留空壳。
-      // 用 rmdir（非递归）而不是 rm：目录里还有照片时必然抛 ENOTEMPTY，
-      // 正好保证这条清理逻辑永远不会误删任何照片。
-      try {
-        await fsp.rmdir(lib.library_root)
-      } catch {
-        // 非空（有照片）或本就不存在 → 保持原样
+    // 期间整个服务无响应（审查 P2）。
+    // 删除失败也要把新库正常启动起来（否则服务处于「已切库但没监听」的半瘫状态），
+    // 因此这里先捕获错误，收尾之后再决定返回码。
+    let deleteError: Error | null = null
+    try {
+      await fsp.rm(lib.cache_dir, { recursive: true, force: true })
+      // 本地照片副本：仅勾选时删（云端原片不动）
+      if (removePhotos) {
+        await fsp.rm(lib.library_root, { recursive: true, force: true })
+      } else {
+        // 未勾选时：照片根若是建库预建的空目录（2026-10-28 起建库会预建），顺手清掉避免留空壳。
+        // 用 rmdir（非递归）而不是 rm：目录里还有照片时必然抛 ENOTEMPTY，
+        // 正好保证这条清理逻辑永远不会误删任何照片。
+        try {
+          await fsp.rmdir(lib.library_root)
+        } catch {
+          // 非空（有照片）或本就不存在 → 保持原样
+        }
       }
+      // 移除注册
+      deleteLibrary(id)
+    } catch (err) {
+      deleteError = err as Error
+      console.error(`[libraries] 删除库目录失败（记录保留，可重试）: ${deleteError.message}`)
     }
-    // 移除注册
-    deleteLibrary(id)
 
     if (isActive) {
-      const remaining = listLibraries()
-      if (remaining.length > 0) {
-        const next = remaining[0]
-        setActiveLibrary(next.id)
-        applyLibraryPaths(next)
+      if (next) {
+        // 上下文已在删除前切好，这里只需打开连接并启动扫描/监听
         getDb()
         void runScan('switch').catch((err) => {
           scanProgress.status = 'error'
@@ -233,14 +257,16 @@ export async function registerLibraryRoutes(app: FastifyInstance): Promise<void>
         })
         startWatcher()
         console.log(`[libraries] 已删除照片库 ${lib.name}，切换激活库: ${next.name}`)
-        return reply.send({ ok: true, activeId: next.id, remaining: remaining.length })
+        if (deleteError) return reply.code(500).send({ error: `删除库目录失败：${deleteError.message}` })
+        return reply.send({ ok: true, activeId: next.id, remaining: listLibraries().length })
       }
-      // 最后一个库：回到无库状态（config 路径重置为默认，前端整页刷新 → 首次引导）
-      resetLibraryPaths()
+      // 最后一个库：回到无库状态（config 路径已在删除前重置为默认，前端整页刷新 → 首次引导）
       console.log(`[libraries] 已删除最后一个照片库 ${lib.name}，回到无库状态`)
+      if (deleteError) return reply.code(500).send({ error: `删除库目录失败：${deleteError.message}` })
       return reply.send({ ok: true, activeId: null, remaining: 0 })
     }
 
+    if (deleteError) return reply.code(500).send({ error: `删除库目录失败：${deleteError.message}` })
     console.log(`[libraries] 已删除照片库 ${lib.name}`)
     return reply.send({ ok: true, activeId: getCurrentLibrary()?.id ?? null, remaining: listLibraries().length })
   })

@@ -120,12 +120,19 @@ export class ThumbnailScheduler {
   }
 
   /**
-   * 清空排队任务（切库调用；正在运行的任务继续跑完，完成后自然释放槽位）。
-   * p-queue 的 clear() 只清排队不清运行中，交互计数同步归零。
+   * 切库时重置统计计数（2026-10-28，R-06 修复）。
+   *
+   * 历史：这里原本调用 p-queue 的 `clear()`，而它的实现是
+   * `this.#queue = new this.#queueClass()` —— 直接把待办队列整个换成空队列，
+   * 排队任务对应的 Promise 既不 resolve 也不 reject，于是 `await` 它们的
+   * /api/thumb 请求会永远挂着（浏览器同域最多 6 个连接，很快被占死）。
+   *
+   * 现在不再从队列里抽走任务：调用方（queue.ts）用「世代令牌」让旧任务
+   * 排到时立即空转退出，所有 Promise 都会正常结束。
+   * 本方法只清「已跳过」这个纯统计值；interactiveWaiting 会随空转任务
+   * 执行自然递减，不能在这里硬置 0（否则会与真实排队数脱节）。
    */
-  clear(): void {
-    this.queue.clear()
-    this.interactiveWaitingCount = 0
+  resetCounters(): void {
     this.cancelledCount = 0
   }
 }

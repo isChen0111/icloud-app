@@ -204,17 +204,31 @@ export function startAuth(username: string, cookieDir: string): AuthSession {
   child.stderr.on('data', () => {})
 
   child.on('error', (err) => {
+    // R-09 修复（2026-10-28）：只处理「当前进程」的事件。
+    // 取消后立刻重连时，旧进程的事件会晚一步到达；没有这层归属校验，
+    // 旧进程的 error/exit 会篡改新会话的状态、甚至停掉新会话的轮询。
+    if (proc !== child) return
     if (!session) return
     session.stage = 'error'
     session.message = `无法启动 icloudpd：${err.message}`
+    // 进程都没起来，轮询与 10 分钟超时定时器没有继续存在的意义，一并收摊
+    teardownAuthProcess()
   })
   child.on('exit', (code) => {
+    if (proc !== child) return // R-09：旧进程迟到的事件不得影响新会话（见上方注释）
     stopPolling()
     if (!session) return
     // 无提示直接退 = 已有有效 cookie 或异常
     if (code === 0 && cookieExists(cookieDir)) {
       session.stage = 'done'
       session.message = '认证成功，cookie 已保存'
+      // R-09：认证成功后必须清掉 10 分钟超时定时器。
+      // 之前这里没清，10 分钟后 onAuthTimeout() 会把 done 无条件改写成「认证超时」——
+      // 认证成功面板上却显示失败。（auth.test.ts 的注释曾假设 teardown 会清理，实际不会）
+      if (authTimer) {
+        clearTimeout(authTimer)
+        authTimer = null
+      }
     } else if (code !== 0 && session.stage !== 'done') {
       session.stage = 'error'
       session.message = `icloudpd 认证退出（code=${code}）。常见原因：密码错误 / Apple 临时限流 / 认证服务端口被占用`
@@ -352,10 +366,15 @@ function teardownAuthProcess(): void {
 /**
  * 会话有效性巡检（auth-only 快速跑一次）：
  * 返回 true = cookie 有效；false = 会话过期/异常，需要重新链接。
- * 用于：启动时检查、同步前预检、定时巡检。
  * username 取库的 account（auth-only 需真实账号建立会话，有 cookie 时不要求密码）。
  * 注：此处仍用 console provider —— 有有效 cookie 时认证直接通过、无需输入；
  *     无 cookie 时会卡在密码提示，靠 30s 超时 kill 判定为无效（不会产生交互）。
+ *
+ * ⚠️ 当前无调用方（2026-10-28，R-10）：sync.ts 原先在启动同步前调它做「预检」，
+ * 但它会与主同步进程抢写同一个 cookie 目录（两边都回写 session token），
+ * 且不受取消控制（取消同步只杀主进程，它仍在后台跑到 30s 超时），结果还可能
+ * 覆盖主进程给出的更准确判断，因此已移除该调用。函数保留给未来的「启动时巡检 / 定时巡检」。
+ * 使用前提：同一 cookie 目录上不能同时有另一个 icloudpd 在跑。
  */
 export function checkAuthValid(username: string, cookieDir: string): Promise<{ valid: boolean; message: string }> {
   return new Promise((resolve) => {
