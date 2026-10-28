@@ -209,8 +209,7 @@ export const useAssetStore = defineStore('assets', () => {
     // ② 页缓存处理（审查 B1：删除后全局位置流前移，删除点之后的页缓存
     //    内容全部错位——旧实现只移除被删 id，向下滚动会看到"删除前"的旧内容）
     //    - 找到包含被删资产的最小页起点（最先受影响的页）
-    //    - 该页 filter 移除被删 id（页内索引 slice 恰好对上，无需重拉）
-    //    - 该页之后的所有页清空（内容已整体错位），滚动到那里时按需重拉
+    //    - 该页整页丢弃并立即重拉（R-01），该页之后的所有页清空（内容已整体错位），滚动到那里时按需重拉
     let minPage = Infinity
     for (const [p, arr] of pages) {
       for (const a of arr) {
@@ -221,14 +220,15 @@ export const useAssetStore = defineStore('assets', () => {
       }
     }
     if (minPage !== Infinity) {
-      const affected = pages.get(minPage)
-      if (affected) {
-        const next = affected.filter((a) => !idSet.has(a.id))
-        pages.set(minPage, next)
-      }
+      // R-01 修复：受影响页必须整页丢弃，不能「filter 后原地保留」。
+      // 页内少 k 条但页起点仍按 PAGE 对齐 → 该页之后的位置前移了 k 位却无人持有，
+      // 页尾 k 个全局位置永久空白（滚动到底也不补，只能整页刷新）。
+      pages.delete(minPage)
       for (const p of [...pages.keys()]) {
         if (p > minPage) pages.delete(p)
       }
+      // 受影响页立即重拉（代价一次请求），保证位置流严格对齐
+      retryPages.push(minPage)
     }
 
     for (const p of retryPages) ensureRange(p, p + PAGE)
