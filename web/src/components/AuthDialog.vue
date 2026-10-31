@@ -86,16 +86,17 @@ async function submitInput(): Promise<void> {
     stage.value = res.auth.stage
     hint.value = res.auth.hint
     if (res.auth.message) message.value = res.auth.message
-    // 后端已确认终态：解锁锁定，展示成功/失败结果视图（由用户点「完成/关闭」退出）
-    if (res.auth.stage === 'done' || res.auth.stage === 'error') {
+    // 后端已落定本次提交（pending=false）、或到终态：立刻解锁，不等下一轮轮询。
+    // pending=false 覆盖「验证码输错」这类阶段不变的场景，否则会一直停在转圈视图。
+    if (res.auth.pending === false || res.auth.stage === 'done' || res.auth.stage === 'error') {
       submitting.value = false
-      stopPolling()
+      if (res.auth.stage === 'done' || res.auth.stage === 'error') stopPolling()
     }
   } catch (err) {
     submitting.value = false
     message.value = err instanceof Error ? err.message : String(err)
   }
-  // 不在此解锁：等轮询确认（阶段切到验证码/完成/错误，或后端给出错误消息）
+  // 仍在等待确认（pending=true）时保持锁定，等轮询解锁
 }
 
 /** 轮询会话状态：完成/错误即停；密码输错后端会再次提示密码 */
@@ -109,8 +110,9 @@ async function poll(): Promise<void> {
       submitting.value = false
       return
     }
-    // 提交后的锁定：阶段变化或后端给出错误消息 → 解锁
-    if (submitting.value && (auth.stage !== lastStage || auth.message)) {
+    // 提交后的解锁条件：后端本次提交已落定（pending=false）、阶段变化、或带回错误文案。
+    // 早期只判后两者，而「验证码输错」恰好阶段不变且错误文案解析不到 → 永久转圈。
+    if (submitting.value && (auth.pending === false || auth.stage !== lastStage || auth.message)) {
       submitting.value = false
     }
     stage.value = auth.stage
@@ -155,8 +157,9 @@ async function requestCancel(): Promise<void> {
 }
 
 async function handleClose(): Promise<void> {
-  // 校验中禁止关闭（密码/验证码提交后等后端确认；点遮罩/× 可能中断认证）
-  if (busy.value || submitting.value) return
+  // 只有「启动请求还在飞」时才拦：提交密码/验证码期间允许关闭，否则后端卡住时用户无路可退
+  // （关闭会调用 cancelAuth 结束 icloudpd 进程，不会留下孤儿占着 8080）。
+  if (busy.value) return
   stopPolling()
   await requestCancel()
   emit('close')
@@ -198,7 +201,7 @@ onMounted(() => {
             {{ started ? '凭据仅本次使用，认证成功后保存为本地 cookie，不会上传到本应用以外的任何地方。' : '使用 Apple ID 登录，应用将读取你的 iCloud 照片。' }}
           </p>
         </div>
-        <button class="dialog-close" type="button" aria-label="关闭" :disabled="busy || submitting" @click="handleClose">×</button>
+        <button class="dialog-close" type="button" aria-label="关闭" :disabled="busy" @click="handleClose">×</button>
       </header>
 
       <!-- 步骤指示（设计稿认证面板：密码 → 验证码 → 完成；已完成打 ✓，当前步高亮） -->
@@ -279,6 +282,10 @@ onMounted(() => {
               <small>{{ hint }}</small>
             </div>
           </div>
+          <!-- 校验中保留取消入口：后端若长时间无响应，用户至少能退出重来（不会留下孤儿进程） -->
+          <footer class="auth-actions">
+            <button class="action-button" type="button" @click="handleClose">取消</button>
+          </footer>
         </template>
 
         <!-- 3. 链接成功 -->

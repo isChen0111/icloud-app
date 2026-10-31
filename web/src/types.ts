@@ -240,6 +240,12 @@ export interface AuthSession {
   hint: string
   message: string
   cookieDir: string
+  /**
+   * 已提交密码/验证码、正在等 icloudpd 确认结果（仅 GET /api/auth 与 /api/auth/input 返回）。
+   * false = 本次提交已落定，可以再次输入；用来兜住「阶段没变、也没有错误文案」的情形
+   * （典型：验证码输错后 icloudpd 退回验证码阶段并把错误写进页面）。
+   */
+  pending?: boolean
 }
 
 /** icloudpd 同步任务状态 */

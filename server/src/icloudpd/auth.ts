@@ -30,6 +30,21 @@ export interface AuthSession {
   cookieDir: string
 }
 
+/**
+ * 前端轮询视图：会话本体 + 「提交确认中」标志。
+ *
+ * 为什么需要 pending（2026-11-01 修复「验证码输错后永久转圈」）：
+ * 验证码输错时 icloudpd 会把状态退回 NEED_MFA 并附一条错误（authentication.py:285），
+ * 也就是「阶段没变、错误文案藏在模板里」。当时前端只靠
+ * `阶段变化 || message 非空` 解锁，而错误文案因 HTML 选择器不匹配没解析出来，
+ * 两个条件都不成立 → 输入框永远锁死、连关闭按钮都被禁用。
+ * pending 由后端直接吐出「这次提交是否已落定」，前端不再靠猜。
+ */
+export interface AuthStatusView extends AuthSession {
+  /** true = 已提交、正在等 icloudpd 确认；false = 本次提交已落定（可再次输入） */
+  pending: boolean
+}
+
 /** icloudpd 内嵌 webui 服务（waitress 默认端口，实测 0.0.0.0:8080） */
 const WEBUI_PORT = 8080
 const WEBUI_BASE = `http://127.0.0.1:${WEBUI_PORT}`
@@ -52,18 +67,41 @@ export function newSession(cookieDir: string, stage: AuthStage, hint: string): A
   return session
 }
 
-/** 从 /status 或提交响应提取错误文本（bootstrap alert 或 hx-target-error 的 #toast-content），没有则返回 undefined */
-function extractError(html: string): string | undefined {
-  // 优先：表单上的 bootstrap alert（如「Incorrect password」）
+/**
+ * 从 /status 或提交响应提取错误文本，没有则返回 undefined。
+ *
+ * 覆盖 icloudpd 的四种真实渲染（2026-11-01 对照模板逐条核对；之前只认前两种，
+ * 而「验证码错误」走的正是第三种，导致错误文案永远解析不到）：
+ *   ① password.html / code.html 的 bootstrap alert（历史写法，保留兼容）
+ *   ② htmx hx-target-error 的 #toast-content
+ *   ③ code.html / no_input.html 的 `<div class="fw-bold">{{ error }}</div>`（实际走的路径）
+ *   ④ auth_error.html 的 `<label class="form-label">Wrong …</label>`（提交被拒 400）
+ */
+export function extractError(html: string): string | undefined {
+  const clean = (s: string): string => s.replace(/<[^>]+>/g, '').replace(/&nbsp;/g, ' ').trim()
+  // ① 表单上的 bootstrap alert（如「Incorrect password」）
   const alert = html.match(/<div[^>]*class="[^"]*\balert\b[^"]*"[^>]*>([\s\S]*?)<\/div>/i)
   if (alert) {
-    const text = alert[1].replace(/<[^>]+>/g, '').replace(/&nbsp;/g, ' ').trim()
+    const text = clean(alert[1])
     if (text) return text
   }
-  // 其次：hx-target-error 渲染的 #toast-content（验证码/密码错误提示）
+  // ② htmx hx-target-error 渲染的 #toast-content
   const toast = html.match(/id="toast-content"[^>]*>([\s\S]*?)<\/div>/i)
   if (toast) {
-    const text = toast[1].replace(/<[^>]+>/g, '').replace(/&nbsp;/g, ' ').trim()
+    const text = clean(toast[1])
+    if (text) return text
+  }
+  // ③ code.html / no_input.html：错误放在 list-group 里的 fw-bold 块
+  const bold = html.match(/<div[^>]*class="[^"]*\bfw-bold\b[^"]*"[^>]*>([\s\S]*?)<\/div>/i)
+  if (bold) {
+    const text = clean(bold[1])
+    // no_input.html 的 fw-bold 里混着「No input is needed」等状态文案，只有以这些词开头才算错误
+    if (text && !/^(No input is needed|Photos Download|Global Configuration|Last Message|Waiting)/i.test(text)) return text
+  }
+  // ④ auth_error.html：Wrong Two-Factor Code / Wrong password …
+  const wrong = html.match(/<label[^>]*>\s*(Wrong\b[\s\S]*?)<\/label>/i)
+  if (wrong) {
+    const text = clean(wrong[1])
     if (text) return text
   }
   return undefined
@@ -97,15 +135,19 @@ function startPolling(): void {
     }
     const status = await webuiStatus()
     if (!session) return
-    if (status === null) {
-      // 服务未就绪：保持当前阶段，不打扰前端
-      return
-    }
-    // 校验确认超时兜底：提交后长时间无进展（如 webui 校验卡死）→ 判失败解锁，防永久转圈
+    // 校验确认超时兜底：提交后长时间无进展（如 webui 校验卡死）→ 判失败解锁，防永久转圈。
+    // 注意必须放在「服务未就绪」的提前 return 之前：webui 挂掉时 status 恒为 null，
+    // 若放在后面这条兜底永远不会执行，前端会一直转圈。
     if (submitPending && Date.now() - submitPendingSince > SUBMIT_PENDING_TIMEOUT_MS) {
       session.stage = 'error'
       session.message = '凭据校验超时（120 秒无进展），已停止。请关闭后重新链接'
-      submitPending = false
+      // 用 teardown 而不是只停止轮询：判失败后进程已无意义，留着会继续占 8080，
+      // 导致下一次「重新链接」起不来（killResidualIcloudpd 虽然能兜，但没必要让它当常态）
+      teardownAuthProcess()
+      return
+    }
+    if (status === null) {
+      // 服务未就绪：保持当前阶段，不打扰前端
       return
     }
     if (status.kind === 'password') {
@@ -271,18 +313,25 @@ let submitPendingSince = 0
 /** 校验确认最长等待：超过即判失败并解锁，防前端/后端永久转圈 */
 const SUBMIT_PENDING_TIMEOUT_MS = 120 * 1000
 
+/** 会话 + 提交状态的整体视图（session 为空时返回 null） */
+function view(): AuthStatusView | null {
+  return session ? { ...session, pending: submitPending } : null
+}
+
 /** 向 icloudpd 内嵌服务提交密码 / 验证码（按当前阶段选择端点） */
-export async function sendAuthInput(value: string): Promise<AuthSession | null> {
+export async function sendAuthInput(value: string): Promise<AuthStatusView | null> {
   if (inputLock || submitPending) {
     if (submitPending) console.warn('[auth] 忽略重复提交（校验确认中，防止重复触发验证请求）')
-    return session
+    return view()
   }
   inputLock = true
   try {
     if (!session || session.stage === 'done' || session.stage === 'error') {
-      return session
+      return view()
     }
     const isCode = session.stage === 'waiting_code'
+    // 清掉上一轮的残留错误（如「验证码错误」），否则重新提交正确凭据后错误文案仍会挂在界面上
+    session.message = ''
     const controller = new AbortController()
     const timer = setTimeout(() => controller.abort(), HTTP_TIMEOUT_MS)
     try {
@@ -313,15 +362,15 @@ export async function sendAuthInput(value: string): Promise<AuthSession | null> 
     } finally {
       clearTimeout(timer)
     }
-    return session
+    return view()
   } finally {
     inputLock = false
   }
 }
 
-/** 查询当前认证状态（前端轮询） */
-export function authStatus(): AuthSession | null {
-  return session
+/** 查询当前认证状态（前端轮询）；pending 反映「本次提交是否还在等 icloudpd 确认」 */
+export function authStatus(): AuthStatusView | null {
+  return view()
 }
 
 /** 停止/清理当前认证进程（取消认证、换库、超时）。
