@@ -9,6 +9,7 @@ import type {
   AssetDto,
   AssetInfo,
   AuthSession,
+  ImportState,
   LibrariesResult,
   LibraryInfo,
   MonthGroup,
@@ -301,4 +302,73 @@ export function fetchSync(libraryId: number): Promise<{ sync: SyncState }> {
 /** 取消同步任务 */
 export function cancelSync(libraryId: number): Promise<{ ok: boolean; sync: SyncState }> {
   return fetch(`${BASE}/library/${libraryId}/sync`, { method: 'DELETE' }).then((r) => r.json())
+}
+
+/* ============ 导入本地照片目录 ============ */
+
+/** 本机迁移：后端运行机器的本地目录 → 复制/移动进 import/ */
+export function startLocalImport(
+  libraryId: number,
+  path: string,
+  mode: 'copy' | 'move',
+): Promise<{ ok: boolean; import: ImportState }> {
+  return post(`/libraries/${libraryId}/import/scan`, { path, mode })
+}
+
+/** 查询导入进度（ImportDialog 2s 轮询） */
+export function fetchImport(libraryId: number): Promise<{ import: ImportState }> {
+  return get(`/libraries/${libraryId}/import`)
+}
+
+/** 取消导入 */
+export function cancelImport(libraryId: number): Promise<{ ok: boolean; import: ImportState }> {
+  return fetch(`${BASE}/libraries/${libraryId}/import`, { method: 'DELETE' }).then((r) => r.json())
+}
+
+/**
+ * 上传导入：整文件夹上传（webkitdirectory 选的 File[]，携带 webkitRelativePath）。
+ *
+ * 用 XMLHttpRequest 而非 fetch——fetch 不支持上传进度（upload.onprogress），
+ * 大文件上传需要进度条反馈。filename 用 file.webkitRelativePath，后端据此还原相对目录结构。
+ */
+export function uploadImport(
+  libraryId: number,
+  files: File[],
+  onProgress: (pct: number) => void,
+  signal: AbortSignal,
+): Promise<{ ok: boolean; import: ImportState }> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest()
+    xhr.open('POST', `${BASE}/libraries/${libraryId}/import/upload`)
+    xhr.responseType = 'json'
+
+    const totalBytes = files.reduce((sum, f) => sum + f.size, 0)
+    xhr.upload.onprogress = (e) => {
+      if (e.lengthComputable && totalBytes > 0) {
+        onProgress(Math.min(100, Math.round((e.loaded / totalBytes) * 100)))
+      }
+    }
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        resolve(xhr.response as { ok: boolean; import: ImportState })
+      } else {
+        const body = xhr.response as { error?: string } | null
+        reject(new Error(body?.error ?? `上传失败（${xhr.status}）`))
+      }
+    }
+    xhr.onerror = () => reject(new Error('上传请求失败，请检查网络'))
+    xhr.onabort = () => reject(new Error('上传已取消'))
+    signal.addEventListener('abort', () => xhr.abort())
+
+    const form = new FormData()
+    const mtimes: Record<string, number> = {}
+    for (const f of files) {
+      const rel = f.webkitRelativePath || f.name
+      form.append('files', f, rel)
+      mtimes[rel] = f.lastModified
+    }
+    // 附带每个文件的 lastModified（毫秒），后端据此回设 mtime，避免无 EXIF 文件日期错到上传当天
+    form.append('mtimes', JSON.stringify(mtimes))
+    xhr.send(form)
+  })
 }

@@ -16,7 +16,7 @@
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process'
 import { config } from '../config.js'
 import type { LibraryRow } from '../db/libraries.js'
-import { touchLibrarySync, updateLibraryAuth } from '../db/libraries.js'
+import { touchLibrarySync, updateLibraryAuth, libraryIcloudDir } from '../db/libraries.js'
 import { syncState, resetSyncState } from './state.js'
 
 /** 索引未完成重试：等待 60s，最多 5 次（含首次后的 4 次） */
@@ -105,7 +105,7 @@ export function startSync(lib: LibraryRow, kind: 'full' | 'inc'): SyncTaskStateL
 function spawnOnce(lib: LibraryRow, kind: 'full' | 'inc'): void {
   const args = [
     '--username', lib.account!,
-    '--directory', lib.library_root,
+    '--directory', libraryIcloudDir(lib.library_root),
     '--domain', 'cn',
     '--cookie-directory', lib.cookie_dir,
     '--set-exif-datetime',

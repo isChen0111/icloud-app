@@ -14,6 +14,7 @@ import { onBeforeUnmount, onMounted, ref } from 'vue'
 import { createLibrary, startSync, fetchSync, cancelSync, switchLibrary } from '../api/client'
 import type { SyncState } from '../types'
 import AuthDialog from './AuthDialog.vue'
+import ImportDialog from './ImportDialog.vue'
 
 const emit = defineEmits<{
   close: []
@@ -25,7 +26,8 @@ const emit = defineEmits<{
 function onKeydown(e: KeyboardEvent): void {
   // R-27：认证弹窗打开时 Esc 归弹窗自己处理。若这里也响应，会连带把整个引导
   // 关掉 → AuthDialog 被卸载 → icloudpd 子进程留在后台占着 8080。
-  if (e.key === 'Escape' && !authOpen.value) emit('close')
+  // 导入弹窗同理：Esc 应只关导入弹窗，不关掉整个引导。
+  if (e.key === 'Escape' && !authOpen.value && !importOpen.value) emit('close')
 }
 onMounted(() => window.addEventListener('keydown', onKeydown))
 onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
@@ -41,6 +43,8 @@ const libraryId = ref<number | null>(null)
 const libActive = ref(true)
 const authOpen = ref(false)
 const authDone = ref(false)
+/** 导入本地目录弹窗（步骤② 与「链接 iCloud」并列的可选路径） */
+const importOpen = ref(false)
 const syncing = ref(false)
 const sync = ref<SyncState | null>(null)
 const syncError = ref('')
@@ -74,6 +78,25 @@ function onAuthDone(): void {
   authOpen.value = false
   authDone.value = true
   step.value = 3
+}
+
+/**
+ * 步骤 ②：打开「导入本地目录」弹窗。
+ * 导入接口只允许当前激活库（与同步一致）：已有其他库时新建的库不激活，需先切过来。
+ */
+async function openImport(): Promise<void> {
+  if (libraryId.value == null) return
+  if (!libActive.value) {
+    try {
+      await switchLibrary(libraryId.value)
+      libActive.value = true
+      emit('switched')
+    } catch (err) {
+      syncError.value = err instanceof Error ? err.message : String(err)
+      return
+    }
+  }
+  importOpen.value = true
 }
 
 /** 步骤 ③：手动触发全量拉取（用户确认后） */
@@ -200,14 +223,15 @@ onBeforeUnmount(stopPolling)
         </footer>
       </div>
 
-      <!-- ② 链接 -->
+      <!-- ② 链接 / 导入（两条可选路径并列） -->
       <div v-else-if="step === 2" class="onboard-body">
         <div class="onboard-intro">
-          <p>登录你的 Apple ID，应用将调用官方 icloudpd 工具建立本机会话（cookie 保存在本机照片库目录内）。</p>
-          <p class="onboard-hint">暂时不登录也可以先跳过：照片库已经建好，之后在设置中心的照片库卡片里点「新建链接」即可继续。</p>
+          <p>接下来可以选择把照片放进来：登录 iCloud 从云端拉取，或导入你自己维护的本地照片目录。</p>
+          <p class="onboard-hint">暂时不处理也可以先跳过：照片库已经建好，之后在设置中心的照片库卡片里点「新建链接」或「导入」即可继续。</p>
         </div>
         <footer class="onboard-actions">
-          <button class="onboard-btn" type="button" @click="finish">稍后链接</button>
+          <button class="onboard-btn" type="button" @click="finish">稍后处理</button>
+          <button class="onboard-btn" type="button" @click="openImport">导入本地目录</button>
           <button class="onboard-btn primary" type="button" @click="authOpen = true">链接 iCloud</button>
         </footer>
       </div>
@@ -259,6 +283,14 @@ onBeforeUnmount(stopPolling)
       :library-name="name"
       @done="onAuthDone"
       @close="authOpen = false"
+    />
+
+    <ImportDialog
+      v-if="importOpen && libraryId != null"
+      :library-id="libraryId"
+      :library-name="name"
+      @close="importOpen = false"
+      @need-stats-refresh="emit('switched')"
     />
   </div>
 </template>

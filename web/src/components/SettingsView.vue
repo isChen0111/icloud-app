@@ -16,6 +16,7 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { fetchLibraries, startSync, cancelSync, deleteLibrary, updateLibraryConfig, switchLibrary } from '../api/client'
 import type { LibraryInfo, Stats } from '../types'
 import SyncButton from './SyncButton.vue'
+import ImportDialog from './ImportDialog.vue'
 
 const props = defineProps<{ stats: Stats | null }>()
 const emit = defineEmits<{
@@ -54,6 +55,8 @@ const deleteError = ref('')
 const switchingId = ref<number | null>(null)
 /** 最近一次切换失败的库 id（把 409 文案挂到该库卡片下） */
 const switchFailId = ref<number | null>(null)
+/** 待导入的照片库（打开 ImportDialog；null=关闭） */
+const importTarget = ref<LibraryInfo | null>(null)
 
 /** 配置区草稿（每库一份）：展开配置时初始化，保存成功后回写 libraries */
 type ConfigDraft = { untilFound: number; recentLimit: number; saving: boolean; saved: boolean }
@@ -225,6 +228,19 @@ async function switchTo(lib: LibraryInfo): Promise<void> {
 }
 
 /**
+ * 打开「导入本地照片目录」弹窗。
+ * 导入只允许对当前激活库执行（后端 runScan 只能扫激活库）：非激活库先切库（切库会整页刷新），
+ * 刷新后该库成为激活库，用户再点一次「导入」即可打开弹窗。
+ */
+function openImport(lib: LibraryInfo): void {
+  if (!lib.active) {
+    void switchTo(lib)
+    return
+  }
+  importTarget.value = lib
+}
+
+/**
  * 照片库配置摘要（折叠状态下也显示）：把两个最常调、也最容易忘的参数摆在明面上。
  * - 连续命中数：只作用于增量同步（--until-found），是「停」的条件而不是数量；
  * - 下载限量：--recent，全量与增量都会追加，0 = 全部。
@@ -327,6 +343,12 @@ onBeforeUnmount(() => {
                   <button class="btn-ghost" type="button" @click="emit('open-auth', { id: lib.id, name: lib.name, account: lib.account })">
                     {{ lib.authStatus === 'none' ? '新建链接' : '刷新链接' }}
                   </button>
+                  <button
+                    class="btn-ghost"
+                    type="button"
+                    :title="lib.active ? '导入本地照片目录（本机迁移 / 其他设备上传）' : '需先切换到该库才能导入'"
+                    @click="openImport(lib)"
+                  >导入</button>
                   <button class="btn-ghost danger" type="button" @click="openDelete(lib)">删除</button>
                 </div>
               </div>
@@ -497,6 +519,15 @@ onBeforeUnmount(() => {
         </footer>
       </section>
     </div>
+
+    <!-- 导入本地照片目录弹窗（本机迁移 / 上传） -->
+    <ImportDialog
+      v-if="importTarget"
+      :library-id="importTarget.id"
+      :library-name="importTarget.name"
+      @close="importTarget = null"
+      @need-stats-refresh="emit('need-stats-refresh')"
+    />
   </div>
 </template>
 

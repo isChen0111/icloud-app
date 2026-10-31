@@ -29,6 +29,7 @@ import { runScan, scanProgress } from '../scanner/index.js'
 import { clearThumbnailQueue } from '../pipeline/queue.js'
 import { isSyncBusy } from '../icloudpd/sync.js'
 import { resetSyncState } from '../icloudpd/state.js'
+import { isImportBusy } from '../import/state.js'
 import fs from 'node:fs'
 import { promises as fsp } from 'node:fs'
 import path from 'node:path'
@@ -85,6 +86,12 @@ function toPublic(row: LibraryRow) {
  * 正在写同一目录，所以同样拒绝。
  */
 export function libraryBusyGuard(action: 'switch' | 'delete' | 'delete-asset'): string | null {
+  // 导入任务在跑时拒绝切库/删库/删照片（导入会向 import/ 目录写文件并依赖 runScan 落库）
+  if (isImportBusy()) {
+    if (action === 'switch') return '正在导入照片，请等待完成或取消后再切换照片库'
+    if (action === 'delete-asset') return '正在导入照片，请等待完成或取消后再删除照片'
+    return '正在导入照片，请等待完成或取消后再删除照片库'
+  }
   if (isSyncBusy()) {
     if (action === 'switch') return '同步任务执行中，请先等待完成或取消后再切换照片库'
     if (action === 'delete-asset') return '同步任务执行中，请先等待完成或取消后再删除照片'

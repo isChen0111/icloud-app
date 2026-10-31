@@ -116,6 +116,28 @@ export function ensureDirs(dirs: string[]): string[] {
 }
 
 /**
+ * 库内「icloudpd 下载」子目录。
+ *
+ * 方案 B 隔离设计（2026-10-30）：library_root 下分 icloud/ 与 import/ 两块。
+ * icloudpd 的 --directory 指向这里、增量对比（--until-found 判断「本地已存在」）
+ * 只看这个子目录，与 import/ 里的用户导入照片物理隔离，避免同名文件互相误判。
+ */
+export function libraryIcloudDir(libraryRoot: string): string {
+  return path.join(libraryRoot, 'icloud')
+}
+
+/**
+ * 库内「导入本地目录」子目录。
+ *
+ * 用户自己维护的、结构多样的照片目录，经「导入本地目录」功能按 YYYY/MM/DD
+ * 迁移到这里。与 icloud/ 分目录隔离，但 scanner 递归整个 library_root 统一浏览，
+ * file_path 相对库根天然带 import/ 前缀，入库唯一键不会与 icloud/ 冲突。
+ */
+export function libraryImportDir(libraryRoot: string): string {
+  return path.join(libraryRoot, 'import')
+}
+
+/**
  * 建库（首次引导流程用）。目录自动派生，不开放手填。
  *
  * 目录规则（多库分离设计）：
@@ -146,12 +168,19 @@ export function createLibrary(name: string): LibraryRow {
   meta
     .prepare(`UPDATE libraries SET library_root = ?, cache_dir = ?, cookie_dir = ? WHERE id = ?`)
     .run(photosRoot, cacheDir, cookieDir, id)
-  // 建库即建三层目录（2026-10-28）：照片根 / 缓存 / cookies。
-  // 动机：设置中心直接展示这三个路径，而原先只有 icloudpd 首次下载（照片根）和认证成功（cookies）
-  // 才会创建它们，用户刚建完库去看设置，三个目录全都不存在，容易被当成建库失败。
-  // 失败不阻断建库：三者只是「存放位置」，同步/认证时 icloudpd 会自行创建，
+  // 建库即建目录（2026-10-28 三层 → 2026-10-30 加 icloud/import 两子目录）：
+  // 照片根 + 其下 icloud/、import/ + 缓存 + cookies。
+  // 动机：设置中心直接展示这些路径，而原先只有 icloudpd 首次下载（照片根）和认证成功（cookies）
+  // 才会创建它们，用户刚建完库去看设置，目录全都不存在，容易被当成建库失败。
+  // 失败不阻断建库：这些只是「存放位置」，同步/认证时 icloudpd 会自行创建，
   // 预建仅为了可见性与可预期，因此只记日志不抛错（也不回滚注册记录）。
-  const failedDirs = ensureDirs([photosRoot, cacheDir, cookieDir])
+  const failedDirs = ensureDirs([
+    photosRoot,
+    libraryIcloudDir(photosRoot),
+    libraryImportDir(photosRoot),
+    cacheDir,
+    cookieDir,
+  ])
   for (const dir of failedDirs) {
     console.warn(`[libraries] 预建目录失败 ${dir}（不影响建库，同步时会再次尝试创建）`)
   }

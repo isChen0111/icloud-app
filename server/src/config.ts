@@ -90,4 +90,12 @@ export const config = {
    * （icloudpd 官方参数：只处理最近 N 张，避免测试时拉全库）。0 = 不限制。
    */
   icloudpdRecent: Number(process.env.ICLOUDPD_RECENT ?? 0),
+
+  /**
+   * 单文件上传大小上限（字节），供「导入本地目录」的远程上传使用。
+   * 0 = 不限（默认）；可用 MAX_UPLOAD_BYTES 覆盖，防止误传超大文件。
+   * ⚠️ 「不限」在 index.ts 里必须显式转成 Infinity（不能传 undefined，否则
+   *   @fastify/multipart 会回落到 Fastify bodyLimit 1 MiB，正常照片都会 413）。
+   */
+  maxUploadBytes: Number(process.env.MAX_UPLOAD_BYTES ?? 0),
 }

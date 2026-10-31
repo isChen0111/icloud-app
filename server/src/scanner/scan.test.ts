@@ -152,6 +152,32 @@ test('runScan：首次入库 + 目录日期兜底 + 实况配对，二次扫描�
   }
 })
 
+test('runScan：无 EXIF 时目录与 mtime 印证（同日取 mtime、异日取目录零点）', async () => {
+  const env = setup()
+  try {
+    // 两张无 EXIF 的图放在同一天目录下，但 mtime 分别「同一天」与「不同天」
+    const same = path.join(env.root, '2024', '09', '13', 'SAME.jpg')
+    await writeJpeg(same, 4)
+    fs.utimesSync(same, new Date(2024, 8, 13, 13, 0, 0), new Date(2024, 8, 13, 13, 0, 0))
+
+    const diff = path.join(env.root, '2024', '09', '13', 'DIFF.jpg')
+    await writeJpeg(diff, 5)
+    fs.utimesSync(diff, new Date(2024, 8, 20, 13, 0, 0), new Date(2024, 8, 20, 13, 0, 0))
+
+    await runScan('manual', { enqueueThumbnails: false })
+    const rows = readAssets()
+    const sameRow = rows.find((r) => r.file_path.endsWith('SAME.jpg'))!
+    const diffRow = rows.find((r) => r.file_path.endsWith('DIFF.jpg'))!
+
+    // 同一天：用 mtime 恢复秒级精度
+    assert.equal(sameRow.date_taken, toLocalIso(new Date(2024, 8, 13, 13, 0, 0)), 'mtime 与目录同日 → 取 mtime（秒级）')
+    // 不同天：mtime 被污染，退回目录零点
+    assert.equal(diffRow.date_taken, toLocalIso(new Date(2024, 8, 13)), 'mtime 与目录异日 → 保守取目录零点')
+  } finally {
+    teardown(env)
+  }
+})
+
 test('runScan：磁盘文件消失 → 删除对账清理该行，其余保留', async () => {
   const env = setup()
   try {

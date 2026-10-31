@@ -475,19 +475,34 @@ export async function runScan(
       }
     }
 
-    // 时间兜底链：EXIF/ffprobe → 目录 YYYY/MM/DD → 文件修改时间
-    if (!dateTaken) dateTaken = parseDateFromDir(a.image.relPath)
+    // 时间兜底链：EXIF/ffprobe → 目录 YYYY/MM/DD 与 mtime 印证 → 文件修改时间。
+    // 目录兜底仅适用于 icloudpd 下载的固定结构（YYYY/MM/DD，可靠）。
+    // 「导入本地目录」不走这一环——用户目录结构多样不可信，由 import/resolveDate.ts
+    // 用「EXIF/ffprobe → mtime」两环链单独处理（见 import/resolveDate.ts）。
+    // 审查 2026-11-01：目录与 mtime 同源于 iCloud assetDate，两者同一天时优先用 mtime，
+    // 恢复秒级精度（旧逻辑先目录后 mtime，会把无 EXIF 文件的时分秒丢成当天 00:00）；
+    // 若不同天，说明 mtime 已被复制/编辑污染，退回「目录零点」保守处理。
     if (!dateTaken) {
+      const dirDate = parseDateFromDir(a.image.relPath)
       try {
         const st = fs.statSync(absPath)
-        // R-08：与 EXIF / 目录两条路径统一为「本地时间 + 偏移」表示。
-        // 原来这里用 toISOString()（UTC，带 Z），同一天里会与 +08:00 表示排序错位。
-        dateTaken = toLocalIso(st.mtime) ?? st.mtime.toISOString()
+        const mtimeIso = toLocalIso(st.mtime)
+        if (dirDate && mtimeIso && mtimeIso.slice(0, 10) === dirDate.slice(0, 10)) {
+          dateTaken = mtimeIso
+        } else if (dirDate) {
+          dateTaken = dirDate
+        } else if (mtimeIso) {
+          dateTaken = mtimeIso
+        }
       } catch {
-        // 文件瞬时不可读（刚被移动/删除）：跳过本资产，下次重扫再试
-        console.warn(`[scan] 跳过不可读文件: ${a.image.relPath}`)
-        scanProgress.scannedFiles += fileCount
-        continue
+        // 文件瞬时不可读（刚被移动/删除）：有目录日期就用目录；否则跳过本资产，下次重扫再试
+        if (dirDate) {
+          dateTaken = dirDate
+        } else {
+          console.warn(`[scan] 跳过不可读文件: ${a.image.relPath}`)
+          scanProgress.scannedFiles += fileCount
+          continue
+        }
       }
     }
 

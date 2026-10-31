@@ -133,6 +133,8 @@ export interface Stats {
   } | null
   /** P0：icloudpd 同步任务状态（同步按钮驱动源） */
   sync: SyncState
+  /** 导入本地目录任务状态（ImportDialog 驱动源） */
+  import: ImportState
 }
 
 export interface ThumbnailFailure {
@@ -251,4 +253,29 @@ export interface SyncState {
   finishedAt: string | null
   /** icloudpd 原始输出（最近 N 行，环形缓冲，供前端「运行日志」展示） */
   log: string[]
+}
+
+/* ============ 导入本地照片目录 ============ */
+
+/** 单个导入失败项 */
+export interface ImportFailure {
+  /** 失败文件的源相对路径 */
+  relPath: string
+  reason: string
+}
+
+/** 导入任务状态（与后端 publicImportState 一一对应） */
+export interface ImportState {
+  status: 'idle' | 'running' | 'done' | 'error' | 'cancelled'
+  libraryId: number
+  source: 'local' | 'upload'
+  mode: 'copy' | 'move'
+  message: string
+  totalFiles: number
+  processedFiles: number
+  skipped: number
+  failedCount: number
+  failures: ImportFailure[]
+  startedAt: string | null
+  finishedAt: string | null
 }

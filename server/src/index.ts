@@ -12,6 +12,7 @@
  */
 import Fastify from 'fastify'
 import fastifyStatic from '@fastify/static'
+import fastifyMultipart from '@fastify/multipart'
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -29,9 +30,11 @@ import { registerThumbnailErrorRoutes } from './routes/thumbnail-errors.js'
 import { registerLibraryRoutes } from './routes/libraries.js'
 import { registerAuthRoutes } from './routes/auth.js'
 import { registerSyncRoutes } from './routes/sync.js'
+import { registerImportRoutes } from './routes/import.js'
 import { runScan, scanProgress } from './scanner/index.js'
 import { startWatcher } from './scanner/watcher.js'
 import { cleanStaleTempFiles } from './pipeline/thumbnails.js'
+import { cleanStaleImportTemp, resolveMultipartFileSize } from './import/upload.js'
 
 /** 项目根目录（server/src/../..） */
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
@@ -48,11 +51,27 @@ async function main(): Promise<void> {
     // ② 数据库初始化（激活库的 library.db，建表）
     getDb()
     cleanStaleTempFiles()
+    // 清理上次异常退出留下的上传临时目录（不阻塞启动）
+    void cleanStaleImportTemp(config.cacheDir)
   } else {
     console.log('[libraries] 无照片库，等待首次引导创建（主页将显示引导流程）')
   }
 
   const app = Fastify({ logger: true })
+
+  // 上传（导入本地目录的远程上传）：@fastify/multipart 流式写盘，避免大文件整块进内存。
+  // limits.fileSize 用 config.maxUploadBytes（0 = 不设上限）。⚠️ 不能传 undefined：@fastify/multipart
+  // 内部对 undefined 会 `?? fastify.initialConfig.bodyLimit` 回落到 Fastify 默认 1 MiB，
+  // 导致正常照片/视频也报「request file too large」。因此「不限」必须显式传 Infinity（见 resolveMultipartFileSize）。
+  await app.register(fastifyMultipart, {
+    limits: {
+      fileSize: resolveMultipartFileSize(config.maxUploadBytes),
+      files: 100_000,
+      // mtimes JSON 随文件数线性增长（每个文件一条 {路径:lastModified}），超大上传时可能超默认 1 MiB
+      // 被截断（field valueTruncated）导致 mtime 回设静默失效，故放宽到 10 MiB。
+      fieldSize: 10 * 1024 * 1024,
+    },
+  })
 
   // 仅允许本机 Vite 开发服务器跨源访问（dev 模式经 Vite 代理转发：浏览器 Origin 是 5173，
   // 而 changeOrigin 已把 Host 改写为后端 8899，两者不同源，必须靠白名单）。
@@ -106,6 +125,7 @@ async function main(): Promise<void> {
   await registerLibraryRoutes(app)
   await registerAuthRoutes(app)
   await registerSyncRoutes(app)
+  await registerImportRoutes(app)
 
   // ②.5 生产模式静态托管：若 web/dist 存在（已 build），把前端挂到根路径。
   //     开发模式下没有 dist，走 Vite 5173 + proxy，不影响。

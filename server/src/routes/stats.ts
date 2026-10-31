@@ -24,6 +24,7 @@ import { runScan, scanProgress } from '../scanner/index.js'
 import { getThumbnailProgress, getQueueMetrics, queueSize } from '../pipeline/queue.js'
 import { getCurrentLibrary } from '../context.js'
 import { syncState } from '../icloudpd/state.js'
+import { publicImportState } from '../import/state.js'
 
 /** 体积缓存文件（落盘，避免每次启动重算）。函数取当前激活库 cacheDir（切库后自动跟随） */
 function statsCachePath(): string {
@@ -212,6 +213,8 @@ export async function registerStatsRoutes(app: FastifyInstance): Promise<void> {
         // 日志截断返回最近 200 行（stats 5s 轮询，控制响应体积）
         log: syncState.log.slice(-200),
       },
+      // 导入本地目录任务状态（前端 ImportDialog 轮询展示进度/失败清单）
+      import: publicImportState(),
     })
   })
 
