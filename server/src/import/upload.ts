@@ -7,6 +7,7 @@
  */
 import fs from 'node:fs'
 import path from 'node:path'
+import type { FastifyMultipartOptions } from '@fastify/multipart'
 
 /** 上传临时目录根名（相对库 cache_dir，且不在 library_root 下，避免触发 watcher） */
 const IMPORT_TMP_DIRNAME = 'import-tmp'
@@ -95,6 +96,31 @@ export async function applyUploadMtimes(
  */
 export function resolveMultipartFileSize(maxUploadBytes: number): number {
   return maxUploadBytes > 0 ? maxUploadBytes : Infinity
+}
+
+/**
+ * 组装 @fastify/multipart 的注册选项（生产注册与测试共用一份，避免两边配置漂移）。
+ *
+ * ⚠️ preservePath 必须为 true：@fastify/multipart 底层 busboy 默认
+ * `filename = basename(filename)`（见 node_modules/@fastify/busboy/lib/types/multipart.js），
+ * 会把浏览器传来的 webkitRelativePath 里的目录整个剥掉。后果有两个：
+ *   1. 致命：mtimes 的 key 是完整相对路径，落盘 rel 只剩文件名 → 匹配不上 →
+ *      回设静默失效 → 无 EXIF 日期的文件被归到「上传当天」（2026-11-01 实测踩过：
+ *      同一批文件本机迁移导入日期正确，上传导入全落到 2026/11/01）；
+ *   2. 不同子目录下的同名文件在临时目录里互相覆盖。
+ * 打开后目录穿越风险由路由层的 sanitizeRelPath 拦（拒绝 `..` 与绝对路径）。
+ */
+export function resolveMultipartOptions(maxUploadBytes: number): FastifyMultipartOptions {
+  return {
+    limits: {
+      fileSize: resolveMultipartFileSize(maxUploadBytes),
+      files: 100_000,
+      // mtimes JSON 随文件数线性增长（每个文件一条 {路径:lastModified}），超大上传时可能超默认
+      // 1 MiB 被截断（field valueTruncated）导致 mtime 回设静默失效，故放宽到 10 MiB。
+      fieldSize: 10 * 1024 * 1024,
+    },
+    preservePath: true,
+  }
 }
 
 /** 生成唯一会话 id（时间戳 + 随机串） */

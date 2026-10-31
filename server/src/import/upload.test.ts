@@ -6,7 +6,10 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { sanitizeRelPath, importTempDir, newImportSessionId, cleanImportTempDir, cleanStaleImportTemp, resolveMultipartFileSize, parseUploadMtimes, applyUploadMtimes } from './upload.js'
+import { createWriteStream } from 'node:fs'
+import Fastify from 'fastify'
+import fastifyMultipart from '@fastify/multipart'
+import { sanitizeRelPath, importTempDir, newImportSessionId, cleanImportTempDir, cleanStaleImportTemp, resolveMultipartFileSize, parseUploadMtimes, applyUploadMtimes, resolveMultipartOptions } from './upload.js'
 
 function tempDir(prefix: string): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), prefix))
@@ -109,6 +112,79 @@ test('applyUploadMtimes：把 lastModified 回设到落盘文件', async () => {
 
     const st = fs.statSync(dest)
     assert.equal(Math.trunc(st.mtimeMs), Math.trunc(target.getTime()), 'mtime 应被回设为前端传来的 lastModified')
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+/**
+ * 构造与浏览器一致的多段 multipart 请求体（files 在前、mtimes 字段在后，与 client.ts 顺序一致）。
+ * filename 带目录是「整文件夹上传」的关键：浏览器把 webkitRelativePath 塞进 filename。
+ */
+function buildMultipart(boundary: string, relPath: string, mtimesJson: string): string {
+  return [
+    `--${boundary}`,
+    `Content-Disposition: form-data; name="files"; filename="${relPath}"`,
+    'Content-Type: image/jpeg',
+    '',
+    'dummy-bytes',
+    `--${boundary}`,
+    'Content-Disposition: form-data; name="mtimes"',
+    '',
+    mtimesJson,
+    `--${boundary}--`,
+    '',
+  ].join('\r\n')
+}
+
+test('上传链路端到端：filename 保留相对目录，mtime 按 relPath 正确回设', async () => {
+  // 回归钉住 2026-11-01 的 bug：busboy 默认 preservePath=false 会把 filename 剥成裸文件名，
+  // 导致 mtimes 的 key（完整相对路径）永远匹配不上落盘 rel，回设静默失效，
+  // 无 EXIF 日期的文件被归到「上传当天」。单测 parseUploadMtimes/applyUploadMtimes 全绿也发现不了，
+  // 必须用真实 multipart 请求验证「收到的 filename 是什么」。
+  const app = Fastify()
+  await app.register(fastifyMultipart, resolveMultipartOptions(0))
+  const dir = tempDir('import-wire-')
+  try {
+    const written: { dest: string; rel: string }[] = []
+    app.post('/upload', async (request) => {
+      let mtimesJson: string | undefined
+      for await (const part of request.parts()) {
+        if (part.type === 'field') {
+          if (part.fieldname === 'mtimes') mtimesJson = String(part.value ?? '')
+          continue
+        }
+        if (part.type !== 'file') continue
+        const rel = sanitizeRelPath(part.filename)
+        const dest = path.join(dir, rel)
+        fs.mkdirSync(path.dirname(dest), { recursive: true })
+        await new Promise<void>((resolve, reject) => {
+          const ws = createWriteStream(dest)
+          part.file.pipe(ws)
+          ws.on('finish', () => resolve())
+          ws.on('error', reject)
+        })
+        written.push({ dest, rel })
+      }
+      await applyUploadMtimes(written, mtimesJson)
+      return { rels: written.map((w) => w.rel), mtimes: written.map((w) => Math.trunc(fs.statSync(w.dest).mtimeMs)) }
+    })
+
+    const boundary = '----wbTestBoundary'
+    const relPath = 'export/2015/05/03/31f76eb0.JPG'
+    const expected = new Date(2015, 4, 3, 11, 46, 57).getTime()
+    const res = await app.inject({
+      method: 'POST',
+      url: '/upload',
+      headers: { 'content-type': `multipart/form-data; boundary=${boundary}` },
+      payload: buildMultipart(boundary, relPath, JSON.stringify({ [relPath]: expected })),
+    })
+
+    assert.equal(res.statusCode, 200)
+    const body = res.json() as { rels: string[]; mtimes: number[] }
+    assert.deepEqual(body.rels, [relPath], 'filename 必须保留相对目录（preservePath: true）')
+    assert.equal(body.mtimes[0], expected, 'mtime 必须按完整相对路径匹配并回设为 lastModified')
+    assert.ok(fs.existsSync(path.join(dir, relPath)), '文件应落在保留层级的临时目录里')
   } finally {
     fs.rmSync(dir, { recursive: true, force: true })
   }

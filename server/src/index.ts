@@ -34,7 +34,7 @@ import { registerImportRoutes } from './routes/import.js'
 import { runScan, scanProgress } from './scanner/index.js'
 import { startWatcher } from './scanner/watcher.js'
 import { cleanStaleTempFiles } from './pipeline/thumbnails.js'
-import { cleanStaleImportTemp, resolveMultipartFileSize } from './import/upload.js'
+import { cleanStaleImportTemp, resolveMultipartOptions } from './import/upload.js'
 
 /** 项目根目录（server/src/../..） */
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
@@ -63,15 +63,9 @@ async function main(): Promise<void> {
   // limits.fileSize 用 config.maxUploadBytes（0 = 不设上限）。⚠️ 不能传 undefined：@fastify/multipart
   // 内部对 undefined 会 `?? fastify.initialConfig.bodyLimit` 回落到 Fastify 默认 1 MiB，
   // 导致正常照片/视频也报「request file too large」。因此「不限」必须显式传 Infinity（见 resolveMultipartFileSize）。
-  await app.register(fastifyMultipart, {
-    limits: {
-      fileSize: resolveMultipartFileSize(config.maxUploadBytes),
-      files: 100_000,
-      // mtimes JSON 随文件数线性增长（每个文件一条 {路径:lastModified}），超大上传时可能超默认 1 MiB
-      // 被截断（field valueTruncated）导致 mtime 回设静默失效，故放宽到 10 MiB。
-      fieldSize: 10 * 1024 * 1024,
-    },
-  })
+  // ⚠️ preservePath 必须开（见 resolveMultipartOptions）：否则 filename 被剥成裸文件名，
+  // 上传链路的 mtimes 按相对路径匹配不上，无 EXIF 文件日期会错到「上传当天」。
+  await app.register(fastifyMultipart, resolveMultipartOptions(config.maxUploadBytes))
 
   // 仅允许本机 Vite 开发服务器跨源访问（dev 模式经 Vite 代理转发：浏览器 Origin 是 5173，
   // 而 changeOrigin 已把 Host 改写为后端 8899，两者不同源，必须靠白名单）。
