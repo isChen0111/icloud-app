@@ -5,7 +5,7 @@
  *
  * 直接调用抽出的 handleSyncExit / handleLine（sync.ts 导出），不 spawn 真实进程：
  * killProcess 仅在 proc 非空时执行 taskkill，测试中 proc 恒为 null，无副作用。
- * META_DB_PATH 指向临时目录，避免 handleSyncExit 正常路径的 touchLibrarySync 污染真实 meta.db。
+ * meta.db 指向临时目录，避免 handleSyncExit 正常路径的 touchLibrarySync 污染真实注册表。
  */
 import test, { afterEach } from 'node:test'
 import assert from 'node:assert/strict'
@@ -14,8 +14,11 @@ import path from 'node:path'
 import fs from 'node:fs'
 import type { LibraryRow } from '../db/libraries.js'
 
-// 必须在 import sync.js（连带 config.js）之前设置，隔离 meta.db
-process.env.META_DB_PATH = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'icloud-sync-test-')), 'meta.db')
+// 隔离 meta.db：必须在 sync.js 之前改 config.metaDbPath。
+// getMetaDb() 是懒加载单例（首次调用才建库），此处改动早于任何取用者，等效于换了一个注册表。
+// 2026-11-01 起不再支持 META_DB_PATH 环境变量，测试改为直接改配置字段（与 scan/migrate 测试一致）。
+const { config } = await import('../config.js')
+config.metaDbPath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'icloud-sync-test-')), 'meta.db')
 
 const { handleSyncExit, handleLine, clearTimers, resetRetries } = await import('./sync.js')
 const { syncState, resetSyncState } = await import('./state.js')

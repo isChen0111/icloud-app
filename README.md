@@ -33,7 +33,7 @@ icloud-app/
 
 `server/` 和 `web/` 是独立项目，分别在各自目录运行 `npm ci` 安装依赖。安装后端依赖时，npm 会自动检查 FFmpeg；首次安装或文件缺失时会下载约 170MB 的套件。通常无需手动处理，下载失败时再使用后文的备用方案。
 
-**启动前准备**：应用是**多照片库**模式——照片库通过网页端创建（首页引导：命名 → 链接 iCloud → 全量拉取）。照片库根目录为项目根的 `iCloudPhoto/`（每库 `iCloudPhoto/lib<id>/`，文件夹结构固定 `YYYY/MM/DD`）；各库缓存与会话在 `server/cache/lib<id>/`，库注册表 `server/cache/meta.db`。旧版单库模式可用 `PHOTO_LIBRARY` 指向已有照片库（作为激活库默认目录），但推荐走网页端多库引导。
+**启动前准备**：应用是**多照片库**模式——照片库通过网页端创建（首页引导：命名 → 链接 iCloud → 全量拉取）。照片库根目录为项目根的 `iCloudPhoto/`（每库 `iCloudPhoto/lib<id>/`，文件夹结构固定 `YYYY/MM/DD`）；各库缓存与会话在 `server/cache/lib<id>/`，库注册表 `server/cache/meta.db`。这些路径在建库时按项目根派生并写入注册表，**不支持用环境变量改到别处**（多库下 cookie、照片目录、数据库三者绑定，单独挪其中一项会造成半迁移状态）。
 
 ```powershell
 # 终端一：安装并启动后端
@@ -51,14 +51,12 @@ npm run dev
 
 打开 http://localhost:5173 查看照片墙。首次启动后端会先收集媒体文件，再优先处理目录日期较新的文件；扫描期间，首批资产入库后照片墙会自动显示已入库内容，扫描结束后再自动刷新一次以同步最终数据。扫描完成后，剩余网格缩略图进入后台生成队列；已显示照片的缩略图仍按需加载。目录日期只用于安排处理顺序，照片墙最终仍按实际拍摄时间排序。后端之后也会在启动时增量同步，并监听照片库的文件变化。
 
-如需使用非默认照片库路径，可先在 `server/` 目录创建 `.env`：
+如需调整端口等可选参数，可复制模板后在 `server/.env` 修改（不创建也能正常启动，可用变量见文末「环境变量」）：
 
 ```powershell
 Set-Location .\server
 Copy-Item .env.example .env
 ```
-
-然后编辑 `server/.env`，设置 `PHOTO_LIBRARY`。
 
 ### 生产模式（单端口部署）
 
@@ -89,14 +87,12 @@ npm run start
 
 ### 环境变量（.env）
 
-所有路径/端口都支持环境变量覆盖。在 `server/` 目录建 `.env`（照 `.env.example` 复制），启动脚本已自动加载（Node 原生 `--env-file-if-exists=.env`，文件不存在也不影响）：
+端口、第三方二进制路径与调试开关支持环境变量覆盖。在 `server/` 目录建 `.env`（照 `.env.example` 复制），启动脚本已自动加载（Node 原生 `--env-file-if-exists=.env`，文件不存在也不影响）：
+
+> **照片库 / 缓存 / 数据库路径不再支持环境变量覆盖**（2026-11-01 移除 `PHOTO_LIBRARY`、`CACHE_DIR`、`DB_PATH`、`META_DB_PATH`）。多照片库下每库的照片目录、cache、cookie、`library.db` 与注册表 `meta.db` 通过绝对路径绑定，路径由建库时按项目根派生并记录在 `meta.db`；单独用环境变量挪动其中一项会导致「注册表在一处、库文件在另一处」的半迁移状态。要整体搬家请连同项目目录与 `server/cache` 一起移动。
 
 | 变量 | 默认值 | 说明 |
 |---|---|---|
-| `PHOTO_LIBRARY` | `<项目根>\\iCloudPhoto` | 激活库照片根默认目录（iCloudPD 输出，只读；多库下每库为 `iCloudPhoto\\lib<id>`） |
-| `CACHE_DIR` | `<项目根>\\server\\cache` | 缓存根（多库下每库 `cache\\lib<id>`；注册表 `meta.db` 固定在此根） |
-| `DB_PATH` | `<项目根>\\server\\cache\\library.db` | 激活库 SQLite 数据库文件（多库下按库目录自动派生） |
-| `META_DB_PATH` | `<项目根>\\server\\cache\\meta.db` | 库注册表 DB（多库共享，不随库切换） |
 | `ICLOUDPD_EXE` | `<项目根>\\server\\vendor\\icloudpd-1.32.3-windows-amd64.exe` | icloudpd 可执行文件（黑盒调用，版本锁定） |
 | ~~`ICLOUDPD_RECENT`~~ | — | 已废弃（2026-10-13）：同步限量改由设置中心按库 `recentLimit` 配置，不再读取此变量 |
 | `FFMPEG_DIR` | `<项目根>\\server\\vendor\\ffmpeg-full` | BtbN ffmpeg full 解压目录 |
@@ -104,6 +100,7 @@ npm run start
 | `PORT` | `8899` | 后端端口 |
 | `HOST` | `0.0.0.0` | 后端监听地址（默认全网卡，同一局域网设备可用 `http://<服务器IP>:8899` 访问；设 `127.0.0.1` 可收回仅本机） |
 | `SCAN_LIMIT` | `0`（全量） | 调试用，>0 只扫前 N 个文件 |
+| `MAX_UPLOAD_BYTES` | `0`（不限） | 导入上传的单文件大小上限 |
 
 优先级：命令行临时设置 > `.env` 文件 > 代码默认值。同一时间不要两个后端实例连同一个 `library.db`（SQLite 写锁冲突）。
 

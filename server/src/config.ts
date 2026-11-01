@@ -2,8 +2,15 @@
  * 全局配置
  *
  * 所有可调参数集中在这里，方便学习与调试。
- * 三个路径类配置均可通过环境变量覆盖（如 PHOTO_LIBRARY=D:/photos），
  * 默认值按本项目约定自动推导：server 目录的上一级是项目根。
+ *
+ * ⚠️ 照片库 / 缓存 / 数据库三类路径**不支持环境变量覆盖**（2026-11-01 移除 PHOTO_LIBRARY /
+ * CACHE_DIR / DB_PATH / META_DB_PATH）：
+ * - 多照片库后，每库的照片目录、cache、cookie、library.db、注册表 meta.db 通过绝对路径紧密绑定；
+ * - 单独用 env 把其中一项指到别处，会造成「注册表在一处、库文件在另一处」的半迁移状态，
+ *   建库时也无法可靠派生新库路径（config.libraryRoot 运行时会指向当前激活库，见 context.ts）；
+ * - 库路径统一由建库时按项目根派生并写入 meta.db，运行期再读回来（applyLibraryPaths）。
+ * 端口、vendor 二进制、调试开关等与库无关的参数仍支持环境变量覆盖。
  */
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -26,21 +33,24 @@ export const config = {
    */
   host: process.env.HOST ?? '0.0.0.0',
 
-  /** 照片库根目录（iCloudPD 输出，只读）：默认 F:\iPhone\icloud-app\iCloudPhoto */
-  libraryRoot: process.env.PHOTO_LIBRARY ?? path.join(projectRoot, 'iCloudPhoto'),
+  /**
+   * 照片库根目录：无库时的占位值；有库后由 context.applyLibraryPaths()
+   * 覆写为激活库的 library_root（本字段是运行时上下文，不是配置常量，勿用于派生新库路径）。
+   */
+  libraryRoot: path.join(projectRoot, 'iCloudPhoto'),
 
-  /** 缓存目录：缩略图 / 视频封面 / 转码产物都放这里（可随时删除重建） */
-  cacheDir: process.env.CACHE_DIR ?? path.join(projectRoot, 'server', 'cache'),
+  /** 缓存目录（同上，运行时被激活库的 cache_dir 覆写） */
+  cacheDir: path.join(projectRoot, 'server', 'cache'),
 
-  /** SQLite 数据库文件位置（支持环境变量覆盖，测试隔离/多实例部署用） */
-  dbPath: process.env.DB_PATH ?? path.join(projectRoot, 'server', 'cache', 'library.db'),
+  /** 激活库 SQLite 数据库文件（同上，运行时被覆写） */
+  dbPath: path.join(projectRoot, 'server', 'cache', 'library.db'),
 
   /**
    * 库注册表 DB（应用级，多库共享一份；固定放 server/cache 根，不随激活库切换）。
    * 记录每个照片库的 名称/根目录/cache 目录/cookie 目录/账号/同步状态/激活标记。
    * 随 cache 清理重建 = 重新注册库，可接受。
    */
-  metaDbPath: process.env.META_DB_PATH ?? path.join(projectRoot, 'server', 'cache', 'meta.db'),
+  metaDbPath: path.join(projectRoot, 'server', 'cache', 'meta.db'),
 
   /**
    * icloudpd 可执行文件（黑盒调用，版本锁定）。
