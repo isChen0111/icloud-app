@@ -16,7 +16,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { config } from '../config.js'
 import { getDb } from '../db/index.js'
-import { readImageMeta, readVideoMeta, normalizeDate, parseDateFromDir, baseName } from '../metadata/index.js'
+import { readImageMeta, readVideoMeta, normalizeDate, parseDateFromDir, isTrustedDateDir, baseName } from '../metadata/index.js'
 import { beginThumbnailBatch, enqueueAsset, resetThumbnailProgress } from '../pipeline/queue.js'
 import { isCacheUsable, thumbCachePath } from '../pipeline/thumbnails.js'
 import { toDateCompact, toLocalIso } from '../utils/date.js'
@@ -476,14 +476,17 @@ export async function runScan(
     }
 
     // 时间兜底链：EXIF/ffprobe → 目录 YYYY/MM/DD 与 mtime 印证 → 文件修改时间。
-    // 目录兜底仅适用于 icloudpd 下载的固定结构（YYYY/MM/DD，可靠）。
+    // 目录兜底只对程序自己写出的子树生效（icloud/ 由 icloudpd 按 assetDate 建目录，
+    // import/ 由导入按 resolveDate 结果建目录），见 metadata 的 isTrustedDateDir。
     // 「导入本地目录」不走这一环——用户目录结构多样不可信，由 import/resolveDate.ts
     // 用「EXIF/ffprobe → mtime」两环链单独处理（见 import/resolveDate.ts）。
     // 审查 2026-11-01：目录与 mtime 同源于 iCloud assetDate，两者同一天时优先用 mtime，
     // 恢复秒级精度（旧逻辑先目录后 mtime，会把无 EXIF 文件的时分秒丢成当天 00:00）；
     // 若不同天，说明 mtime 已被复制/编辑污染，退回「目录零点」保守处理。
+    // 同次审查补充：白名单外的路径不采信目录。用户手动复制的目录树若恰好形如
+    // YYYY/MM/DD（如备份日期），会把真实拍摄时间覆盖成目录日期。
     if (!dateTaken) {
-      const dirDate = parseDateFromDir(a.image.relPath)
+      const dirDate = isTrustedDateDir(a.image.relPath) ? parseDateFromDir(a.image.relPath) : null
       try {
         const st = fs.statSync(absPath)
         const mtimeIso = toLocalIso(st.mtime)

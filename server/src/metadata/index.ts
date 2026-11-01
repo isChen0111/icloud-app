@@ -27,6 +27,26 @@ export function parseDateFromDir(filePath: string): string | null {
   return toLocalIso(new Date(y, mo - 1, d))
 }
 
+/**
+ * 库内「目录日期可信」的子树白名单。
+ *
+ * 只有这两处的 YYYY/MM/DD 是程序自己按真实拍摄日期建出来的：
+ *   - `icloud/`：icloudpd 按 iCloud 返回的 assetDate 建目录，结构固定；
+ *   - `import/`：导入时按 resolveDate() 的结果建目录。
+ *
+ * 库根下的其他位置都可能是用户手动复制进来的，目录名与拍摄日期没有必然关系。
+ * 实测反例（2026-11-01）：把一个备份目录整体复制成 `lib/我的备份/2021/07/08/`，
+ * 里面那张 2016 年拍的照片会被目录日期强行改成 2021-07-08 零点——既错日期，
+ * 又丢秒级精度。因此白名单外的路径一律不采信目录，只走 EXIF → mtime。
+ */
+const TRUSTED_DATE_SUBTREES = ['icloud/', 'import/']
+
+/** 该库内相对路径是否位于「目录日期可信」的子树内（见 TRUSTED_DATE_SUBTREES） */
+export function isTrustedDateDir(relPath: string): boolean {
+  const normalized = relPath.replace(/\\/g, '/')
+  return TRUSTED_DATE_SUBTREES.some((prefix) => normalized.startsWith(prefix))
+}
+
 /** 图片元数据（EXIF 提取结果） */
 export interface ImageMeta {
   /** 拍摄时间（ISO8601 字符串）或 null；= dateTimeOriginal ?? createDate */
