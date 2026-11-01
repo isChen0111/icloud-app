@@ -1,10 +1,12 @@
 /**
  * 「导入本地照片目录」类型定义
  *
- * 功能边界（2026-10-30）：把用户自己维护的、结构多样的本地照片目录，按统一规范
- * （YYYY/MM/DD）迁移进项目照片库的 import/ 子目录，与 icloudpd 下载的 icloud/ 子目录
- * 物理隔离、逻辑统一浏览。导入不对源文件做任何改动（不改名、不改元数据、不转码），
- * 只改存放位置；默认复制，可选「导入后删除源文件」。
+ * 功能边界（2026-10-30，2026-11-01 修订）：把用户自己维护的、结构多样的本地照片目录，
+ * 按统一规范（YYYY/MM/DD）迁移进项目照片库的 import/ 子目录，与 icloudpd 下载的 icloud/
+ * 子目录物理隔离、逻辑统一浏览。**源文件**不做任何改动（不改名、不改元数据、不转码）；
+ * 但落位到库内的副本会补写拍摄时间——缺 0x9003 的 JPEG 会把导入时确定的日期写进
+ * EXIF（见 metadata/exifWrite.ts），这是当前唯一会改写文件内容的环节，且只发生于副本。
+ * 默认复制，可选「导入后删除源文件」。
  */
 
 /** 导入模式：copy = 保留源文件；move = 导入成功后删除源文件 */
@@ -36,8 +38,12 @@ export interface ImportProgress {
   totalFiles: number
   /** 已完成文件数（含跳过） */
   processedFiles: number
-  /** 同名且 size+mtime 相同 → 视为已导入而跳过的数量 */
+  /** 同名且 mtime 相同 → 视为已导入而跳过的数量 */
   skipped: number
+  /** 落位后成功补写拍摄时间（EXIF 0x9003/0x9004）的文件数 */
+  exifPatched: number
+  /** 补写失败数（不影响文件已落位入库，单独计数避免与 failedCount 混淆） */
+  exifFailed: number
   failedCount: number
   /** 失败清单（环形缓冲，最多保留最近 200 条） */
   failures: ImportFailure[]

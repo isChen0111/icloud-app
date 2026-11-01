@@ -197,6 +197,7 @@ onBeforeUnmount(() => {
         <p class="import-count">
           已处理 {{ state.processedFiles }} / {{ state.totalFiles }}
           <template v-if="state.skipped > 0"> · 跳过 {{ state.skipped }}</template>
+          <template v-if="state.exifPatched > 0"> · 补写时间 {{ state.exifPatched }}</template>
           <template v-if="state.failedCount > 0"> · 失败 {{ state.failedCount }}</template>
         </p>
         <div v-if="state.failures.length" class="import-failures">

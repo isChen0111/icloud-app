@@ -280,6 +280,10 @@ export interface ImportState {
   totalFiles: number
   processedFiles: number
   skipped: number
+  /** 落位后成功补写拍摄时间（EXIF）的文件数 */
+  exifPatched: number
+  /** 补写失败数（文件仍已导入，只是没写上时间） */
+  exifFailed: number
   failedCount: number
   failures: ImportFailure[]
   startedAt: string | null

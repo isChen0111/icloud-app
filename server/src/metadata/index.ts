@@ -29,8 +29,16 @@ export function parseDateFromDir(filePath: string): string | null {
 
 /** 图片元数据（EXIF 提取结果） */
 export interface ImageMeta {
-  /** 拍摄时间（ISO8601 字符串）或 null */
+  /** 拍摄时间（ISO8601 字符串）或 null；= dateTimeOriginal ?? createDate */
   dateTaken: string | null
+  /**
+   * EXIF 0x9003 DateTimeOriginal（已归一化）。null 表示文件**没有该标签**——
+   * 补写 EXIF 的判据就是它是否为 null（见 metadata/exifWrite.ts），
+   * 所以这里不能和 CreateDate 合并成 dateTaken，否则分不清「本来就有」和「兜底来的」。
+   */
+  dateTimeOriginal: string | null
+  /** EXIF 0x9004 CreateDate / DateTimeDigitized（已归一化），null 表示没有该标签 */
+  createDate: string | null
   /** EXIF 方向 1~8 */
   orientation: number | null
   /** 像素尺寸（可能为 null，此时需 sharp 兜底） */
@@ -60,8 +68,13 @@ export async function readImageMeta(absPath: string): Promise<ImageMeta> {
     })
     const lat = dmsToDecimal(exif?.GPSLatitude)
     const lon = dmsToDecimal(exif?.GPSLongitude)
+    // 分别归一化再合并：dateTaken 供扫描/展示用，另外两个供补写判据用
+    const dateTimeOriginal = normalizeDate(exif?.DateTimeOriginal)
+    const createDate = normalizeDate(exif?.CreateDate)
     return {
-      dateTaken: exif?.DateTimeOriginal ?? exif?.CreateDate ?? null,
+      dateTaken: dateTimeOriginal ?? createDate,
+      dateTimeOriginal,
+      createDate,
       orientation: exif?.Orientation ?? null,
       width: exif?.ImageWidth ?? null,
       height: exif?.ImageHeight ?? null,
@@ -69,7 +82,15 @@ export async function readImageMeta(absPath: string): Promise<ImageMeta> {
     }
   } catch {
     // exifr 解析失败（如损坏文件）时返回空对象，由调用方兜底
-    return { dateTaken: null, orientation: null, width: null, height: null, gps: null }
+    return {
+      dateTaken: null,
+      dateTimeOriginal: null,
+      createDate: null,
+      orientation: null,
+      width: null,
+      height: null,
+      gps: null,
+    }
   }
 }
 
