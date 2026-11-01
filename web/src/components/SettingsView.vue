@@ -229,30 +229,28 @@ async function switchTo(lib: LibraryInfo): Promise<void> {
 
 /**
  * 打开「导入本地照片目录」弹窗。
- * 导入只允许对当前激活库执行（后端 runScan 只能扫激活库）：非激活库先切库（切库会整页刷新），
- * 刷新后该库成为激活库，用户再点一次「导入」即可打开弹窗。
+ * 导入只允许对当前激活库执行（后端 runScan 只能扫激活库）。非激活库的按钮已禁用，
+ * 这里保留守卫防止其他入口误调。
  */
 function openImport(lib: LibraryInfo): void {
-  if (!lib.active) {
-    void switchTo(lib)
-    return
-  }
+  if (!lib.active) return
   importTarget.value = lib
 }
 
-/** 刚复制了哪个库的目录（用于按钮上「已复制」的短暂反馈） */
-const copiedLibId = ref<number | null>(null)
+/** 刚复制了哪个字段（`libId:root|cache|cookie`），用于按钮上「已复制」的短暂反馈 */
+const copiedKey = ref('')
 
 /**
- * 复制照片库目录到剪贴板。
+ * 复制库相关路径到剪贴板（目录 / 缓存 / 会话）。
  *
  * 只做「复制」不提供「在资源管理器中打开」：后端可能就是另一台机器（上传导入正是这个场景），
  * 在服务端点开只会在那台机器上弹窗，本机用户看不到，反而误导。复制后粘到地址栏最稳。
  * localhost 属于安全上下文可用 clipboard API；局域网 IP 访问时退回 execCommand。
  */
-async function copyRoot(lib: LibraryInfo): Promise<void> {
-  const text = lib.libraryRoot
+async function copyPath(lib: LibraryInfo, field: 'root' | 'cache' | 'cookie'): Promise<void> {
+  const text = field === 'root' ? lib.libraryRoot : field === 'cache' ? lib.cacheDir : lib.cookieDir
   if (!text) return
+  const key = `${lib.id}:${field}`
   try {
     if (navigator.clipboard && window.isSecureContext) {
       await navigator.clipboard.writeText(text)
@@ -266,9 +264,9 @@ async function copyRoot(lib: LibraryInfo): Promise<void> {
       document.execCommand('copy')
       document.body.removeChild(ta)
     }
-    copiedLibId.value = lib.id
+    copiedKey.value = key
     window.setTimeout(() => {
-      if (copiedLibId.value === lib.id) copiedLibId.value = null
+      if (copiedKey.value === key) copiedKey.value = ''
     }, 1600)
   } catch {
     // 复制失败不阻断：路径文本本身可手动选中
@@ -375,37 +373,77 @@ onBeforeUnmount(() => {
                     </svg>
                     {{ switchingId === lib.id ? '切换中…' : '切换照片库' }}
                   </button>
-                  <button class="btn-ghost" type="button" @click="emit('open-auth', { id: lib.id, name: lib.name, account: lib.account })">
-                    {{ lib.authStatus === 'none' ? '新建链接' : '刷新链接' }}
-                  </button>
+                  <!-- 链接 iCloud / 导入：把照片弄进来的两条路径，是卡片里最重要的两个动作。
+                       用淡蓝底 + 蓝字表达层级，不用实心块——标题行已有蓝色「当前」胶囊，
+                       再加两个实心按钮会互相打架 -->
                   <button
-                    class="btn-ghost"
+                    class="btn-ghost accent"
                     type="button"
-                    :title="lib.active ? '导入本地照片目录（本机迁移 / 其他设备上传）' : '需先切换到该库才能导入'"
+                    :title="lib.authStatus === 'none' ? '登录 iCloud 账号，之后可以同步拉取云端照片' : '更新 iCloud 会话（会话过期时需要）'"
+                    @click="emit('open-auth', { id: lib.id, name: lib.name, account: lib.account })"
+                  >
+                    {{ lib.authStatus === 'none' ? '链接 iCloud' : '刷新链接' }}
+                  </button>
+                  <!-- 非激活库真禁用：导入依赖激活库（后端 runScan 只能扫激活库）。
+                       样式对齐同步按钮的 locked——虚线框 + 灰底 + 锁图标，静态即可辨识 -->
+                  <button
+                    class="btn-ghost accent"
+                    :class="{ locked: !lib.active }"
+                    type="button"
+                    :disabled="!lib.active"
+                    :title="lib.active ? '导入本地照片目录（本机迁移 / 其他设备上传）' : '该库不是当前照片库，切换过来之后才能导入'"
                     @click="openImport(lib)"
-                  >导入</button>
+                  >
+                    <svg v-if="!lib.active" class="lock-ico" viewBox="0 0 24 24" aria-hidden="true">
+                      <rect x="5" y="10.5" width="14" height="9.5" rx="2.2" />
+                      <path d="M8.5 10.5V7.8a3.5 3.5 0 0 1 7 0v2.7" />
+                    </svg>
+                    导入
+                  </button>
                   <button class="btn-ghost danger" type="button" @click="openDelete(lib)">删除</button>
                 </div>
               </div>
               <div class="lib-card-count">{{ lib.photos }} 张照片 · {{ lib.videos }} 个视频</div>
               <div class="lib-card-meta">
                 <div class="meta-row"><span class="meta-key">账号</span><code>{{ lib.account ?? '—' }}</code></div>
+                <!-- 展示这三条路径是为了让用户能翻找、备份（只读用途）。写入必须走导入，
+                     否则库里会出现任意目录结构、任意 mtime、同名不同内容等无法判定的状态。
+                     这句话不占一整行，收在「目录」旁的提示图标里 -->
                 <div class="meta-row">
-                  <span class="meta-key">目录</span>
+                  <span class="meta-key">
+                    目录
+                    <span class="hint-wrap" tabindex="0" aria-label="目录说明">
+                      <svg class="hint-ico" viewBox="0 0 16 16" aria-hidden="true">
+                        <circle cx="8" cy="8" r="6.4" />
+                        <path d="M8 7.2v4" />
+                        <path d="M8 4.9v.1" />
+                      </svg>
+                      <span class="hint-pop" role="tooltip">
+                        此目录由程序管理。要添加自己的照片请用「导入」——直接复制进来会导致日期取错、重复照片无法识别。
+                      </span>
+                    </span>
+                  </span>
                   <code>{{ lib.libraryRoot ?? '—' }}</code>
-                  <button v-if="lib.libraryRoot" class="meta-copy" type="button" @click="copyRoot(lib)">
-                    {{ copiedLibId === lib.id ? '已复制' : '复制' }}
+                  <button v-if="lib.libraryRoot" class="meta-copy" type="button" @click="copyPath(lib, 'root')">
+                    {{ copiedKey === `${lib.id}:root` ? '已复制' : '复制' }}
                   </button>
                 </div>
-                <div class="meta-row"><span class="meta-key">缓存</span><code>{{ lib.cacheDir ?? '—' }}</code></div>
-                <div class="meta-row"><span class="meta-key">会话</span><code>{{ lib.cookieDir ?? '—' }}</code></div>
+                <div class="meta-row">
+                  <span class="meta-key">缓存</span>
+                  <code>{{ lib.cacheDir ?? '—' }}</code>
+                  <button v-if="lib.cacheDir" class="meta-copy" type="button" @click="copyPath(lib, 'cache')">
+                    {{ copiedKey === `${lib.id}:cache` ? '已复制' : '复制' }}
+                  </button>
+                </div>
+                <div class="meta-row">
+                  <span class="meta-key">会话</span>
+                  <code>{{ lib.cookieDir ?? '—' }}</code>
+                  <button v-if="lib.cookieDir" class="meta-copy" type="button" @click="copyPath(lib, 'cookie')">
+                    {{ copiedKey === `${lib.id}:cookie` ? '已复制' : '复制' }}
+                  </button>
+                </div>
                 <div class="meta-row"><span class="meta-key">最近同步</span><code>{{ lib.lastSyncAt ? new Date(lib.lastSyncAt).toLocaleString('zh-CN') : '从未' }}</code></div>
               </div>
-              <!-- 展示目录是为了让用户能翻找/备份（只读用途）；写入必须走导入，
-                   否则库里会出现任意目录结构、任意 mtime、同名不同内容等无法判定的状态 -->
-              <p class="lib-dir-hint">
-                此目录由程序管理。要添加自己的照片请用「导入」——直接复制进来会导致日期取错、重复照片无法识别。
-              </p>
 
               <!-- 照片库配置：untilFound / recentLimit 可编辑；其他官方参数按默认值锁死只读。
                    折叠状态下也显示当前两个关键参数，顺序为「标题 → 折叠箭头 → 参数摘要」 -->
@@ -720,6 +758,48 @@ onBeforeUnmount(() => {
   stroke-linejoin: round;
 }
 .btn-ghost:disabled { opacity: 0.45; cursor: not-allowed; }
+/* 「链接 iCloud」「导入」：把照片弄进来的两条路径，是卡片里最主要的动作。
+   淡蓝底 + 蓝字比灰描边高一级，又不用实心块——标题行已有蓝色「当前」胶囊，
+   两个实心按钮会互相打架。同时这两个按钮带 inline-flex 以容纳锁图标 */
+.btn-ghost.accent {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border-color: rgb(67 132 238 / 40%);
+  background: rgb(67 132 238 / 8%);
+  color: #3577dc;
+  font-weight: 600;
+}
+.btn-ghost.accent:hover {
+  border-color: #4384ee;
+  background: rgb(67 132 238 / 15%);
+  color: #2f6ed0;
+}
+/* 非激活库的「导入」：真禁用。对齐同步按钮的 locked——虚线框 + 灰底 + 锁图标，
+   静态即可辨识，hover 不给任何高亮，避免「看起来还能点」 */
+.btn-ghost.accent.locked {
+  border-style: dashed;
+  border-color: var(--border);
+  background: var(--bg-field);
+  color: var(--text-3);
+  font-weight: 500;
+  opacity: 1;
+}
+.btn-ghost.accent.locked:hover {
+  border-color: var(--border);
+  background: var(--bg-field);
+  color: var(--text-3);
+}
+.lock-ico {
+  width: 11px;
+  height: 11px;
+  flex-shrink: 0;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
 /* 信息列表：label 固定宽灰色，value 主色，扫读对齐 */
 .lib-card-meta {
   margin-top: 10px;
@@ -739,7 +819,7 @@ onBeforeUnmount(() => {
   color: var(--text-2);
   word-break: break-all;
 }
-/* 目录行的「复制」按钮：靠右对齐，弱化到不像主要操作 */
+/* 路径行右侧的「复制」按钮：靠右对齐，弱化到不像主要操作 */
 .meta-copy {
   margin-left: auto;
   flex: 0 0 auto;
@@ -752,15 +832,57 @@ onBeforeUnmount(() => {
   line-height: 16px;
   cursor: pointer;
 }
-.meta-copy:hover { color: var(--text-1); }
-/* 目录只读语义说明：左侧竖线弱提示，不与正文抢注意力 */
-.lib-dir-hint {
-  margin: 8px 0 0;
-  padding-left: 8px;
-  border-left: 2px solid var(--border);
+.meta-copy:hover { border-color: #4384ee; color: #4384ee; }
+/* 目录说明：挂在「目录」二字旁的提示图标上，hover / 键盘聚焦时浮出气泡。
+   不占一整行，也不与正文抢注意力 */
+.hint-wrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  vertical-align: -1px;
+  outline: none;
+}
+.hint-ico {
+  width: 12px;
+  height: 12px;
+  fill: none;
+  stroke: var(--text-3);
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  cursor: help;
+  transition: stroke 0.14s ease;
+}
+.hint-wrap:hover .hint-ico,
+.hint-wrap:focus-visible .hint-ico { stroke: #4384ee; }
+.hint-pop {
+  position: absolute;
+  left: -8px;
+  top: calc(100% + 7px);
+  z-index: 40;
+  box-sizing: border-box;
+  width: 238px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-panel);
+  box-shadow: 0 8px 24px rgb(15 23 42 / 16%);
+  color: var(--text-2);
   font-size: 11px;
+  font-weight: 400;
   line-height: 1.55;
-  color: var(--text-3);
+  white-space: normal;
+  opacity: 0;
+  visibility: hidden;
+  transform: translateY(-3px);
+  transition: opacity 0.14s ease, transform 0.14s ease, visibility 0.14s;
+  pointer-events: none;
+}
+.hint-wrap:hover .hint-pop,
+.hint-wrap:focus-visible .hint-pop {
+  opacity: 1;
+  visibility: visible;
+  transform: none;
 }
 /* 照片/视频数：普通灰色小字，不做胶囊标签 */
 .lib-card-count {

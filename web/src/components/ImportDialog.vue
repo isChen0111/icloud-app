@@ -44,9 +44,16 @@ const totalSizeText = computed(() => {
   return `${bytes} B`
 })
 
+/** 已选文件夹名（取自 webkitRelativePath 第一段，用于确认选对了目录） */
+const pickedFolder = ref('')
+
 function onPickFiles(e: Event): void {
   const input = e.target as HTMLInputElement
-  files.value = Array.from(input.files ?? [])
+  const list = Array.from(input.files ?? [])
+  // 用户点「取消」时多数浏览器不触发 change；真触发时空列表不清掉已选，避免误清空
+  if (list.length === 0) return
+  files.value = list
+  pickedFolder.value = list[0]?.webkitRelativePath.split('/')[0] ?? ''
 }
 
 async function startLocal(): Promise<void> {
@@ -214,8 +221,8 @@ onBeforeUnmount(() => {
       <!-- 空闲：模式选择 + 输入 -->
       <div v-else class="import-body">
         <div class="import-tabs" role="tablist">
-          <button class="import-tab" :class="{ active: mode === 'local' }" type="button" @click="mode = 'local'">本机迁移</button>
-          <button class="import-tab" :class="{ active: mode === 'upload' }" type="button" @click="mode = 'upload'">上传</button>
+          <button class="import-tab" :class="{ active: mode === 'local' }" type="button" role="tab" @click="mode = 'local'">本机迁移</button>
+          <button class="import-tab" :class="{ active: mode === 'upload' }" type="button" role="tab" @click="mode = 'upload'">上传</button>
         </div>
 
         <!-- 本机迁移 -->
@@ -225,20 +232,34 @@ onBeforeUnmount(() => {
             <input v-model="localPath" type="text" placeholder="例如：D:\照片\2024 或 F:\Photos\旅行" />
             <small>这是运行本应用的那台电脑上的目录路径，程序会递归遍历其中的照片/视频，按拍摄日期归置到照片库。</small>
           </label>
-          <label class="import-check">
+          <label class="import-option">
             <input v-model="localMove" type="checkbox" />
-            <span>导入后删除源文件（默认保留源文件，只复制）</span>
+            <span class="import-option-text">
+              <span>导入后删除源文件</span>
+              <small>默认保留源文件，只做复制</small>
+            </span>
           </label>
         </div>
 
         <!-- 上传 -->
         <div v-else class="import-pane">
-          <label class="import-field">
+          <div class="import-field">
             <span>选择要上传的文件夹（整文件夹）</span>
-            <input type="file" webkitdirectory multiple @change="onPickFiles" />
+            <label class="file-pick" :class="{ picked: files.length > 0 }">
+              <input type="file" webkitdirectory multiple @change="onPickFiles" />
+              <svg class="file-ico" viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M3.5 7.6A2 2 0 0 1 5.5 5.6h3.1l1.8 2.2h8.1a2 2 0 0 1 2 2v7.6a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2Z" />
+                <path d="M12 11.2v4.4M9.9 13.4 12 11.2l2.1 2.2" />
+              </svg>
+              <span>{{ files.length ? '重新选择文件夹' : '选择文件夹' }}</span>
+            </label>
             <small>浏览器会保留目录结构，保证实况照片（同目录同名的 HEIC+MOV）能正确配对。</small>
-          </label>
-          <p v-if="files.length" class="import-count">已选 {{ files.length }} 个文件 · 共 {{ totalSizeText }}</p>
+          </div>
+          <div v-if="files.length" class="import-picked">
+            <svg class="picked-ico" viewBox="0 0 16 16" aria-hidden="true"><path d="m3.1 8.1 3.1 3.1 6.7-6.7" /></svg>
+            <span class="picked-name">{{ pickedFolder }}</span>
+            <span class="picked-sum">{{ files.length }} 个文件 · {{ totalSizeText }}</span>
+          </div>
         </div>
 
         <p v-if="error" class="import-error" role="alert">{{ error }}</p>
@@ -264,7 +285,7 @@ onBeforeUnmount(() => {
   padding: 24px;
 }
 .import-dialog {
-  width: min(460px, 100%);
+  width: min(468px, 100%);
   border: 1px solid var(--border);
   border-radius: 14px;
   background: var(--bg-panel);
@@ -276,7 +297,7 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 14px 16px;
+  padding: 14px 18px;
   border-bottom: 1px solid var(--border);
 }
 .import-header strong { font-size: 14px; }
@@ -292,24 +313,40 @@ onBeforeUnmount(() => {
   cursor: pointer;
 }
 .import-close:hover { background: var(--bg-field-hover); color: var(--text-1); }
-.import-body { display: grid; gap: 14px; padding: 18px 20px 20px; }
+.import-body { display: grid; gap: 16px; padding: 18px 20px; }
 
-.import-tabs { display: flex; gap: 6px; border-bottom: 1px solid var(--border); }
+/* 模式切换：胶囊分段控件。比下划线 tab 更像「二选一」，也让下面两块内容有明确归属 */
+.import-tabs {
+  display: flex;
+  gap: 3px;
+  padding: 3px;
+  border-radius: 9px;
+  background: var(--bg-field);
+}
 .import-tab {
+  flex: 1;
   padding: 7px 14px;
   border: 0;
-  border-bottom: 2px solid transparent;
+  border-radius: 7px;
   background: transparent;
   color: var(--text-2);
   font: inherit;
-  font-size: 12.5px;
+  font-size: 12px;
+  font-weight: 500;
   cursor: pointer;
+  transition: color 0.15s ease, background 0.15s ease, box-shadow 0.15s ease;
 }
-.import-tab.active { color: #4384ee; border-bottom-color: #4384ee; font-weight: 600; }
+.import-tab:hover { color: var(--text-1); }
+.import-tab.active {
+  background: var(--bg-panel);
+  color: #3577dc;
+  font-weight: 600;
+  box-shadow: 0 1px 3px rgb(15 23 42 / 10%);
+}
 
-.import-pane { display: grid; gap: 10px; }
+.import-pane { display: grid; gap: 11px; }
 .import-field { display: grid; gap: 6px; }
-.import-field span { color: var(--text-1); font-size: 12px; font-weight: 600; }
+.import-field > span { color: var(--text-1); font-size: 12px; font-weight: 600; }
 .import-field input[type='text'] {
   width: 100%;
   box-sizing: border-box;
@@ -321,13 +358,104 @@ onBeforeUnmount(() => {
   font: inherit;
   font-size: 13px;
   outline: none;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
 }
+.import-field input[type='text']::placeholder { color: var(--text-3); }
 .import-field input[type='text']:focus { border-color: #4384ee; box-shadow: 0 0 0 3px rgb(67 132 238 / 14%); }
-.import-field small { color: var(--text-2); font-size: 10.5px; line-height: 1.5; }
-.import-field input[type='file'] { font-size: 12px; color: var(--text-2); }
+.import-field small { color: var(--text-2); font-size: 11px; line-height: 1.55; }
 
-.import-check { display: flex; align-items: flex-start; gap: 8px; font-size: 12px; color: var(--text-1); cursor: pointer; }
-.import-check input { margin-top: 2px; }
+/* 文件夹选择：原生 input[type=file] 在各浏览器长得都不一样且无法改样式，
+   所以把它变成一层透明覆盖层，外面用 label 画出统一按钮 */
+.file-pick {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  padding: 10px 14px;
+  border: 1px dashed rgb(67 132 238 / 48%);
+  border-radius: 9px;
+  background: rgb(67 132 238 / 5%);
+  color: #3577dc;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+.file-pick:hover { border-color: #4384ee; background: rgb(67 132 238 / 11%); }
+.file-pick.picked {
+  border-style: solid;
+  border-color: rgb(44 154 97 / 45%);
+  background: rgb(44 154 97 / 7%);
+  color: #2c9a61;
+}
+.file-pick.picked:hover { border-color: #2c9a61; background: rgb(44 154 97 / 12%); }
+.file-pick input[type='file'] {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+  cursor: pointer;
+}
+.file-ico {
+  width: 15px;
+  height: 15px;
+  flex: 0 0 auto;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+/* 已选结果：文件夹名单独一行，数量与体积靠右，避免和说明文字混在一起 */
+.import-picked {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 8px 11px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--bg-field);
+  font-size: 11.5px;
+}
+.picked-ico {
+  width: 13px;
+  height: 13px;
+  flex: 0 0 auto;
+  fill: none;
+  stroke: #2c9a61;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.picked-name { color: var(--text-1); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.picked-sum { margin-left: auto; flex: 0 0 auto; color: var(--text-3); }
+
+/* 「导入后删除源文件」：主文案 + 小字说明分两行，checkbox 用主题蓝 */
+.import-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  padding: 9px 11px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+.import-option:hover { border-color: rgb(67 132 238 / 40%); background: rgb(67 132 238 / 4%); }
+.import-option input[type='checkbox'] {
+  width: 14px;
+  height: 14px;
+  margin: 1px 0 0;
+  flex: 0 0 auto;
+  accent-color: #4384ee;
+  cursor: pointer;
+}
+.import-option-text { display: grid; gap: 2px; }
+.import-option-text > span { color: var(--text-1); font-size: 12px; }
+.import-option-text > small { color: var(--text-3); font-size: 10.5px; line-height: 1.45; }
 
 .import-status-line { display: flex; align-items: center; gap: 8px; }
 .import-status-line strong { font-size: 12.5px; font-weight: 650; }
@@ -342,6 +470,8 @@ onBeforeUnmount(() => {
   flex: 0 0 auto;
 }
 @keyframes import-spin { to { transform: rotate(360deg); } }
+/* 完成态对勾图标。注意：这个类名曾与「导入后删除源文件」的 label 同名，
+   后者的 width/height 被这条规则覆盖成 16px，导致文字挤压错位；label 已改名 .import-option */
 .import-check { width: 16px; height: 16px; fill: none; stroke: #2c9a61; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
 .import-err { width: 16px; height: 16px; fill: none; stroke: #d05245; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
 
@@ -357,19 +487,26 @@ onBeforeUnmount(() => {
 .import-failures-list span { font-size: 10.5px; color: var(--text-3); }
 
 .import-error { margin: 0; color: #d05245; font-size: 11px; line-height: 1.5; }
-.import-actions { display: flex; justify-content: flex-end; gap: 9px; }
+/* 底部操作区：加一条分隔线，让「取消/开始」从表单里独立出来 */
+.import-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 9px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
 .onboard-btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 5px;
-  padding: 7px 13px;
+  padding: 8px 16px;
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--bg-panel);
   color: var(--text-1);
   font: inherit;
-  font-size: 12px;
+  font-size: 12.5px;
   white-space: nowrap;
   cursor: pointer;
 }
