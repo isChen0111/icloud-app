@@ -123,11 +123,11 @@ function readAssets(): AssetRow[] {
 test('runScan：首次入库 + 目录日期兜底 + 实况配对，二次扫描幂等', async () => {
   const env = setup()
   try {
-    await writeJpeg(path.join(env.root, '2024', '09', '13', 'IMG_1.jpg'), 4)
-    await writeJpeg(path.join(env.root, '2024', '09', '13', 'IMG_2.jpg'), 5)
+    await writeJpeg(path.join(env.root, 'icloud', '2024', '09', '13', 'IMG_1.jpg'), 4)
+    await writeJpeg(path.join(env.root, 'icloud', '2024', '09', '13', 'IMG_2.jpg'), 5)
     // 同目录、同基名的 jpg + mov → 配成一张实况照片（mov 不再单独入库）
-    await writeJpeg(path.join(env.root, '2024', '09', '14', 'IMG_3.jpg'), 6)
-    fs.writeFileSync(path.join(env.root, '2024', '09', '14', 'IMG_3.mov'), 'fake-mov')
+    await writeJpeg(path.join(env.root, 'icloud', '2024', '09', '14', 'IMG_3.jpg'), 6)
+    fs.writeFileSync(path.join(env.root, 'icloud', '2024', '09', '14', 'IMG_3.mov'), 'fake-mov')
 
     await runScan('manual', { enqueueThumbnails: false })
     const first = readAssets()
@@ -156,11 +156,11 @@ test('runScan：无 EXIF 时目录与 mtime 印证（同日取 mtime、异日取
   const env = setup()
   try {
     // 两张无 EXIF 的图放在同一天目录下，但 mtime 分别「同一天」与「不同天」
-    const same = path.join(env.root, '2024', '09', '13', 'SAME.jpg')
+    const same = path.join(env.root, 'icloud', '2024', '09', '13', 'SAME.jpg')
     await writeJpeg(same, 4)
     fs.utimesSync(same, new Date(2024, 8, 13, 13, 0, 0), new Date(2024, 8, 13, 13, 0, 0))
 
-    const diff = path.join(env.root, '2024', '09', '13', 'DIFF.jpg')
+    const diff = path.join(env.root, 'icloud', '2024', '09', '13', 'DIFF.jpg')
     await writeJpeg(diff, 5)
     fs.utimesSync(diff, new Date(2024, 8, 20, 13, 0, 0), new Date(2024, 8, 20, 13, 0, 0))
 
@@ -173,6 +173,26 @@ test('runScan：无 EXIF 时目录与 mtime 印证（同日取 mtime、异日取
     assert.equal(sameRow.date_taken, toLocalIso(new Date(2024, 8, 13, 13, 0, 0)), 'mtime 与目录同日 → 取 mtime（秒级）')
     // 不同天：mtime 被污染，退回目录零点
     assert.equal(diffRow.date_taken, toLocalIso(new Date(2024, 8, 13)), 'mtime 与目录异日 → 保守取目录零点')
+  } finally {
+    teardown(env)
+  }
+})
+
+test('runScan：白名单子树外的目录日期不采信（用户手动复制进来的任意目录树）', async () => {
+  const env = setup()
+  try {
+    // 模拟用户把备份目录整个复制进库根：目录名恰好形如 YYYY/MM/DD，但那是备份日期
+    const manual = path.join(env.root, '我的备份', '2021', '07', '08', 'OLD.jpg')
+    await writeJpeg(manual, 4)
+    fs.utimesSync(manual, new Date(2016, 0, 2, 9, 30, 0), new Date(2016, 0, 2, 9, 30, 0))
+
+    await runScan('manual', { enqueueThumbnails: false })
+    const row = readAssets()[0]
+    assert.equal(
+      row.date_taken,
+      toLocalIso(new Date(2016, 0, 2, 9, 30, 0)),
+      '库根下的手动目录不参与日期兜底：应取 mtime 的真实拍摄时间，而不是目录名里的备份日期',
+    )
   } finally {
     teardown(env)
   }

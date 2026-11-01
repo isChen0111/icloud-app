@@ -23,6 +23,7 @@ import { isImportBusy, publicImportState } from '../import/state.js'
 import { isSyncBusy } from '../icloudpd/sync.js'
 import { scanProgress } from '../scanner/index.js'
 import { importTempDir, newImportSessionId, sanitizeRelPath, cleanImportTempDir, applyUploadMtimes } from '../import/upload.js'
+import { checkImportSource } from '../import/guard.js'
 
 export async function registerImportRoutes(app: FastifyInstance): Promise<void> {
   /** 校验目标库存在且为当前激活库；返回 null=放行，否则返回错误响应文案 */
@@ -60,6 +61,14 @@ export async function registerImportRoutes(app: FastifyInstance): Promise<void> 
       return reply.code(400).send({ error: '目录不存在或不可读' })
     }
     if (!st.isDirectory()) return reply.code(400).send({ error: '路径不是目录' })
+
+    // 目录守卫：拒绝库根、库内子目录、包含库根的上层目录、盘符根、缓存目录。
+    // 放在 stat 之后（此时路径已确定存在，realpath 不会抛）、启动之前（不在写入后才失败）。
+    const guard = checkImportSource(sourceDir, {
+      libraryRoot: resolved.lib!.library_root,
+      cacheDir: resolved.lib!.cache_dir,
+    })
+    if (!guard.ok) return reply.code(400).send({ error: guard.reason })
 
     const busy = inFlightGuard()
     if (busy) return reply.code(409).send({ error: busy })

@@ -12,10 +12,11 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { walkDir } from '../scanner/index.js'
-import { resolveDate } from './resolveDate.js'
+import { resolveDate, type ResolvedDate } from './resolveDate.js'
 import { dateToDir, pickTargetName } from './conflict.js'
 import { groupByPair, type RawImportFile } from './pair.js'
 import { importState } from './state.js'
+import { isExifToolAvailable, isPatchableImage, writeDateTaken } from '../metadata/exifWrite.js'
 import type { ImportOptions, ImportStatus } from './types.js'
 
 /** 与 scanner 一致的媒体扩展名（小写） */
@@ -101,7 +102,7 @@ export async function collectSourceFiles(sourceDir: string): Promise<RawImportFi
 }
 
 /**
- * 导入主循环：遍历 → 配对 → 提日期 → 归置（复制/移动）。
+ * 导入主循环：遍历 → 配对 → 提日期 → 归置（复制/移动）→ 补写 EXIF。
  *
  * 单文件失败不中断整体：失败记入 failures，继续下一个。取消（status='cancelled'）
  * 由 cancelImport() 设置，主循环每处理一个资产检查一次即退。
@@ -110,6 +111,30 @@ export async function importDirectory(opts: ImportOptions): Promise<void> {
   const raw = await collectSourceFiles(opts.sourceDir)
   const assets = groupByPair(raw)
 
+  // exiftool 可用性懒判定：本次导入没有任何需要补写的文件时，不启动常驻进程
+  let exifReady: boolean | null = null
+  const ensureExifReady = async (): Promise<boolean> => {
+    if (exifReady === null) exifReady = await isExifToolAvailable()
+    return exifReady
+  }
+
+  /**
+   * 落位成功后补写拍摄时间（只对 JPEG，且仅当本次日期不是来自 0x9003）。
+   *
+   * 补写失败不记入 failedCount：文件已经成功落位、能被扫描入库，只是少了一层日期固化；
+   * 混进「失败清单」会让用户以为照片没导进来。单独用 exifFailed 计数并在完成文案里提示。
+   */
+  const patchExif = async (targetPath: string, date: ResolvedDate): Promise<void> => {
+    try {
+      if (!(await ensureExifReady())) return
+      await writeDateTaken(targetPath, date.iso)
+      importState.exifPatched++
+    } catch (err) {
+      importState.exifFailed++
+      console.warn(`[import] 补写拍摄时间失败 ${targetPath}: ${(err as Error).message}`)
+    }
+  }
+
   let total = 0
   for (const a of assets) total += 1 + (a.liveVideo ? 1 : 0)
   // 注：status='running' 由编排层（import/index.ts）在启动时设置，这里只更新进度计数，
@@ -117,6 +142,8 @@ export async function importDirectory(opts: ImportOptions): Promise<void> {
   importState.totalFiles = total
   importState.processedFiles = 0
   importState.skipped = 0
+  importState.exifPatched = 0
+  importState.exifFailed = 0
   importState.failedCount = 0
   importState.failures = []
   importState.startedAt = new Date().toISOString()
@@ -134,13 +161,13 @@ export async function importDirectory(opts: ImportOptions): Promise<void> {
       importState.processedFiles = processed
       continue
     }
-    const ymd = dateToDir(date)
+    const ymd = dateToDir(date.iso)
     fs.mkdirSync(path.join(opts.targetRoot, ymd), { recursive: true })
 
     for (const f of parts) {
       if (isCancelled()) break
       try {
-        const { targetPath, skipped } = pickTargetName(opts.targetRoot, ymd, f.fileName, f.size, f.mtimeMs)
+        const { targetPath, skipped } = pickTargetName(opts.targetRoot, ymd, f.fileName, f.mtimeMs)
         if (skipped) {
           importState.skipped++
         } else if (opts.mode === 'copy') {
@@ -148,6 +175,10 @@ export async function importDirectory(opts: ImportOptions): Promise<void> {
           await fs.promises.cp(f.absPath, targetPath, { preserveTimestamps: true })
         } else {
           await moveFileCrossSafe(f.absPath, targetPath)
+        }
+        // 补写在落位之后：此时文件已归位，写失败也不会污染源文件；skipped 的不补（上次已补过）
+        if (!skipped && isPatchableImage(f.fileName) && date.source !== 'exif-datetime') {
+          await patchExif(targetPath, date)
         }
       } catch (err) {
         recordFailure(f.relPath, (err as Error).message)
@@ -163,7 +194,18 @@ export async function importDirectory(opts: ImportOptions): Promise<void> {
     importState.message = '已取消'
   } else {
     importState.status = 'done'
-    importState.message = '导入完成'
+    importState.message = importDoneMessage()
   }
   importState.finishedAt = new Date().toISOString()
+}
+
+/** 完成文案：把补写结果带上，否则「静默改写文件」用户无从感知 */
+function importDoneMessage(): string {
+  const patched = importState.exifPatched
+  const failed = importState.exifFailed
+  if (patched === 0 && failed === 0) return '导入完成'
+  const parts: string[] = []
+  if (patched > 0) parts.push(`已补写拍摄时间 ${patched} 个`)
+  if (failed > 0) parts.push(`补写失败 ${failed} 个`)
+  return `导入完成（${parts.join('，')}）`
 }

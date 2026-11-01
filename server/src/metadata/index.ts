@@ -27,10 +27,38 @@ export function parseDateFromDir(filePath: string): string | null {
   return toLocalIso(new Date(y, mo - 1, d))
 }
 
+/**
+ * 库内「目录日期可信」的子树白名单。
+ *
+ * 只有这两处的 YYYY/MM/DD 是程序自己按真实拍摄日期建出来的：
+ *   - `icloud/`：icloudpd 按 iCloud 返回的 assetDate 建目录，结构固定；
+ *   - `import/`：导入时按 resolveDate() 的结果建目录。
+ *
+ * 库根下的其他位置都可能是用户手动复制进来的，目录名与拍摄日期没有必然关系。
+ * 实测反例（2026-11-01）：把一个备份目录整体复制成 `lib/我的备份/2021/07/08/`，
+ * 里面那张 2016 年拍的照片会被目录日期强行改成 2021-07-08 零点——既错日期，
+ * 又丢秒级精度。因此白名单外的路径一律不采信目录，只走 EXIF → mtime。
+ */
+const TRUSTED_DATE_SUBTREES = ['icloud/', 'import/']
+
+/** 该库内相对路径是否位于「目录日期可信」的子树内（见 TRUSTED_DATE_SUBTREES） */
+export function isTrustedDateDir(relPath: string): boolean {
+  const normalized = relPath.replace(/\\/g, '/')
+  return TRUSTED_DATE_SUBTREES.some((prefix) => normalized.startsWith(prefix))
+}
+
 /** 图片元数据（EXIF 提取结果） */
 export interface ImageMeta {
-  /** 拍摄时间（ISO8601 字符串）或 null */
+  /** 拍摄时间（ISO8601 字符串）或 null；= dateTimeOriginal ?? createDate */
   dateTaken: string | null
+  /**
+   * EXIF 0x9003 DateTimeOriginal（已归一化）。null 表示文件**没有该标签**——
+   * 补写 EXIF 的判据就是它是否为 null（见 metadata/exifWrite.ts），
+   * 所以这里不能和 CreateDate 合并成 dateTaken，否则分不清「本来就有」和「兜底来的」。
+   */
+  dateTimeOriginal: string | null
+  /** EXIF 0x9004 CreateDate / DateTimeDigitized（已归一化），null 表示没有该标签 */
+  createDate: string | null
   /** EXIF 方向 1~8 */
   orientation: number | null
   /** 像素尺寸（可能为 null，此时需 sharp 兜底） */
@@ -60,8 +88,13 @@ export async function readImageMeta(absPath: string): Promise<ImageMeta> {
     })
     const lat = dmsToDecimal(exif?.GPSLatitude)
     const lon = dmsToDecimal(exif?.GPSLongitude)
+    // 分别归一化再合并：dateTaken 供扫描/展示用，另外两个供补写判据用
+    const dateTimeOriginal = normalizeDate(exif?.DateTimeOriginal)
+    const createDate = normalizeDate(exif?.CreateDate)
     return {
-      dateTaken: exif?.DateTimeOriginal ?? exif?.CreateDate ?? null,
+      dateTaken: dateTimeOriginal ?? createDate,
+      dateTimeOriginal,
+      createDate,
       orientation: exif?.Orientation ?? null,
       width: exif?.ImageWidth ?? null,
       height: exif?.ImageHeight ?? null,
@@ -69,7 +102,15 @@ export async function readImageMeta(absPath: string): Promise<ImageMeta> {
     }
   } catch {
     // exifr 解析失败（如损坏文件）时返回空对象，由调用方兜底
-    return { dateTaken: null, orientation: null, width: null, height: null, gps: null }
+    return {
+      dateTaken: null,
+      dateTimeOriginal: null,
+      createDate: null,
+      orientation: null,
+      width: null,
+      height: null,
+      gps: null,
+    }
   }
 }
 

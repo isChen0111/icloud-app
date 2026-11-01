@@ -240,6 +240,41 @@ function openImport(lib: LibraryInfo): void {
   importTarget.value = lib
 }
 
+/** 刚复制了哪个库的目录（用于按钮上「已复制」的短暂反馈） */
+const copiedLibId = ref<number | null>(null)
+
+/**
+ * 复制照片库目录到剪贴板。
+ *
+ * 只做「复制」不提供「在资源管理器中打开」：后端可能就是另一台机器（上传导入正是这个场景），
+ * 在服务端点开只会在那台机器上弹窗，本机用户看不到，反而误导。复制后粘到地址栏最稳。
+ * localhost 属于安全上下文可用 clipboard API；局域网 IP 访问时退回 execCommand。
+ */
+async function copyRoot(lib: LibraryInfo): Promise<void> {
+  const text = lib.libraryRoot
+  if (!text) return
+  try {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(text)
+    } else {
+      const ta = document.createElement('textarea')
+      ta.value = text
+      ta.style.position = 'fixed'
+      ta.style.opacity = '0'
+      document.body.appendChild(ta)
+      ta.select()
+      document.execCommand('copy')
+      document.body.removeChild(ta)
+    }
+    copiedLibId.value = lib.id
+    window.setTimeout(() => {
+      if (copiedLibId.value === lib.id) copiedLibId.value = null
+    }, 1600)
+  } catch {
+    // 复制失败不阻断：路径文本本身可手动选中
+  }
+}
+
 /**
  * 照片库配置摘要（折叠状态下也显示）：把两个最常调、也最容易忘的参数摆在明面上。
  * - 连续命中数：只作用于增量同步（--until-found），是「停」的条件而不是数量；
@@ -355,11 +390,22 @@ onBeforeUnmount(() => {
               <div class="lib-card-count">{{ lib.photos }} 张照片 · {{ lib.videos }} 个视频</div>
               <div class="lib-card-meta">
                 <div class="meta-row"><span class="meta-key">账号</span><code>{{ lib.account ?? '—' }}</code></div>
-                <div class="meta-row"><span class="meta-key">目录</span><code>{{ lib.libraryRoot ?? '—' }}</code></div>
+                <div class="meta-row">
+                  <span class="meta-key">目录</span>
+                  <code>{{ lib.libraryRoot ?? '—' }}</code>
+                  <button v-if="lib.libraryRoot" class="meta-copy" type="button" @click="copyRoot(lib)">
+                    {{ copiedLibId === lib.id ? '已复制' : '复制' }}
+                  </button>
+                </div>
                 <div class="meta-row"><span class="meta-key">缓存</span><code>{{ lib.cacheDir ?? '—' }}</code></div>
                 <div class="meta-row"><span class="meta-key">会话</span><code>{{ lib.cookieDir ?? '—' }}</code></div>
                 <div class="meta-row"><span class="meta-key">最近同步</span><code>{{ lib.lastSyncAt ? new Date(lib.lastSyncAt).toLocaleString('zh-CN') : '从未' }}</code></div>
               </div>
+              <!-- 展示目录是为了让用户能翻找/备份（只读用途）；写入必须走导入，
+                   否则库里会出现任意目录结构、任意 mtime、同名不同内容等无法判定的状态 -->
+              <p class="lib-dir-hint">
+                此目录由程序管理。要添加自己的照片请用「导入」——直接复制进来会导致日期取错、重复照片无法识别。
+              </p>
 
               <!-- 照片库配置：untilFound / recentLimit 可编辑；其他官方参数按默认值锁死只读。
                    折叠状态下也显示当前两个关键参数，顺序为「标题 → 折叠箭头 → 参数摘要」 -->
@@ -488,16 +534,16 @@ onBeforeUnmount(() => {
         </ul>
         <label class="delete-check">
           <input v-model="removePhotos" type="checkbox" @change="photoConfirmArmed = false" />
-          <span>同时删除本地已下载的照片副本（<code>{{ deleteTarget.libraryRoot ?? '—' }}</code>）</span>
+          <span>同时删除本地已下载的照片副本（<code>{{ deleteTarget.libraryRoot ?? '—' }}</code>，含你手动放入该目录的任何文件）</span>
         </label>
         <!-- R-21：勾选后必须说清后果，并且要再点一次按钮才真正删（默认不勾选）。
              文案随二次确认状态切换，两段共用一个提示框（不在弹窗里堆两条红字） -->
         <p v-if="removePhotos" class="delete-danger" :class="{ armed: photoConfirmArmed }" role="alert">
           <template v-if="photoConfirmArmed">
-            <b>已进入确认状态</b>：再点一次下方按钮，本地照片副本将被永久删除，且不进回收站、无法恢复。云端 iCloud 原片不受影响。
+            <b>已进入确认状态</b>：再点一次下方按钮，该目录内的全部文件（含你手动放入的）将被永久删除，且不进回收站、无法恢复。云端 iCloud 原片不受影响。
           </template>
           <template v-else>
-            勾选后上述目录内的原片会被<b>永久删除且不进回收站</b>，无法恢复。云端 iCloud 原片不受影响。
+            勾选后上述目录内的<b>全部文件（含你手动放入的）会被永久删除且不进回收站</b>，无法恢复。云端 iCloud 原片不受影响。
           </template>
         </p>
         <p v-if="deleteError" class="delete-error" role="alert">{{ deleteError }}</p>
@@ -692,6 +738,29 @@ onBeforeUnmount(() => {
   font-size: 11px;
   color: var(--text-2);
   word-break: break-all;
+}
+/* 目录行的「复制」按钮：靠右对齐，弱化到不像主要操作 */
+.meta-copy {
+  margin-left: auto;
+  flex: 0 0 auto;
+  padding: 0 6px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-3);
+  font-size: 10.5px;
+  line-height: 16px;
+  cursor: pointer;
+}
+.meta-copy:hover { color: var(--text-1); }
+/* 目录只读语义说明：左侧竖线弱提示，不与正文抢注意力 */
+.lib-dir-hint {
+  margin: 8px 0 0;
+  padding-left: 8px;
+  border-left: 2px solid var(--border);
+  font-size: 11px;
+  line-height: 1.55;
+  color: var(--text-3);
 }
 /* 照片/视频数：普通灰色小字，不做胶囊标签 */
 .lib-card-count {

@@ -15,6 +15,8 @@ export const importState: ImportProgress = {
   totalFiles: 0,
   processedFiles: 0,
   skipped: 0,
+  exifPatched: 0,
+  exifFailed: 0,
   failedCount: 0,
   failures: [],
   startedAt: null,
@@ -31,6 +33,8 @@ export function resetImportState(): void {
   importState.totalFiles = 0
   importState.processedFiles = 0
   importState.skipped = 0
+  importState.exifPatched = 0
+  importState.exifFailed = 0
   importState.failedCount = 0
   importState.failures = []
   importState.startedAt = null
