@@ -260,7 +260,7 @@ CREATE VIRTUAL TABLE assets_fts USING fts5(
 </pre>
 
 <h3>3.8 P0 照片库同步与多库（已落地，feat/icloudpd-sync）</h3>
-<p>P0 在既有单库架构上新增「<b>照片库注册表 + 单活跃库上下文</b>」与「<b>icloudpd 黑盒同步</b>」。完整设计规格见 <code>docs/iCloudPD照片库同步-架构功能设计.html</code>；本节为整体架构层面的落地要点。</p>
+<p>P0 在既有单库架构上新增「<b>照片库注册表 + 单活跃库上下文</b>」与「<b>icloudpd 黑盒同步</b>」。完整设计规格见 <code>docs/archive/iCloudPD照片库同步-架构功能设计.html</code>；本节为整体架构层面的落地要点。</p>
 
 <h4>3.8.1 多库注册表与激活上下文</h4>
 <ul>
@@ -285,6 +285,66 @@ ICLOUDPD_EXE    &lt;项目根&gt;/server/vendor/icloudpd-1.32.3-windows-amd64.ex
 ICLOUDPD_RECENT （已废弃；同步限量改由设置中心每库 recentLimit 配置）
 </pre>
 <p>多库下激活库的 <code>PHOTO_LIBRARY / CACHE_DIR / DB_PATH</code> 由 <code>context.ts</code> 按激活库实时覆写（<code>applyLibraryPaths</code>）；删除最后一个库后 <code>resetLibraryPaths</code> 回默认值。</p>
+
+<h3>3.9 导入本地照片目录（2026-10-31 落地）</h3>
+<p>应用最初只服务一个场景：浏览 icloudpd 拉下来的照片（目录结构固定 <code>YYYY/MM/DD</code>，与扫描逻辑互相配套）。但用户还有自己长期维护的照片目录——结构多样（按年份、按事件、按设备混着）、体量不小、不能直接搬进项目目录。导入功能把它们按统一规范迁进库内，与 iCloud 下载的照片一起浏览。</p>
+
+<h4>3.9.1 库结构：两个子树物理隔离</h4>
+<pre>
+iCloudPhoto/lib&lt;id&gt;/          <span class="c"># library_root（扫描递归此根，统一浏览）</span>
+├─ icloud/                    <span class="c"># icloudpd 下载目标（--directory 已指向），YYYY/MM/DD，程序管理</span>
+└─ import/                    <span class="c"># 用户导入，YYYY/MM/DD，程序管理</span>
+</pre>
+<ul>
+  <li><b>为什么必须分开</b>：icloudpd 增量同步用 <code>--until-found</code> 做对比，它只看 <code>icloud/</code>；如果把导入的照片混在同一层，增量判断会被无关文件干扰。物理隔离后，icloudpd 的世界里只有它自己下的东西。</li>
+  <li><b>为什么要用统一日期结构</b>：导入把任意源目录重排成 <code>YYYY/MM/DD</code>，扫描端就不需要为「用户目录长什么样」写一堆分支。资产表的 <code>file_path</code> 存相对库根的完整路径，天然带 <code>icloud/</code> 或 <code>import/</code> 前缀，不需要额外字段区分来源。</li>
+  <li><b>库目录是程序独占数据目录</b>：设置中心把路径展示出来并给复制按钮，是为了让人自己翻找或备份，<b>不表示可以往里手放文件</b>。任何写入都要走导入，否则绕过判重、日期与补写逻辑，必然产生副本与错日期。</li>
+</ul>
+
+<h4>3.9.2 日期链：两套，不要混用</h4>
+<table>
+<tr><th>场景</th><th>链路</th><th>为什么</th></tr>
+<tr><td>扫描 <code>scanner/</code></td><td>EXIF/ffprobe → <code>目录 YYYY/MM/DD</code> → 文件 mtime</td><td>icloudpd 的目录日期是可靠的（它按拍摄日期建目录），多一环兜底能救回元数据缺失的文件</td></tr>
+<tr><td>导入 <code>import/resolveDate.ts</code></td><td>EXIF/ffprobe → 文件 mtime</td><td><b>去掉目录兜底</b>：用户目录结构不可信，「2023 年整理」里放着 2019 年的照片是常态，采信目录会把日期写错</td></tr>
+</table>
+<ul>
+  <li>目录日期兜底还加了白名单 <code>isTrustedDateDir()</code>：只认 <code>icloud/</code> 与 <code>import/</code> 子树内的 <code>YYYY/MM/DD</code>。因为 <code>parseDateFromDir</code> 的正则在路径任意位置都能匹配，没有白名单时一个叫 <code>2019/</code> 的用户目录也会被当成日期。</li>
+  <li>时间基准全库统一为「<b>本地时间 + 时区偏移</b>」秒级无毫秒（如 <code>2026-10-25T16:47:15+08:00</code>），统一由 <code>utils/date.ts</code> 的 <code>toLocalIso()</code> 产出。理由：字符串序 = 本地时间序 = 真实顺序，<code>substr(date_taken,1,7)</code> 直接得到本地月份。迁移状态记在 <code>app_meta</code> 表的 <code>date_basis</code> 键（不要用 <code>PRAGMA user_version</code>，那个被 FTS 占用了）。</li>
+  <li>导入复制必须 <code>fs.cp({preserveTimestamps:true})</code> 保留源 mtime，否则无 EXIF 的文件日期会退化成复制时刻。</li>
+</ul>
+
+<h4>3.9.3 两个入口，落库后半段共用</h4>
+<ul>
+  <li><b>本机迁移</b>（<code>fsImport.ts</code>）：后端直读源目录。默认<b>复制</b>（保留源文件），可选<b>移动</b>（导入后删除源文件）。</li>
+  <li><b>上传</b>（<code>upload.ts</code>）：浏览器不能给后端本地路径，所以 <code>@fastify/multipart</code> 流式写盘到 <code>cache/lib&lt;id&gt;/import-tmp/&lt;sessionId&gt;/</code> 并保留相对路径，然后<b>复用同一条</b> <code>importDirectory</code> 流水线，跑完清临时目录。</li>
+  <li>两个入口的差异只在「文件怎么到本地」，之后完全同一套逻辑——这是避免两条路径行为漂移的关键。</li>
+</ul>
+
+<h4>3.9.4 落库流水线与判重</h4>
+<p>遍历取图片/视频 → 定日期 → 判重 → 落位 <code>import/YYYY/MM/DD/</code> → 实况配对（HEIC + MOV 同目录）→ 补写 EXIF。</p>
+<ul>
+  <li><b>判重用 size + mtime，不哈希</b>：同 size 且 mtime 差 ≤ <b>1ms</b> 视为同一文件（跳过）；否则重名时加 <code>(1)</code> 后缀。1ms 容差是踩出来的：Windows 上 <code>fs.cp({preserveTimestamps})</code> 会把源 mtime 的 100ns 精度进位成 1ms（如 <code>...4331.9983</code> → <code>...332</code>），用 <code>Math.trunc</code> 取整后恰好差 1ms，于是「同一张照片」被判成不同文件，反复导入就会堆出副本。全库哈希的成本对几万文件来说不可接受，且实际重复场景都是「同一批文件再导一次」。</li>
+  <li><b>为什么不按文件名判重</b>：不同设备、不同批次出现同名文件是常态（<code>IMG_0040.jpg</code> 满世界都是）。</li>
+  <li><b>补写 EXIF</b>（<code>metadata/exifWrite.ts</code>）：只对<b>缺失拍摄日期</b>的图片，用 exiftool-vendored 写 <code>DateTimeOriginal(0x9003)</code> 与 <code>CreateDate(0x9004)</code>，<b>绝不写</b> <code>0x0132 (ModifyDate)</code>——那一列有反例，写了反而让排序错乱。加 <code>-P</code> 保留文件 mtime，写完复读校验，必要时 <code>utimesSync</code> 回设。这一步为什么不放扫描里：源文件在用户手上，改人家的文件应该有明确的用户动作（导入就是那个动作）。</li>
+</ul>
+
+<h4>3.9.5 源目录守卫（<code>import/guard.ts</code>）</h4>
+<p>误把库根或磁盘根选成源目录，会导出一堆重复副本甚至把库自己导进自己。守卫用 <code>realpathSync</code>（解开 junction/symlink）+ Windows 下折叠大小写后，做双向包含判断，命中即 400：</p>
+<ul>
+  <li>目录不存在或不可读</li>
+  <li>盘符根 / UNC 根（<code>path.parse(src).root === src</code>）</li>
+  <li>源目录 = 库根</li>
+  <li>源目录在库根内部（<code>icloud/</code> 与 <code>import/</code> 由程序管理）</li>
+  <li>源目录包含库根（导库的父目录会把库内照片再导一遍）</li>
+  <li>源目录与 <code>cache/</code> 重叠（任一方包含另一方；缓存里是缩略图不是原片）</li>
+</ul>
+
+<h4>3.9.6 与扫描、激活库的关系</h4>
+<ul>
+  <li><b>仅限激活库</b>：导入结束要调 <code>runScan()</code> 入库，而扫描是单活跃库模型。非激活库点导入，前端先提示切库。</li>
+  <li><b>导入期间停 watcher</b>：复制过程会产生大量文件事件，chokidar 的 <code>awaitWriteFinish</code> 会为每个文件排 2 秒轮询，几万文件就是事件洪峰。所以导入开始时 <code>stopWatcher()</code>，结束后统一跑一次 <code>runScan('manual')</code> 一次性对账。</li>
+  <li><b>进度</b>：<code>importProgress</code> 仿 <code>scanProgress</code> 的形态（内存态，不建任务表），经 <code>/api/stats</code> 的 <code>import</code> 字段下发；失败清单上限 200 条。取消是「停止后续处理」，已落位的文件不回滚。</li>
+</ul>
 
 <h2>4. 前端设计（Vue 3）</h2>
 
@@ -376,7 +436,7 @@ ICLOUDPD_RECENT （已废弃；同步限量改由设置中心每库 recentLimit 
   <li><b>滚动位置保存/恢复</b>：deactivated 钩子与路由切换瞬间都读不到真值（DOM 已移出文档），改为 onScroll 持续记录 + onActivated 写回 + 派发 scroll 事件重算可视窗口。</li>
   <li><b>行高错位坑</b>：缓存期间 ResizeObserver 把 clientWidth 读成 0 → viewportWidth 污染 → 恢复瞬间用兜底行高测量 → 行重叠/间距异常（实测宽窗口重叠、窄窗口间距变大，同源）。修复：RO 忽略宽度 0 + 恢复时 rAF 内先 measure 再派发 scroll。</li>
   </ul></li>
-<li><b>✅ 缓存失效机制（P2+-1 已补齐，2026-10-01）</b>：KeepAlive 缓存的照片墙曾无法感知后端数据变化——现由前端 5 秒轮询扫描状态，扫描结束后刷新月份与已缓存页（尽量保留滚动位置），删除同步也走同一刷新路径。</li>
+<li><b>✅ 缓存失效机制（P2+-1 已补齐，2026-10-01）</b>：KeepAlive 缓存的照片墙曾无法感知后端数据变化——现由单一任务状态 store 轮询扫描状态，扫描结束后刷新月份与已缓存页（尽量保留滚动位置），删除同步也走同一刷新路径。</li>
 </ul>
 
 <h3>4.8 P2 搜索：FTS5 trigram 全文搜索（已落地）</h3>
@@ -426,7 +486,7 @@ ICLOUDPD_RECENT （已废弃；同步限量改由设置中心每库 recentLimit 
 <p>照片墙缩略图请求在「前端 → 网络 → 后端」链路中被三层机制逐级过滤，目标只有一个：<b>离屏 / 已失效的请求尽量不占用生成资源，正在看的图永远最优先</b>。</p>
 <ul>
 <li><b>闸 1 · IntersectionObserver（useLazyImage.ts）</b>：每个格子挂 IO，<code>rootMargin 300px</code> 预热、threshold 0.01——格子未进入视口 300px 范围内就不设置 <code>img src</code>，<b>不发请求</b>（快速滚过的大多数图浏览器层面零请求，最有效的一道闸）。</li>
-<li><b>闸 2 · 前端调度器（gridThumbnailScheduler.ts）</b>：pending / active 两级 Map；并发上限默认 8，挂载后经 <code>/api/stats.thumbConcurrency</code> 校准（后端 config 唯一来源，防漂移）。<code>pump()</code> 排序「可见优先 → 距视口近优先」；滚动触发经 <b>rAF 合并</b>（每帧最多一次 pump，避免 scroll 风暴中每帧 <code>getBoundingClientRect</code> 强制布局重算掉帧）；拖滚动条<b>按速度拆开</b>：慢速拖动（250ms 内位移 ≤ 1/5 视口）走 rAF 每帧派发 + 始终带预载（与普通滚动同体验，2026-10-07 fix/slow-drag-prefetch 修复「图片慢慢出现、松手才秒出」）；快速拖动置 <code>fastDrag</code> 跳过中间位置（防风暴，250ms 轮询仅作速度检测）；松开后 <b>180ms settle</b> 再按最终视口补位；日期跳转走 <code>prioritizeNextScroll()</code> 立即加载。格子销毁时 cancel 移除 pending / active 并补发。</li>
+<li><b>闸 2 · 前端调度器（gridThumbnailScheduler.ts）</b>：pending / active 两级 Map；并发上限默认 8，由任务状态 store 下发 <code>stats.thumbConcurrency</code> 并在其变化时同步（后端 config 唯一来源，防漂移；配置改动后已挂载页面即时生效）。<code>pump()</code> 排序「可见优先 → 距视口近优先」；滚动触发经 <b>rAF 合并</b>（每帧最多一次 pump，避免 scroll 风暴中每帧 <code>getBoundingClientRect</code> 强制布局重算掉帧）；拖滚动条<b>按速度拆开</b>：慢速拖动（250ms 内位移 ≤ 1/5 视口）走 rAF 每帧派发 + 始终带预载（与普通滚动同体验，2026-10-07 fix/slow-drag-prefetch 修复「图片慢慢出现、松手才秒出」）；快速拖动置 <code>fastDrag</code> 跳过中间位置（防风暴，250ms 轮询仅作速度检测）；松开后 <b>180ms settle</b> 再按最终视口补位；日期跳转走 <code>prioritizeNextScroll()</code> 立即加载。格子销毁时 cancel 移除 pending / active 并补发。</li>
 <li><b>闸 3 · 后端调度器（thumbnailScheduler.ts，F-01 修复核心 + 事件让位 2026-10-07）</b>：单一 p-queue，concurrency = <code>config.thumbConcurrency</code>（默认 8），任务分 <b>交互 priority=10 / 后台 priority=0</b>；后台任务始终入队、交互不足时后台填满剩余槽位（原「浏览租约 30s 挂起 + 60s 强制放行」已移除）。旧双队列（后台 8 + 交互 1 = 9 并发）合并后总并发严格 ≤ 8，交互插队先跑。</li>
 <li><b>F-02 检查点（轻量版）</b>：<code>/api/thumb/:id</code> 与 <code>/api/video/:id/poster</code> 的任务在「开始执行那一刻」检查 <code>req.raw.destroyed || req.raw.aborted</code>，已断开 → 跳过生成 + 计入「已跳过」（<code>cancelled</code>），静默结束、不进失败清单。局限：只拦「排队期间已断开」的请求，<b>运行中</b>断开不拦（完整版做任务撤销 / 运行中检查，暂缓）。</li>
 <li><b>协同效应与空转（重要结论）</b>：闸 2 限流（≤8 并发）→ 后端交互队列几乎永不排队 → F-02 拦截窗口（排队中断开）≈ 不存在——日常滚动「已跳过」恒为 0 是<b>预期行为</b>。F-02 定位 = 纵深防御（前端调度器异常时兜底）+ 极端积压保险（全量重建 + 浏览、慢任务占满槽位时）。诊断指标 <code>/api/stats.thumbQueueMetrics { running, interactiveRunning, interactiveWaiting, cancelled }</code> 已落地。</li>
@@ -437,9 +497,9 @@ ICLOUDPD_RECENT （已废弃；同步限量改由设置中心每库 recentLimit 
 <h2>5. 项目结构（已落地）</h2>
 <pre>
 F:\iPhone\icloud-app\
-├─ iCloudPhoto/              <span class="c"># 照片库根（P0 多库：iCloudPhoto/lib&lt;id&gt;/，icloudpd 拉取，只读，YYYY/MM/DD）</span>
+├─ iCloudPhoto/              <span class="c"># 照片库根（程序独占数据目录，应用内只读；每库 lib&lt;id&gt;/ 下分 icloud/ 与 import/ 两子树，见 §3.9）</span>
 ├─ iCloudTool/               <span class="c"># iCloudPD 用户工具（bat 脚本/官方文档/说明，应用不依赖；exe 已复制到 server\vendor）</span>
-├─ docs/                     <span class="c"># 架构设计文档 + iCloudPD同步架构功能设计 + 产品设计稿 + 上下文快照</span>
+├─ docs/                     <span class="c"># 活文档：架构设计文档 / CONTEXT 上下文快照 / 当前审查报告；archive/ 为历史快照（见 docs/README.md）</span>
 ├─ server/
 │  ├─ src/
 │  │  ├─ index.ts            <span class="c"># Fastify 入口（启动加载激活库；无库时前端进首次引导）</span>
@@ -449,22 +509,26 @@ F:\iPhone\icloud-app\
 │  │  ├─ cli-scan.ts         <span class="c"># 命令行扫描工具</span>
 │  │  ├─ db/schema.ts, index.ts  <span class="c"># SQLite 建表 + WAL 连接（better-sqlite3）；FTS 结构版本 user_version 化（F-06）</span>
 │  │  ├─ db/libraries.ts     <span class="c"># P0 库注册表（meta.db）：createLibrary（已有激活库时不激活）/list/getActive/setActive/updateAuth/touchSync/delete</span>
-│  │  ├─ metadata/index.ts   <span class="c"># exifr（EXIF/GPS/Orientation）+ ffprobe（视频时长）</span>
-│  │  ├─ scanner/index.ts, watcher.ts  <span class="c"># 目录扫描、实况配对（目录+基名）、UPSERT 幂等入库；chokidar 热监听（按激活库启停）</span>
+│  │  ├─ metadata/index.ts   <span class="c"># exifr（EXIF/GPS/Orientation）+ ffprobe（视频时长）；isTrustedDateDir（目录日期白名单）</span>
+│  │  ├─ metadata/exifWrite.ts  <span class="c"># 导入后补写拍摄时间：exiftool-vendored 只写 DateTimeOriginal(0x9003)/CreateDate(0x9004)，-P 保 mtime，写后复读校验</span>
+│  │  ├─ scanner/index.ts, watcher.ts  <span class="c"># 目录扫描、实况配对（目录+基名）、UPSERT 幂等入库；chokidar 热监听（按激活库启停）；日期三环链（EXIF/ffprobe→目录 YYYY/MM/DD→mtime）</span>
 │  │  ├─ pipeline/           <span class="c"># thumbnails + queue + thumbnailScheduler（F-01 单队列 priority + 事件让位，F-02 取消检测）+ in-flight 去重 + 扫描缓存对账 + 单元测试</span>
 │  │  ├─ icloudpd/auth.ts    <span class="c"># P0 认证：spawn webui auth-only + 轮询 8080/status + sendAuthInput（inputLock 防重）+ checkAuthValid + stopAuth</span>
 │  │  ├─ icloudpd/sync.ts, state.ts  <span class="c"># P0 同步：全量/增量（--until-found 20 / --recent N）+ waiting_retry（60s×5）+ done/error/cancelled + 全局单任务内存态</span>
-│  │  └─ routes/             <span class="c"># assets/thumb/video/stats/search/info/thumbnail-errors + P0 libraries（CRUD+active）/auth（start/input/status/cancel）/sync（post/get/delete）</span>
-│  ├─ scripts/               <span class="c"># install-ffmpeg-full.ps1（HEIC 解码）</span>
+│  │  ├─ import/            <span class="c"># 导入本地目录：fsImport（落库流水线）/upload（流式上传）/resolveDate（无目录兜底的 EXIF|ffprobe→mtime 两环链）/conflict（判重）/pair（实况配对）/guard（源目录六种拒绝）/state</span>
+│  │  ├─ stats/sizeCache.ts <span class="c"># 体积缓存工厂（依赖注入）：任务期不遍历、contextKey=dbPath|libraryRoot 切库即失效、walkSize 带中止回调</span>
+│  │  └─ routes/             <span class="c"># assets/thumb/video/stats/search/info/thumbnail-errors + libraries（CRUD+active）/auth（start/input/status/cancel）/sync（post/get/delete）/import（scan/upload/get/delete）</span>
+│  ├─ scripts/               <span class="c"># install-ffmpeg-full.ps1（HEIC 解码）+ install-icloudpd.ps1（同步 exe），postinstall 串联</span>
 │  ├─ vendor/                <span class="c"># ffmpeg-full/（含 libheif）+ icloudpd-1.32.3-windows-amd64.exe（均不提交 git；npm install 时 postinstall 自动下载）</span>
 │  └─ cache/                 <span class="c"># meta.db（注册表）+ lib&lt;id&gt;/（各库 library.db/thumbs/cookies）+ stats.json（可删重建）</span>
 ├─ web/
 │  ├─ src/
-│  │  ├─ views/GridView.vue / DetailView.vue / OnboardingView.vue   <span class="c"># + P0 首次引导（弹窗化：命名→创建→链接）</span>
-│  │  ├─ components/GridScroller.vue / GridItem.vue / DateNavPanel.vue / DeleteConfirm.vue / SettingsView.vue / AuthDialog.vue  <span class="c"># + P0 设置中心（库管理/照片库配置锁死只读）+ 认证分步状态机面板（步骤条/三态输入/结果动画/校验禁点/autoStart）</span>
+│  │  ├─ views/GridView.vue / DetailView.vue   <span class="c"># 照片墙（与搜索共用 GridScroller 虚拟滚动）+ 详情</span>
+│  │  ├─ components/GridScroller.vue / GridItem.vue / DateNavPanel.vue / DeleteConfirm.vue / SettingsView.vue / AuthDialog.vue  <span class="c"># 虚拟滚动主体 + 设置中心（库管理/照片库配置锁死只读）+ 认证分步状态机面板（步骤条/三态输入/结果动画/校验禁点/autoStart）</span>
+│  │  ├─ components/OnboardingView.vue / ImportDialog.vue / ConfirmDialog.vue / SyncButton.vue  <span class="c"># 首次引导（双卡片：iCloud 同步 / 导入本地目录）+ 导入弹窗（本机迁移·上传）+ 通用确认框 + 同步按钮（主界面与设置中心共用同一状态机）</span>
 │  │  ├─ components/detail/LivePhoto.vue / VideoStage.vue
-│  │  ├─ composables/useLazyImage.ts / gridThumbnailScheduler.ts   <span class="c"># 懒加载（300px 预热）+ 前端缩略图调度器（8 并发 + 可见优先 + rAF + 拖条按速度拆开）</span>
-│  │  ├─ stores/assets.ts / theme.ts / stats.ts   <span class="c"># Pinia 区间懒加载缓存 / 深浅主题 / P0 库列表与同步状态</span>
+│  │  ├─ composables/useLazyImage.ts / gridThumbnailScheduler.ts   <span class="c"># 懒加载（300px 预热）+ 前端缩略图调度器（并发上限跟随后端 config.thumbConcurrency，可见优先 + rAF + 拖条按速度拆开）</span>
+│  │  ├─ stores/assets.ts / search.ts / tasks.ts / theme.ts  <span class="c"># Pinia：区间懒加载缓存 / 搜索 / 任务状态唯一轮询源（活跃 1.5s·空闲 15s + 可见性暂停）/ 深浅主题</span>
 │  │  ├─ router/index.ts     <span class="c"># hash 模式：#/photo/:id</span>
 │  │  └─ api/client.ts       <span class="c"># API 封装（thumb/video URL rev = file_mtime；P0：fetchLibraries/startAuth/sendAuthInput/startSync/cancelSync/deleteLibrary）</span>
 │  └─ vite.config.ts         <span class="c"># /api 代理 → 8899</span>
@@ -485,7 +549,7 @@ F:\iPhone\icloud-app\
 <tr><td><span class="tag gray">P2+-3 语义搜索（已评估，暂缓）</span></td><td>语义搜索（人物/地点/场景任意组合，如「邓州 2023 年 陈咏新」）：<b>不连大模型</b>——face-api.js + tfjs-node 本地人脸检测/embedding → 特征聚类成 person → 一次性命名；地点/场景由 EXIF GPS（逆地理作为语义搜索的组成部分）+ 标签表补充；查询解析器把「时间/地点/人物」分词组合检索。视频抽帧入人脸库。语义标签写入独立 asset_tags 表（<b>不写文件元数据</b>，避免污染原片）</td><td>搜索"陈咏新" / "1岁的陈咏新" / "邓州2023年陈咏新" 命中正确子集</td><td><span class="tag gray">⏸ 用户已确认暂缓</span></td></tr>
 <tr><td><span class="tag gray">P2+-4 详情缓存治理（可选项，已列入）</span></td><td>detail 档大图（~250KB/张，全浏览约 2.7GB）是永久缓存无自动清理。两个可选治理：<b>① 保留最近 N 个月浏览过的 detail 图</b>——按 detail 档的最近访问时间（新增字段或 mtime）定期清理更旧的缓存；<b>② 一键清空 detail 缓存</b>——前端按钮/脚本删 <code>server/cache/thumbs/detail/</code>，下次浏览按需重新生成。grid 档缓存体积较小</td><td>detail 缓存体积可控；清空后浏览正常（懒生成自动重建）</td><td><span class="tag orange">已列入，待排期</span></td></tr>
 <tr><td><span class="tag blue">2026-09-17 / 2026-10-01 / 2026-10-06 代码审查与稳健性修复</span></td><td>既有 B1–B5 修复已合并 main；2026-10-01 补充：目录遍历不完整时跳过删除对账、扫描完成后刷新照片墙、删除失败明确反馈、分页 limit 校验、开发 CORS 来源白名单、视频封面缓存版本、启动时清理过期临时帧；2026-10-06 F-01~F-07 全部修复（单调度器/断开检测/签名失效+rev 联动/Origin 校验（2026-10-18 修订：dev 白名单 ∪ 同源判定）/搜索错误态/FTS 版本化/ffmpeg 超时+失败清单系列）</td><td>不完整扫描不误清数据库；新增/移除文件无需手动刷新；删除反馈反映源文件状态；并发与缓存失效链路闭环</td><td><span class="tag green">✅ 已合并验证</span></td></tr>
-<tr><td><span class="tag blue">P0 照片库同步与多库（2026-10-09~12，feat/icloudpd-sync）</span></td><td>① meta.db 库注册表 + 单活跃库上下文（目录分离 iCloudPhoto/lib&lt;id&gt; + cache/lib&lt;id&gt;，新建不自动激活）② icloudpd webui 桥接认证（自绘分步面板 + inputLock 防重）③ 全量拉取/增量同步（--until-found 20，waiting_retry 60s×5）④ 设置中心（库管理/链接/删除/每库同步四态/照片库配置锁死只读）⑤ 前端首次引导/右上角库切换/认证过期重新链接。详见 §3.8 与 <code>docs/iCloudPD照片库同步-架构功能设计.html</code></td><td>网页端完成：多库创建/切换/删除 → 链接（邮箱/密码/验证码）→ 全量拉取 → 增量同步；cookie 过期可重新链接；多库同步全局单任务、等待执行排队</td><td><span class="tag green">✅ 已合并 main（6ba85ae，2026-10-13）</span></td></tr>
+<tr><td><span class="tag blue">P0 照片库同步与多库（2026-10-09~12，feat/icloudpd-sync）</span></td><td>① meta.db 库注册表 + 单活跃库上下文（目录分离 iCloudPhoto/lib&lt;id&gt; + cache/lib&lt;id&gt;，新建不自动激活）② icloudpd webui 桥接认证（自绘分步面板 + inputLock 防重）③ 全量拉取/增量同步（--until-found 20，waiting_retry 60s×5）④ 设置中心（库管理/链接/删除/每库同步四态/照片库配置锁死只读）⑤ 前端首次引导/右上角库切换/认证过期重新链接。详见 §3.8 与 <code>docs/archive/iCloudPD照片库同步-架构功能设计.html</code></td><td>网页端完成：多库创建/切换/删除 → 链接（邮箱/密码/验证码）→ 全量拉取 → 增量同步；cookie 过期可重新链接；多库同步全局单任务、等待执行排队</td><td><span class="tag green">✅ 已合并 main（6ba85ae，2026-10-13）</span></td></tr>
 <tr><td><span class="tag blue">局域网访问 + P0 复审（2026-10-18，feat/lan-access）</span></td><td>生产 build 模式 403 回归修复（F-04 Origin 白名单漏生产同源）——index.ts 改 dev 白名单 ∪ 同源判定（Origin host == 请求 Host）；config 新增 <code>HOST</code>（默认 0.0.0.0，局域网设备可访问）。随后 P0 复审修复 8 项：切库/删除时在途扫描 409 守卫、删库 rmSync→fsp.rm 异步化、sync/auth 状态机与进程清理（exit 不覆盖 error、重试耗尽杀进程、正则去 /g、killProcess 同步、超时文案死代码、taskkill /T）等。</td><td>本机与局域网浏览器写请求全通；跨站 403 保留</td><td><span class="tag orange">5db8137 已提交；8 项修复待验收提交</span></td></tr>
 </table>
 
@@ -538,6 +602,11 @@ F:\iPhone\icloud-app\
 <tr><td><b>Windows npm 安装二进制下载失败</b></td><td>better-sqlite3 包或约 170MB ffmpeg-full zip / 14MB icloudpd exe 下载超时</td><td>better-sqlite3 13.0.3 的平台预编译随 npm 包分发；npm 11.9.0 下需在 lockfile 条目保留 <code>gypfile: false</code>，否则 <code>npm ci</code> 可能自动触发 node-gyp。sharp 使用 npm 平台包。ffmpeg-full 与 icloudpd exe 走 GitHub Release 下载到 <code>server/vendor/</code>（postinstall 串联脚本，显示 curl 进度条）；下不动就拷文件或设 <code>FFMPEG_FULL_URL</code> / <code>ICLOUDPD_URL</code></td></tr>
 <tr><td><b>KeepAlive 下滚动位置读不到</b></td><td>详情返回后照片墙总是回到顶部</td><td>deactivated 钩子触发时 DOM 已移出文档（scrollTop 归零），路由切换瞬间亦然。修复：onScroll 持续记录位置，onActivated 写回 + 派发 scroll 事件</td></tr>
 <tr><td><b>KeepAlive 返回后行高错位</b></td><td>宽窗口行重叠 / 窄窗口间距变大（同源）</td><td>缓存期间 ResizeObserver 把 clientWidth 读成 0 污染 viewportWidth → 恢复用兜底行高测量。修复：RO 忽略宽度 0 + 恢复时 rAF 先 measure 再派发 scroll</td></tr>
+<tr><td><b>icloudpd console 管道认证挂起</b></td><td>spawn 加管道喂密码，进程一直卡住不报错</td><td>Python 的 <code>getpass</code> 直读 Windows 控制台、不经过管道，写进 stdin 的东西它根本看不到。<b>console 方案不可行</b>，改 <code>--password-provider webui --mfa-provider webui</code>：icloudpd 自己起本地认证页（127.0.0.1:8080），后端轮询 <code>/status</code> 判阶段、把前端输入桥接进去</td></tr>
+<tr><td><b>Apple 端「索引未就绪」间歇报错</b></td><td>同一命令 12:54 成功，12:57 报 <code>has not finished indexing yet</code></td><td>Apple 侧照片库索引状态是间歇的，与参数无关。修复：sync.ts 识别该关键词 → <code>waiting_retry</code> 60s 重试 ×5，不直接判失败</td></tr>
+<tr><td><b>认证重复发验证码</b></td><td>输入密码后手机连续收到两次双重验证「允许」弹窗</td><td>前端重复提交被桥接成多次 POST <code>/code</code>。修复：后端 <code>inputLock</code>（同一时刻只处理一次提交）+ 前端 submitting 锁（提交后锁定，轮询到阶段变化才解锁）。复现时优先查后端「忽略重复提交」日志</td></tr>
+<tr><td><b>exiftool 补写时间把排序弄乱</b></td><td>补写后本该最早的照片跑到最前面</td><td><code>0x0132 (ModifyDate)</code> 存在反例，写它会覆盖掉本该保留的值并影响下游取数。修复：<b>只写</b> <code>0x9003 DateTimeOriginal</code> + <code>0x9004 CreateDate</code>，<b>绝不写 0x0132</b>；加 <code>-P</code> 保 mtime，写完复读校验，必要时 <code>utimesSync</code> 回设</td></tr>
+<tr><td><b>导入判重把同一文件判成两份</b></td><td>同一目录导两次，第二次多出 <code>xxx(1).jpg</code> 副本</td><td>源 mtime <code>1793504594331.9983</code> 经 <code>fs.cp({preserveTimestamps})</code> 按 100ns 进位成 <code>...332</code>，<code>Math.trunc</code> 取整后恰好差 1ms，严格相等判定失败。修复：判重加 <b>1ms 容差</b>。<b>教训</b>：单测当时只覆盖了「有 EXIF 会补写（mtime 被 utimesSync 重置）」的路径，恰恰漏掉「无补写、直接读回落盘 mtime」这条——而后者才是真实导入的主路径</td></tr>
 </table>
 
 <h3>9.1 广色域 HEIC 与 Web 显示颜色差异（2026-09-21 实测）</h3>
@@ -559,7 +628,38 @@ F:\iPhone\icloud-app\
 <p><b>当前取舍：</b>保留可明确说明作用的改动：HEIC 中间文件使用 PNG 以避免额外 JPEG 有损压缩；普通图片和视频帧尽量保留已有 ICC；缩略图 URL 版本递增以刷新旧缓存。撤销未经验证的 HEIC ICC 重挂载和 P3→sRGB 实验代码。后续若修复，应在 FFmpeg 阶段明确选择“正确转换为 sRGB”或“保留 Display P3 并写入匹配 ICC”，并用原始 HEIC、FFmpeg 输出、最终 WebP 三阶段产物和元数据进行回归对照，不能靠提高饱和度猜测修复。</p>
 </div>
 
-<p class="muted" style="margin-top:32px;">文档生成：2026-09-21；审查同步：2026-10-06（资产口径从略、F-01~F-07 全部修复、Schema/API 实测核对、rev 动态化、失败清单 API）｜ 实测数据来源：icloud.com.cn/photos 浏览器实测与 photos3 前端源码分析；本机照片库全量扫描与浏览器端到端验证 ｜ 行业参考：Immich（缩略图三档 + 后台任务架构）、@tanstack/vue-virtual（虚拟滚动）、sharp / BtbN ffmpeg（HEIC 解码）。</p>
+<h3>9.2 icloudpd 黑盒行为速查（2026-10-09 调研，结论仍有效）</h3>
+<p>以下结论来自对 v1.32.3 的真实环境实测（真实账号 + <code>--domain cn</code> + 测试目录），原始记录见 <code>docs/archive/iCloudPD照片库同步-架构功能设计.html</code> §2 / §7。代码只体现「怎么用」，不体现「为什么只能这么用」，所以单独留一份。</p>
+
+<h4>账号前置条件（缺任一条都无法认证，属于用户侧最常见的失败原因）</h4>
+<table>
+<tr><th style="width:220px">条件</th><th>怎么设置</th><th>缺失后果</th></tr>
+<tr><td>开启「在网页上访问 iCloud 数据」</td><td>iPhone：设置 → Apple ID → iCloud → Access iCloud Data on the Web</td><td>Apple 返回 <code>ACCESS_DENIED</code></td></tr>
+<tr><td>关闭「高级数据保护（ADP）」</td><td>同上</td><td>ADP 会禁用网页通道，官方明确不支持</td></tr>
+<tr><td>不使用硬件密钥（FIDO）</td><td>—</td><td>官方明确不支持 FIDO 认证</td></tr>
+</table>
+
+<h4>参数要点</h4>
+<table>
+<tr><th style="width:200px">参数</th><th>本项目用法与原因</th></tr>
+<tr><td><code>--folder-structure</code></td><td><b>锁定默认 <code>%Y/%m/%d</code>，不暴露配置</b>。扫描器用 <code>parseDateFromDir</code> 解析目录日期、用目录路径做实况配对，结构一变扫描逻辑即失效；拉取命令也不显式传该参数，依赖默认值</td></tr>
+<tr><td><code>--domain cn</code></td><td>大陆必需，认证与下载都走 <code>setup.icloud.com.cn</code></td></tr>
+<tr><td><code>--until-found N</code></td><td>增量同步用 20：从最新往回检查，连续 N 个已存在就停，省本地 I/O。<b>它只看 <code>icloud/</code>，这正是导入文件必须放 <code>import/</code> 的原因</b></td></tr>
+<tr><td><code>--auth-only</code></td><td>只认证不下载，退出码 + cookie 落盘即成功。「链接」步骤与 cookie 过期检查都用它</td></tr>
+<tr><td><code>--password-provider webui</code><br><code>--mfa-provider webui</code></td><td>本项目认证的<b>唯一可行</b>路径（console 管道不可行，见 §9 表格）。webui 监听 127.0.0.1:8080</td></tr>
+<tr><td><code>--set-exif-datetime</code></td><td>默认追加。官方语义：<b>仅当缺拍摄时间时写入、不覆盖已有</b>，只作用于图片，视频不受影响</td></tr>
+<tr><td><code>--auto-delete</code><br><code>--keep-icloud-recent-days</code></td><td><b>不开放</b>。涉及删除本地或 iCloud 云端文件，不可逆，产品侧一律不提供 Sync / Move 模式</td></tr>
+<tr><td><code>--skip-photos</code> / <code>--size</code> 等</td><td>P0 未开放（设置中心照片库配置锁死只读），将来放开时需先补测</td></tr>
+</table>
+
+<h4>其他约束</h4>
+<ul>
+  <li><b>MFA 约 2 个月过期</b>：Apple 侧策略，过期必须重新认证。应用内表现为 <code>auth_status=expired</code>，主界面提示「需要重新链接」。</li>
+  <li><b>维护风险</b>：官方 README 顶部标注「Looking for MAINTAINER」，项目在找新维护者。这正是<b>黑盒 spawn + 版本锁定</b>的原因——不深度耦合，必要时换 fork 或替代实现只需改一处。</li>
+  <li><b>多账号</b>：<code>--username</code> 可重复出现实现多账号，cookie 按用户名分文件存。本项目仍每库独立 cookie 目录，隔离更彻底。</li>
+</ul>
+
+<p class="muted" style="margin-top:32px;">文档生成：2026-09-21；审查同步：2026-10-06（资产口径从略、F-01~F-07 全部修复、Schema/API 实测核对、rev 动态化、失败清单 API）｜ 2026-11-02 结构与导入链路同步（§3.9 导入本地目录、§5 双子树结构、§9 补 icloudpd 与导入实测坑、前端轮询收敛为单一 store）｜ 实测数据来源：icloud.com.cn/photos 浏览器实测与 photos3 前端源码分析；本机照片库全量扫描与浏览器端到端验证 ｜ 行业参考：Immich（缩略图三档 + 后台任务架构）、@tanstack/vue-virtual（虚拟滚动）、sharp / BtbN ffmpeg（HEIC 解码）。</p>
 
 </div>
 </body>
