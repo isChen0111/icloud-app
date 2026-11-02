@@ -33,6 +33,7 @@
 import { computed, onActivated, onBeforeUnmount, onDeactivated, onMounted, provide, ref, watch } from 'vue'
 import { useVirtualizer } from '@tanstack/vue-virtual'
 import { useThemeStore } from '../stores/theme'
+import { useSelectionStore } from '../stores/selection'
 import { formatDateRange, formatMonthRange } from '../utils/format'
 import { createGridThumbnailScheduler, gridThumbnailSchedulerKey } from '../composables/gridThumbnailScheduler'
 import { useTaskStore } from '../stores/tasks'
@@ -45,6 +46,7 @@ const props = defineProps<{ dataSource: GridDataSource }>()
 
 const themeStore = useThemeStore()
 const taskStore = useTaskStore()
+const selectionStore = useSelectionStore()
 
 /** 滚动容器 DOM 引用 */
 const scrollEl = ref<HTMLElement | null>(null)
@@ -403,7 +405,7 @@ function onWindowPointerUp(): void {
 /** 清空选中：点击空白区域（GridItem 的 click 已 stopPropagation，
  *  这里收到的 click 必然不是缩略图本身） */
 function onScrollAreaClick(): void {
-  props.dataSource.clearSelection()
+  selectionStore.clearSelection()
 }
 
 /**
@@ -417,7 +419,7 @@ let isScrollbarDragging = false
 
 /** Esc 清空选中（KeepAlive 下用 activated/deactivated 管理，避免详情页残留监听） */
 function onKeydown(e: KeyboardEvent): void {
-  if (e.key === 'Escape') props.dataSource.clearSelection()
+  if (e.key === 'Escape') selectionStore.clearSelection()
 }
 onDeactivated(() => {
   window.removeEventListener('keydown', onKeydown)
@@ -596,7 +598,10 @@ onBeforeUnmount(() => {
                 :key="asset.id"
                 :asset="asset"
                 :width="itemWidth"
-                :selected="dataSource.selectedIds.has(asset.id)"
+                :selected="selectionStore.selectedIds.has(asset.id)"
+                :select-only="selectionStore.selectOnly"
+                :toggle-select="selectionStore.toggleSelect"
+                :clear-selection="selectionStore.clearSelection"
               />
             </template>
             <template v-else>

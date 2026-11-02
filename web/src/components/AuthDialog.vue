@@ -53,6 +53,9 @@ async function begin(): Promise<void> {
   message.value = ''
   try {
     const res = await startAuth(props.libraryId, email)
+    // C-18：启动请求期间用户可能已关闭弹窗（handleClose 不再拦 busy）。此时不再
+    // 改状态、不启动轮询，否则会为一个已卸载的组件拉起 setInterval 一直轮询。
+    if (closed) return
     stage.value = res.auth.stage
     hint.value = res.auth.hint
     started.value = true
@@ -77,6 +80,7 @@ async function submitInput(): Promise<void> {
   message.value = ''
   try {
     const res = await sendAuthInput(value.trim())
+    if (closed) return // C-18：提交期间被关闭，不再往已卸载组件写状态
     if (stage.value === 'waiting_password') {
       passwordTried.value = true
       password.value = ''
@@ -146,8 +150,13 @@ function stopPolling(): void {
 
 /** 取消认证（幂等）：handleClose 与卸载钩子都可能触发，避免重复打后端 */
 let cancelRequested = false
+/** 弹窗已关闭/卸载（审查 C-18）：begin/submitInput 的 await 返回后据此判断是否还要
+ *  继续改状态/启动轮询 —— 否则关闭瞬间在飞的请求会把已卸载组件的轮询又拉起来。 */
+let closed = false
 async function requestCancel(): Promise<void> {
-  if (cancelRequested || !started.value) return
+  // 去掉 `|| !started` 守卫：启动请求还在飞时关闭也要 cancelAuth，否则 icloudpd
+  // 可能已经 spawn 成功、却因「还没走到 started」而漏掉清理，留下孤儿进程占着 8080。
+  if (cancelRequested) return
   cancelRequested = true
   try {
     await cancelAuth()
@@ -157,12 +166,14 @@ async function requestCancel(): Promise<void> {
 }
 
 async function handleClose(): Promise<void> {
-  // 只有「启动请求还在飞」时才拦：提交密码/验证码期间允许关闭，否则后端卡住时用户无路可退
-  // （关闭会调用 cancelAuth 结束 icloudpd 进程，不会留下孤儿占着 8080）。
-  if (busy.value) return
+  // C-18：不再用 `if (busy.value) return` 拦关闭 —— 那样 POST /api/auth 一旦挂住
+  // （后端假死 / icloudpd spawn 卡住）就同时堵死 ×、取消、Esc、点遮罩四条路，只能刷新页面。
+  // 现在：先立刻关掉遮罩（不 await 任何请求），再在后台清理后端会话；begin/submitInput
+  // 的 await 回来会看到 closed、不再改状态或拉起轮询。
+  closed = true
   stopPolling()
-  await requestCancel()
   emit('close')
+  void requestCancel()
 }
 
 /** Esc 关闭弹窗：弹窗是最上层，Esc 归它处理（引导页的 Esc 会被 authOpen 拦下） */
@@ -195,6 +206,7 @@ function finish(): void {
 }
 
 onBeforeUnmount(() => {
+  closed = true
   window.removeEventListener('keydown', onKeydown)
   document.removeEventListener('visibilitychange', onVisibilityChange)
   stopPolling()

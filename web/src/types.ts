@@ -180,7 +180,8 @@ export interface SearchResult {
 }
 
 /** GridScroller 数据源接口：照片墙（assets store）与搜索结果（search store）共用。
- * 两个 store 均实现此接口，GridScroller 只依赖接口不依赖具体 store。 */
+ * 两个 store 均实现此接口，GridScroller 只依赖接口不依赖具体 store。
+ * 选中集已独立为全局 selection store（审查 C-17），不再属于数据源接口。 */
 export interface GridDataSource {
   /** 月份分组（倒序；骨架/月份头行/日期跳转数据源） */
   months: MonthGroup[]
@@ -190,14 +191,10 @@ export interface GridDataSource {
   loadedCount: number
   /** 是否有请求进行中（工具栏提示） */
   loading: boolean
-  /** 选中集合（照片墙多选删除；搜索态恒空） */
-  selectedIds: Set<number>
   /** 取 [start, end) 区间资产；缺页返回 null（渲染占位） */
   getRange(start: number, end: number): AssetDto[] | null
   /** 确保 [start, end) 已加载（幂等 + 并发去重） */
   ensureRange(start: number, end: number): void
-  /** 清空选中（点击空白 / Esc） */
-  clearSelection(): void
   /** 初始化：拉月份骨架 + 首屏数据（幂等） */
   init(): Promise<void>
 }

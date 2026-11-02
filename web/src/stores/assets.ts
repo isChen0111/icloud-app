@@ -34,18 +34,15 @@ export const useAssetStore = defineStore('assets', () => {
   const loading = ref(false)
   /** 失败页起点集合（请求失败后静默，滚动离开再回来会重试） */
   const failed = reactive(new Set<number>())
+  /** 失败页的失败时刻（ms）。配合 failed 做冷却：失败后 COOLDOWN 内不自动重试，
+   *  否则 ensureRange 每次滚动都会重发同一页 —— 某页 500 后就是请求风暴（审查 C-20） */
+  const failedAt = new Map<number, number>()
+  const FAILED_RETRY_COOLDOWN_MS = 15000
   /** 删除等数据变更后，使变更前发出的分页响应失效，避免旧数据回写缓存 */
   let dataVersion = 0
   let monthsRequestSequence = 0
   let requestSequence = 0
   const activeRequests = new Map<number, number>()
-
-  /** 选中集合（客户端删除功能）：asset id 集合。
-   * 放 store 而非组件：虚拟滚动销毁/重建 DOM 不影响选中记忆，
-   * 滚动走远再回来，GridItem 查 selectedIds.has(id) 恢复选框。 */
-  const selectedIds = ref(new Set<number>())
-  /** 已选数量（删除按钮可用态 + 顶栏计数） */
-  const selectedCount = computed(() => selectedIds.value.size)
 
   /** 当前已加载资产数（调试信息） */
   const loadedCount = computed(() => {
@@ -75,8 +72,12 @@ export const useAssetStore = defineStore('assets', () => {
   /** 确保 [start, end) 区间已加载：缺页发起请求（幂等；已加载/加载中/失败重试均处理） */
   function ensureRange(start: number, end: number): void {
     const need: number[] = []
+    const now = Date.now()
     for (let p = Math.floor(start / PAGE) * PAGE; p < end; p += PAGE) {
-      if (!pages.has(p) && !pageLoading.has(p)) need.push(p)
+      if (pages.has(p) || pageLoading.has(p)) continue
+      // C-20：失败的页在冷却期内跳过（不随每次滚动重发），冷却结束才允许重试
+      if (failed.has(p) && now - (failedAt.get(p) ?? 0) < FAILED_RETRY_COOLDOWN_MS) continue
+      need.push(p)
     }
     if (need.length === 0) return
     loading.value = true
@@ -90,10 +91,12 @@ export const useAssetStore = defineStore('assets', () => {
           if (requestVersion !== dataVersion || activeRequests.get(p) !== requestId) return
           pages.set(p, res.items)
           failed.delete(p)
+          failedAt.delete(p)
         })
         .catch(() => {
           if (requestVersion === dataVersion && activeRequests.get(p) === requestId) {
             failed.add(p)
+            failedAt.set(p, Date.now())
           }
         })
         .finally(() => {
@@ -139,6 +142,7 @@ export const useAssetStore = defineStore('assets', () => {
     activeRequests.clear()
     pageLoading.clear()
     failed.clear()
+    failedAt.clear()
     pages.clear()
     loading.value = false
 
@@ -150,32 +154,10 @@ export const useAssetStore = defineStore('assets', () => {
   }
 
 
-  /** 单选/多选切换（Ctrl+单击追加多选，普通单击切换单选） */
-  /** 单选：普通单击 = 只选中这一个（替换当前集合；已是唯一选中则保持） */
-  function selectOnly(id: number): void {
-    const s = selectedIds.value
-    if (s.size === 1 && s.has(id)) return
-    selectedIds.value = new Set([id])
-  }
-
-  function toggleSelect(id: number): void {
-    const s = new Set(selectedIds.value)
-    if (s.has(id)) s.delete(id)
-    else s.add(id)
-    selectedIds.value = s
-  }
-
-  /** 清空全部选中（点空白 / Esc / 进详情 / 删除成功） */
-  function clearSelection(): void {
-    if (selectedIds.value.size === 0) return
-    selectedIds.value = new Set()
-  }
-
-  /** 删除成功后同步本地状态：
-   *  ① 已加载页缓存移除被删资产
+  /** 删除成功后同步本地状态（调用方负责调 API 与清空选中，这里只做缓存一致性）：
+   *  ① 已加载页缓存移除被删资产（找不到 → 整体失效，靠下次 init 重拉）
    *  ② 月份分组 count 减 + offset 重算（骨架行数/总高度自动变化）
-   *  ③ 清空选中
-   *  调用方负责调 API；这里只做前端一致性。 */
+   *  ③ 受影响页及其后页失效重拉，保证全局位置流对齐 */
   function removeAssets(ids: number[]): void {
     const idSet = new Set(ids)
     if (idSet.size === 0) return
@@ -198,18 +180,8 @@ export const useAssetStore = defineStore('assets', () => {
         }
       }
     }
-    if (ymDelta.size > 0) {
-      let acc = 0
-      months.value = months.value
-        .map((m) => ({ ...m, count: m.count - (ymDelta.get(m.ym) ?? 0) }))
-        .filter((m) => m.count > 0) // 整月删光 → 移除该月（不再产生空头行）
-        .map((m) => ({ ...m, offset: (acc += m.count) - m.count }))
-    }
 
-    // ② 页缓存处理（审查 B1：删除后全局位置流前移，删除点之后的页缓存
-    //    内容全部错位——旧实现只移除被删 id，向下滚动会看到"删除前"的旧内容）
-    //    - 找到包含被删资产的最小页起点（最先受影响的页）
-    //    - 该页整页丢弃并立即重拉（R-01），该页之后的所有页清空（内容已整体错位），滚动到那里时按需重拉
+    // ② 找到包含被删资产的最小页起点（最先受影响的页）
     let minPage = Infinity
     for (const [p, arr] of pages) {
       for (const a of arr) {
@@ -219,22 +191,42 @@ export const useAssetStore = defineStore('assets', () => {
         }
       }
     }
-    if (minPage !== Infinity) {
-      // R-01 修复：受影响页必须整页丢弃，不能「filter 后原地保留」。
-      // 页内少 k 条但页起点仍按 PAGE 对齐 → 该页之后的位置前移了 k 位却无人持有，
-      // 页尾 k 个全局位置永久空白（滚动到底也不补，只能整页刷新）。
-      pages.delete(minPage)
-      for (const p of [...pages.keys()]) {
-        if (p > minPage) pages.delete(p)
-      }
-      // 受影响页立即重拉（代价一次请求），保证位置流严格对齐
-      retryPages.push(minPage)
+
+    // 跨数据源删除：被删资产不在本 store 已加载缓存里（照片在另一个视图删除，
+    // 本视图尚未滚到/加载它）。删除使全局位置流前移，本缓存里「删除点之后」的页
+    // 与骨架月份 count 都已错位且无法定位删除点 → 整体失效，靠下次 init 重拉。
+    if (minPage === Infinity) {
+      pages.clear()
+      pageLoading.clear()
+      failed.clear()
+      failedAt.clear()
+      loading.value = false
+      months.value = []
+      return
     }
 
-    for (const p of retryPages) ensureRange(p, p + PAGE)
+    if (ymDelta.size > 0) {
+      let acc = 0
+      months.value = months.value
+        .map((m) => ({ ...m, count: m.count - (ymDelta.get(m.ym) ?? 0) }))
+        .filter((m) => m.count > 0) // 整月删光 → 移除该月（不再产生空头行）
+        .map((m) => ({ ...m, offset: (acc += m.count) - m.count }))
+    }
 
-    // ③ 清空选中
-    clearSelection()
+    // ③ 页缓存处理（审查 B1：删除后全局位置流前移，删除点之后的页缓存
+    //    内容全部错位——旧实现只移除被删 id，向下滚动会看到"删除前"的旧内容）
+    //    - 该页整页丢弃并立即重拉（R-01），该页之后的所有页清空（内容已整体错位），滚动到那里时按需重拉
+    // R-01 修复：受影响页必须整页丢弃，不能「filter 后原地保留」。
+    // 页内少 k 条但页起点仍按 PAGE 对齐 → 该页之后的位置前移了 k 位却无人持有，
+    // 页尾 k 个全局位置永久空白（滚动到底也不补，只能整页刷新）。
+    pages.delete(minPage)
+    for (const p of [...pages.keys()]) {
+      if (p > minPage) pages.delete(p)
+    }
+    // 受影响页立即重拉（代价一次请求），保证位置流严格对齐
+    retryPages.push(minPage)
+
+    for (const p of retryPages) ensureRange(p, p + PAGE)
   }
   return {
     months,
@@ -245,11 +237,6 @@ export const useAssetStore = defineStore('assets', () => {
     initMonths,
     getRange,
     ensureRange,
-    selectedIds,
-    selectedCount,
-    selectOnly,
-    toggleSelect,
-    clearSelection,
     removeAssets,
     loadFirstPage,
     init,

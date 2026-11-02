@@ -16,11 +16,18 @@ import { useRouter } from 'vue-router'
 import { useLazyImage } from '../composables/useLazyImage'
 import { formatDuration } from '../utils/format'
 import type { AssetDto } from '../types'
-import { useAssetStore } from '../stores/assets'
 
-const props = defineProps<{ asset: AssetDto; width: number; selected: boolean }>()
+const props = defineProps<{
+  asset: AssetDto
+  width: number
+  selected: boolean
+  /** 选中动作由全局 selection store 提供（照片墙/搜索共享，审查 C-17）：
+   *  组件不硬编码任何数据源 store，避免搜索结果点选写进照片墙选中集导致误删。 */
+  selectOnly: (id: number) => void
+  toggleSelect: (id: number) => void
+  clearSelection: () => void
+}>()
 const router = useRouter()
-const store = useAssetStore()
 
 // rev 传 getter 而非快照值（R-12）：组件 key 是 asset.id，源文件被覆盖后组件不会重建，
 // 只有现读 props.asset.rev 才能拿到新版本号去换缩略图 URL
@@ -37,13 +44,13 @@ const placeholderBg = computed(() => {
 /** 单击 = 单选；Ctrl/⌘+单击 = 追加多选（stop 冒泡防触发空白清空） */
 function onSelect(e: MouseEvent): void {
   e.stopPropagation()
-  if (e.ctrlKey || e.metaKey) store.toggleSelect(props.asset.id)
-  else store.selectOnly(props.asset.id)
+  if (e.ctrlKey || e.metaKey) props.toggleSelect(props.asset.id)
+  else props.selectOnly(props.asset.id)
 }
 
 /** 双击 = 进详情（先清空选中，避免返回后误删） */
 function openDetail(): void {
-  store.clearSelection()
+  props.clearSelection()
   router.push({ name: 'detail', params: { id: String(props.asset.id) } })
 }
 

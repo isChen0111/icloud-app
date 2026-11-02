@@ -11,7 +11,7 @@
  * 与 assets store 的差异：
  *  - 查询词变化 → 旧响应作废（searchSeq 版本守卫）：快速连续输入不会串结果
  *  - total/months 来自搜索 API 的匹配集聚合（首次响应带回并缓存，幂等）
- *  - 搜索态不做删除：selectedIds 恒空、clearSelection 为 noop（GridScroller 接口需要）
+ *  - 选中集独立为全局 selection store（照片墙/搜索共享，审查 C-17），本 store 不再持有选中状态
  */
 import { defineStore } from 'pinia'
 import { computed, reactive, ref } from 'vue'
@@ -37,16 +37,16 @@ export const useSearchStore = defineStore('search', () => {
   const loading = ref(false)
   /** 失败页起点集合（失败后静默，滚动离开再回来重试） */
   const failed = reactive(new Set<number>())
+  /** 失败页的失败时刻（ms）。配合 failed 做冷却：失败后 COOLDOWN 内不自动重试，
+   *  否则 ensureRange 每次滚动都会重发同一页（审查 C-20） */
+  const failedAt = new Map<number, number>()
+  const FAILED_RETRY_COOLDOWN_MS = 15000
   /**
    * 整次搜索的显式错误（修复审查 F-05）：
    * 首屏（offset 0）请求失败 = 搜索真异常（后端 500 / 网络断），
    * 不能伪装成「没有结果」——GridView 提示条据此显示「搜索失败，请重试」。
    */
   const searchError = ref<string | null>(null)
-
-  /** 搜索态不做删除：选中集合恒空（GridDataSource 接口需要） */
-  const selectedIds = ref(new Set<number>())
-  const selectedCount = computed(() => 0)
 
   /** 当前已加载资产数（调试信息） */
   const loadedCount = computed(() => {
@@ -57,12 +57,15 @@ export const useSearchStore = defineStore('search', () => {
 
   /** 查询词版本守卫：换词后一切在途响应作废（防止串结果） */
   let searchSeq = 0
+  /** 数据版本守卫：删除后使在途分页响应作废（防止旧数据回写缓存，与 assets store 的 dataVersion 同义） */
+  let dataVersion = 0
 
   function resetResults(): void {
     searchSeq++
     pages.clear()
     pageLoading.clear()
     failed.clear()
+    failedAt.clear()
     totalCount.value = 0
     months.value = []
     loading.value = false
@@ -98,19 +101,25 @@ export const useSearchStore = defineStore('search', () => {
   /** 确保 [start, end) 区间已加载：缺页发起搜索请求（幂等 + 加载中去重） */
   function ensureRange(start: number, end: number): void {
     const need: number[] = []
+    const now = Date.now()
     for (let p = Math.floor(start / PAGE) * PAGE; p < end; p += PAGE) {
-      if (!pages.has(p) && !pageLoading.has(p)) need.push(p)
+      if (pages.has(p) || pageLoading.has(p)) continue
+      // C-20：失败的页在冷却期内跳过（不随每次滚动重发），冷却结束才允许重试
+      if (failed.has(p) && now - (failedAt.get(p) ?? 0) < FAILED_RETRY_COOLDOWN_MS) continue
+      need.push(p)
     }
     if (need.length === 0) return
     loading.value = true
     for (const p of need) {
       pageLoading.add(p)
       const seq = searchSeq
+      const requestVersion = dataVersion
       searchAssets(query.value, { offset: p, limit: PAGE })
         .then((res) => {
-          if (seq !== searchSeq) return // 查询词已变 → 丢弃过期响应
+          if (seq !== searchSeq || requestVersion !== dataVersion) return // 换词或删除后 → 丢弃过期响应
           pages.set(p, res.items)
           failed.delete(p)
+          failedAt.delete(p)
           if (p === 0) searchError.value = null // 首屏成功 → 清除整次搜索错误
           // 骨架数据（total/months）以首屏响应为准：后端仅 offset=0 时计算聚合
           // （审查优化），后续页 total=0/months=[] 不再覆盖首屏值，避免滚动条长度/
@@ -119,8 +128,9 @@ export const useSearchStore = defineStore('search', () => {
           if (res.months.length > 0) months.value = res.months
         })
         .catch((err) => {
-          if (seq !== searchSeq) return
+          if (seq !== searchSeq || requestVersion !== dataVersion) return
           failed.add(p)
+          failedAt.set(p, Date.now())
           // F-05：首屏失败 = 搜索真异常（后端 500 / 网络断）→ 显式错误态，
           // 不再伪装成「没有结果」；滚动中后续页失败仍走静默 + 回来重试
           if (p === 0) {
@@ -128,19 +138,74 @@ export const useSearchStore = defineStore('search', () => {
           }
         })
         .finally(() => {
-          if (seq !== searchSeq) return // 换词后旧响应作废：不碰新请求的 pageLoading/loading
+          if (seq !== searchSeq || requestVersion !== dataVersion) return // 换词或删除后旧响应作废：不碰新请求的 pageLoading/loading
           pageLoading.delete(p)
           if (pageLoading.size === 0) loading.value = false
         })
     }
   }
 
-  /** 搜索态无删除/选中：noop（GridDataSource 接口需要） */
-  function clearSelection(): void {}
-
   /** 清除整次搜索错误（GridView 重试按钮调用，随后重新 init） */
   function clearSearchError(): void {
     searchError.value = null
+  }
+
+  /** 删除成功后同步匹配流缓存（与 assets.removeAssets 同构）：
+   *  被删资产若在已加载页里 → 增量移除月份 count + 失效受影响页；找不到（照片在
+   *  照片墙删除、搜索尚未加载到它）→ 整体失效，靠下次 init 重拉。 */
+  function removeAssets(ids: number[]): void {
+    const idSet = new Set(ids)
+    if (idSet.size === 0) return
+    dataVersion++
+    pageLoading.clear()
+    failed.clear()
+    failedAt.clear()
+    loading.value = false
+
+    // 月份统计必须在页清理之前（先统计后清理，否则匹配不到）
+    const ymDelta = new Map<string, number>()
+    for (const arr of pages.values()) {
+      for (const a of arr) {
+        if (idSet.has(a.id)) {
+          const ym = a.dateTaken.slice(0, 7)
+          ymDelta.set(ym, (ymDelta.get(ym) ?? 0) + 1)
+        }
+      }
+    }
+
+    // 找到包含被删资产的最小页起点
+    let minPage = Infinity
+    for (const [p, arr] of pages) {
+      for (const a of arr) {
+        if (idSet.has(a.id)) {
+          minPage = Math.min(minPage, p)
+          break
+        }
+      }
+    }
+
+    if (minPage === Infinity) {
+      pages.clear()
+      totalCount.value = 0
+      months.value = []
+      return
+    }
+
+    if (ymDelta.size > 0) {
+      let acc = 0
+      months.value = months.value
+        .map((m) => ({ ...m, count: m.count - (ymDelta.get(m.ym) ?? 0) }))
+        .filter((m) => m.count > 0) // 整月删光 → 移除该月（不再产生空头行）
+        .map((m) => ({ ...m, offset: (acc += m.count) - m.count }))
+      totalCount.value = months.value.reduce((s, m) => s + m.count, 0)
+    }
+
+    // 受影响页及其后页失效，受影响页立即重拉（保证匹配流位置对齐）
+    pages.delete(minPage)
+    for (const p of [...pages.keys()]) {
+      if (p > minPage) pages.delete(p)
+    }
+    if (query.value.trim().length >= 3) ensureRange(minPage, minPage + PAGE)
   }
 
   return {
@@ -150,11 +215,9 @@ export const useSearchStore = defineStore('search', () => {
     loading,
     searchError,
     loadedCount,
-    selectedIds,
-    selectedCount,
     getRange,
     ensureRange,
-    clearSelection,
+    removeAssets,
     setQuery,
     init,
     resetResults,

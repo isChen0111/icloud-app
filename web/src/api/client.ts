@@ -24,14 +24,41 @@ import type {
 
 const BASE = '/api'
 
+/**
+ * 请求超时（毫秒）。审查 C-18：fetch 默认没有超时，后端假死 / icloudpd spawn 挂住时
+ * 请求会一直 pending，前端把「关闭弹窗」等动作 await 在它上面 → 只能刷新页面。
+ * 这里给所有走 get/post 的请求加一个 AbortController 兜底超时。
+ */
+const REQUEST_TIMEOUT_MS = 20000
+
+/** 带超时的 fetch：到点 abort，调用方 catch 到 AbortError（文案统一成「请求超时」） */
+async function fetchWithTimeout(
+  input: RequestInfo,
+  init: RequestInit = {},
+  timeoutMs = REQUEST_TIMEOUT_MS,
+): Promise<Response> {
+  const ctrl = new AbortController()
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs)
+  try {
+    return await fetch(input, { ...init, signal: init.signal ?? ctrl.signal })
+  } catch (err) {
+    if (err instanceof DOMException && err.name === 'AbortError') {
+      throw new Error('请求超时，请稍后重试')
+    }
+    throw err
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
 async function get<T>(path: string): Promise<T> {
-  const res = await fetch(`${BASE}${path}`)
+  const res = await fetchWithTimeout(`${BASE}${path}`)
   if (!res.ok) throw new Error(`API ${path} → ${res.status}`)
   return res.json() as Promise<T>
 }
 
 async function post<T>(path: string, body: unknown): Promise<T> {
-  const res = await fetch(`${BASE}${path}`, {
+  const res = await fetchWithTimeout(`${BASE}${path}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
@@ -287,7 +314,7 @@ export function fetchAuth(): Promise<{ auth: AuthSession | null }> {
 
 /** 取消认证 */
 export function cancelAuth(): Promise<{ ok: boolean }> {
-  return fetch(`${BASE}/auth/cancel`, { method: 'POST' }).then((r) => r.json())
+  return fetchWithTimeout(`${BASE}/auth/cancel`, { method: 'POST' }).then((r) => r.json())
 }
 
 /** 启动同步任务（kind: full 全量拉取 / inc 增量同步） */

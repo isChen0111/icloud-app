@@ -12,12 +12,13 @@
  *  - 防抖 300ms：避免每个按键都请求后端。
  *  - 搜索结果不再固定 100 条截断：后端分页（offset）+ total，搜索 store
  *    按页拉取全量匹配流，虚拟滚动浏览（搜「2025」几千条也流畅）。
- *  - 删除仅照片墙态（搜索态无删除，search store 选中集恒空）。
+ *  - 删除照片墙/搜索态均可：选中集全局共享（selection store），删除后同步两个数据源缓存。
  */
 import { computed, nextTick, ref, watch } from 'vue'
 import { deleteAssets } from '../api/client'
 import { useAssetStore } from '../stores/assets'
 import { useSearchStore } from '../stores/search'
+import { useSelectionStore } from '../stores/selection'
 import DeleteConfirm from '../components/DeleteConfirm.vue'
 import GridScroller from '../components/GridScroller.vue'
 
@@ -26,6 +27,7 @@ defineOptions({ name: 'GridView' })
 
 const assetStore = useAssetStore()
 const searchStore = useSearchStore()
+const selectionStore = useSelectionStore()
 
 /** 搜索关键词（输入框 v-model） */
 const query = ref('')
@@ -40,17 +42,22 @@ const emit = defineEmits<{ deleted: [] }>()
 /** 防抖计时器句柄 */
 let debounceTimer: number | undefined
 
-/** 是否处于搜索态：有输入或有搜索结果（输入即切换视图） */
-const searchActive = computed(() => query.value.trim().length > 0 || hasSearched.value)
+/** 输入框里是否有内容（决定 ✕ 清除按钮与过短提示是否显示，与「是否切到搜索数据源」解耦） */
+const hasInput = computed(() => query.value.trim().length > 0)
+
+/** 是否处于搜索态：只在「真正执行过一次搜索」后成立（≥3 字符 + 防抖）。
+ *  审查 C-21：旧实现 `query.trim().length > 0 || hasSearched` 会让第 1 个字符就切到
+ *  searchStore（months 恒空）→ 整面墙空白，且 1~2 字符时同时显示「请至少输入 3 个字符」
+ *  与「没有匹配内容」。改为只有 hasSearched 才切数据源。 */
+const searchActive = computed(() => hasSearched.value)
 
 /** 搜索词是否过短（trigram 需要至少 3 字符） */
-const tooShort = computed(() => query.value.trim().length > 0 && query.value.trim().length < 3)
+const tooShort = computed(() => hasInput.value && query.value.trim().length < 3)
 
-/** 搜索无结果（墙区中央空态条件；「未搜索」初始态不算空结果） */
+/** 搜索无结果（墙区中央空态条件；「未搜索」/「过短」都不算空结果） */
 const emptyResult = computed(
   () =>
     searchActive.value &&
-    hasSearched.value &&
     !searchStore.loading &&
     !searchStore.searchError &&
     searchStore.totalCount === 0,
@@ -62,6 +69,13 @@ watch(query, (q) => {
   const t = q.trim()
   if (t.length === 0) {
     // 清空输入 → 立即退出搜索态（数据源切回照片墙，search store 保留待下次）
+    hasSearched.value = false
+    searchStore.setQuery('')
+    return
+  }
+  if (t.length < 3) {
+    // C-21：过短不进搜索态、不发请求，只显示「请至少输入 3 个字符」。
+    // 同时清掉可能残留的旧搜索结果视图，让照片墙立即回来（而不是停在半空）。
     hasSearched.value = false
     searchStore.setQuery('')
     return
@@ -80,7 +94,7 @@ watch(query, (q) => {
 
 /** 删除确认 → API → store 同步 → 通知 App 刷新顶栏统计 */
 async function onConfirmDelete(): Promise<void> {
-  const ids = [...assetStore.selectedIds]
+  const ids = [...selectionStore.selectedIds]
   if (ids.length === 0) return
   deleting.value = true
   try {
@@ -89,7 +103,12 @@ async function onConfirmDelete(): Promise<void> {
     // 否则刷新后会"复活"，看起来像删除失败又像没删
     const failedIds = new Set((result.failed ?? []).map((f) => f.id))
     const removed = ids.filter((id) => !failedIds.has(id))
-    if (removed.length > 0) assetStore.removeAssets(removed)
+    if (removed.length > 0) {
+      // 两个数据源都同步缓存（各自 removeAssets 内部判断「找到→增量 / 找不到→整体失效」）
+      assetStore.removeAssets(removed)
+      searchStore.removeAssets(removed)
+      selectionStore.clearSelection()
+    }
     confirmDeleteOpen.value = false
     if (result.unlinkFail > 0) {
       alert(`已删除 ${removed.length} 项，${failedIds.size} 项因源文件被占用或权限不足未删除（文件仍在原处，可稍后重试）。`)
@@ -116,9 +135,9 @@ function retrySearch(): void {
   void searchStore.init()
 }
 
-/** Esc 退出搜索 */
+/** Esc 退出搜索（有结果或有输入都清） */
 function onKeydown(e: KeyboardEvent): void {
-  if (e.key === 'Escape' && searchActive.value) {
+  if (e.key === 'Escape' && (searchActive.value || hasInput.value)) {
     clearSearch()
     ;(e.target as HTMLInputElement)?.blur?.()
   }
@@ -137,17 +156,16 @@ function onKeydown(e: KeyboardEvent): void {
         placeholder="搜索文件名或日期，如 IMG_9188、2024-09"
         spellcheck="false"
       />
-      <button v-if="searchActive" class="search-clear" title="清除并退出搜索" @click="clearSearch">✕</button>
+      <button v-if="hasInput" class="search-clear" title="清除并退出搜索" @click="clearSearch">✕</button>
       <!-- 搜索态行内反馈（不新增行）：过短提示 / 加载中 spinner，替代原独立提示条 -->
-      <span v-if="searchActive && tooShort" class="search-hint">请至少输入 3 个字符</span>
+      <span v-if="tooShort" class="search-hint">请至少输入 3 个字符</span>
       <span v-else-if="searchActive && searchStore.loading" class="search-spinner" title="搜索中" />
-      <!-- 删除按钮（仅照片墙态显示）：无选中灰禁，选中亮蓝；位置=搜索栏一行 -->
-      <span v-if="!searchActive && assetStore.selectedCount > 0" class="sel-count">已选 {{ assetStore.selectedCount }} 项</span>
+      <!-- 删除按钮（照片墙/搜索态均显示）：无选中灰禁，选中亮蓝；位置=搜索栏一行 -->
+      <span v-if="selectionStore.selectedCount > 0" class="sel-count">已选 {{ selectionStore.selectedCount }} 项</span>
       <button
-        v-if="!searchActive"
         class="del-btn"
-        :disabled="assetStore.selectedCount === 0 || deleting"
-        :title="assetStore.selectedCount > 0 ? `删除选中的 ${assetStore.selectedCount} 个项目` : '未选中项目'"
+        :disabled="selectionStore.selectedCount === 0 || deleting"
+        :title="selectionStore.selectedCount > 0 ? `删除选中的 ${selectionStore.selectedCount} 个项目` : '未选中项目'"
         @click="confirmDeleteOpen = true"
       >
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
@@ -176,7 +194,7 @@ function onKeydown(e: KeyboardEvent): void {
     <!-- 删除确认弹框（照片墙多选删除） -->
     <DeleteConfirm
       v-if="confirmDeleteOpen"
-      :count="assetStore.selectedCount"
+      :count="selectionStore.selectedCount"
       :deleting="deleting"
       @confirm="onConfirmDelete"
       @cancel="confirmDeleteOpen = false"

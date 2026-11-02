@@ -19,6 +19,7 @@ import LivePhoto from '../components/detail/LivePhoto.vue'
 import VideoStage from '../components/detail/VideoStage.vue'
 import InfoPanel from '../components/detail/InfoPanel.vue'
 import { useAssetStore } from '../stores/assets'
+import { useSearchStore } from '../stores/search'
 import { deleteAssets } from '../api/client'
 import DeleteConfirm from '../components/DeleteConfirm.vue'
 
@@ -36,6 +37,7 @@ let loadSeq = 0
 
 /** 信息面板状态：是否打开 / 拉取中 / 数据 */
 const assetStore = useAssetStore()
+const searchStore = useSearchStore()
 /** 详情页删除：确认弹框 + 删除请求进行中 */
 const confirmDeleteOpen = ref(false)
 const deleting = ref(false)
@@ -128,6 +130,7 @@ async function onConfirmDelete(): Promise<void> {
         return
       }
       assetStore.removeAssets([id])
+      searchStore.removeAssets([id])
       confirmDeleteOpen.value = false
       if (next != null) void router.push({ name: 'detail', params: { id: String(next) } })
       else if (prev != null) void router.push({ name: 'detail', params: { id: String(prev) } })
