@@ -26,6 +26,7 @@ import type { ImportProgress } from './types.js'
 
 export const importState: ImportProgress = {
   status: 'idle',
+  phase: 'idle',
   libraryId: 0,
   source: 'local',
   mode: 'copy',
@@ -50,6 +51,7 @@ let cancelRequested = false
 /** 复位为初始状态（每次导入开始前调用；不动令牌，令牌由 beginImportRun 负责） */
 export function resetImportState(): void {
   importState.status = 'idle'
+  importState.phase = 'idle'
   importState.libraryId = 0
   importState.source = 'local'
   importState.mode = 'copy'
@@ -88,10 +90,16 @@ export function isImportCancelRequested(): boolean {
 
 /**
  * 请求取消当前导入。只置信号，不改 status：终态由持有令牌的流水线在真正退出时写。
- * @returns 是否受理（没有在跑的任务返回 false）
+ *
+ * **扫描阶段不受理取消**（审查 C-06）：此时文件已全部归置完毕，只剩 runScan 落库，
+ * 中途退出只会留下一半入库的照片。若受理会把 cancelRequested 置真，流水线收尾时
+ * 反而把一个已经成功的导入写成 `cancelled`。前端在 phase==='scanning' 时也不显示取消按钮。
+ *
+ * @returns 是否受理（没有在跑的任务、或已进入落库阶段，返回 false）
  */
 export function requestImportCancel(): boolean {
   if (!isImportBusy()) return false
+  if (importState.phase === 'scanning') return false
   if (importState.status === 'running' && !cancelRequested) {
     cancelRequested = true
     importState.cancelRequested = true

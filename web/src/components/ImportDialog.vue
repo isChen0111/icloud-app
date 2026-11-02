@@ -80,6 +80,12 @@ const terminal = computed(() => {
 /** 已请求取消、流水线还在收尾（后端 status 仍是 running，只是 cancelRequested 置真） */
 const cancelling = computed(() => active.value && importState.value?.cancelRequested === true)
 
+/**
+ * 落库阶段（C-06）：文件已归置完，只剩 runScan 入库。
+ * 这段不可取消（后端会 409），归置的进度条也没意义 —— 换成纯提示。
+ */
+const scanning = computed(() => active.value && importState.value?.phase === 'scanning')
+
 /** 结果视图：已终态，且本次确实发起过（避免打开弹窗就看到上一次的旧结果） */
 const showResult = computed(() => terminal.value && (justStarted.value || openedDuringRun.value))
 
@@ -228,13 +234,17 @@ onBeforeUnmount(() => {
           <span class="spinner" />
           <strong>{{ importState?.message || (preparing ? '正在准备导入…' : '正在导入…') }}</strong>
         </div>
-        <div class="import-progress">
+        <div v-if="!scanning" class="import-progress">
           <div class="import-progress-bar" :style="{ width: `${importState?.totalFiles ? Math.round(((importState?.processedFiles ?? 0) / importState.totalFiles) * 100) : 0}%` }" />
         </div>
-        <p class="import-count">
+        <p v-if="!scanning" class="import-count">
           已处理 {{ importState?.processedFiles ?? 0 }} / {{ importState?.totalFiles ?? 0 }}
           <template v-if="(importState?.skipped ?? 0) > 0"> · 跳过 {{ importState?.skipped }}</template>
           <template v-if="(importState?.failedCount ?? 0) > 0"> · 失败 {{ importState?.failedCount }}</template>
+        </p>
+        <!-- 落库阶段没有可展示的百分比：扫描是全库遍历，进度在顶栏的扫描指示里 -->
+        <p v-else class="import-count">
+          文件已复制完成，正在写入照片库（{{ importState?.processedFiles ?? 0 }} 个）
         </p>
 
         <div v-if="(importState?.failures?.length ?? 0) > 0" class="import-failures">
@@ -248,7 +258,8 @@ onBeforeUnmount(() => {
         </div>
 
         <p v-if="error" class="import-error" role="alert">{{ error }}</p>
-        <footer class="import-actions">
+        <!-- 落库阶段没有取消按钮：后端不受理（409），留着只会让用户以为点了没用 -->
+        <footer v-if="!scanning" class="import-actions">
           <!-- 取消只是置信号：大文件可能正卡在拷贝中，收尾要等它回到循环顶部。
                这期间禁用按钮，避免用户以为没点上而反复点 -->
           <button class="onboard-btn" type="button" :disabled="cancelling" @click="cancelRun">

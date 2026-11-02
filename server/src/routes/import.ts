@@ -145,7 +145,16 @@ export async function registerImportRoutes(app: FastifyInstance): Promise<void> 
   })
 
   app.delete('/api/libraries/:id/import', async (_request, reply) => {
-    cancelImport()
+    // 落库阶段不受理取消（C-06）：文件已归置完，中途退只会留下一半入库的照片。
+    // 返回 409 让前端把按钮收起来，而不是「点了没反应」。
+    if (!cancelImport()) {
+      const state = publicImportState()
+      const error =
+        state.status === 'running' && state.phase === 'scanning'
+          ? '文件已导入完成，正在入库，无需取消'
+          : '没有正在执行的导入任务'
+      return reply.code(409).send({ error, import: state })
+    }
     return reply.send({ ok: true, import: publicImportState() })
   })
 }

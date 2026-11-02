@@ -31,20 +31,60 @@ function yieldToEventLoop(): Promise<void> {
 }
 
 /**
- * 跨盘安全移动：同盘走 rename（快）；跨盘 rename 抛 EXDEV → copyFile + unlink。
- * 移动失败（copyFile 成功但 unlink 失败）会向上抛错，由调用方记失败清单，
- * 源文件不被静默删除，保证「不丢文件」。
+ * 跨盘安全移动：同盘走 rename（原子、快）；跨盘 rename 抛 EXDEV 时
+ * 「拷到 .part → rename 到正式名 → 最后删源」。
+ *
+ * 审查 C-07：旧实现在 EXDEV 分支用 `copyFile`，它**不保留 mtime**（与 `fs.cp` 不同）。
+ * 无 EXIF 的 HEIC/PNG/视频归置后日期只能靠 mtime 兜底，mtime 丢了就变成「今天」，
+ * 判重键（size+mtime）跟着失效，重复导入会多出 (n) 副本。
+ *
+ * 审查 C-09：直接写正式文件名不原子——拷一半失败/取消/断电会在正式路径上留截断文件，
+ * 紧接着的 runScan 会把它当正常资产入库（照片墙上出现永远打不开的图）。
+ * 所以先写同目录 `.part`，再 rename（同分区原子）。
+ *
+ * 顺序上「先删源还是先落位」也有讲究：rename 成功之后才 unlink 源文件，
+ * 任何一步失败都不会出现「源已删、副本没落位」的丢文件情形。
  */
 async function moveFileCrossSafe(src: string, dst: string): Promise<void> {
   try {
     await fs.promises.rename(src, dst)
+    return
   } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === 'EXDEV') {
-      await fs.promises.copyFile(src, dst)
-      await fs.promises.unlink(src)
-    } else {
-      throw err
-    }
+    if ((err as NodeJS.ErrnoException).code !== 'EXDEV') throw err
+  }
+  const tmp = partPath(dst)
+  try {
+    // preserveTimestamps：与 copy 模式保持一致（C-07）
+    await fs.promises.cp(src, tmp, { preserveTimestamps: true })
+    await fs.promises.rename(tmp, dst)
+  } catch (err) {
+    await fs.promises.rm(tmp, { force: true }).catch(() => {})
+    throw err
+  }
+  await fs.promises.unlink(src)
+}
+
+/** 同目录临时名：`.part` 后缀不会被 scanner 当媒体文件（扩展名不在白名单里） */
+function partPath(targetPath: string): string {
+  return `${targetPath}.${process.pid}-${Math.random().toString(36).slice(2, 8)}.part`
+}
+
+/**
+ * 原子复制：先写同目录 .part 再 rename（审查 C-09）。
+ * 失败时清掉 .part，正式路径上不会出现半写文件。
+ *
+ * 导出供单测直接验证「mtime 保留 + 失败不留半成品」两条契约；
+ * cross-device move 分支用的是同一套（`fs.cp` + rename），只是多了 unlink 源。
+ */
+export async function copyAtomically(src: string, dst: string): Promise<void> {
+  const tmp = partPath(dst)
+  try {
+    // preserveTimestamps 是关键：保留源 mtime，让无 EXIF 文件后续 runScan 的 mtime 兜底日期正确
+    await fs.promises.cp(src, tmp, { preserveTimestamps: true })
+    await fs.promises.rename(tmp, dst)
+  } catch (err) {
+    await fs.promises.rm(tmp, { force: true }).catch(() => {})
+    throw err
   }
 }
 
@@ -88,6 +128,40 @@ export async function collectSourceFiles(sourceDir: string): Promise<RawImportFi
 }
 
 /**
+ * 归置阶段的结果（审查 C-06）：只报告「拷完了没有、该显示什么」，**不写终态**。
+ * 终态要等编排层跑完 runScan 落库再写，否则前端会在库里还没有数据时就显示「导入完成」。
+ */
+export interface ImportRunResult {
+  /** 归置阶段是否因收到取消而提前结束 */
+  cancelled: boolean
+  /** 终态文案（编排层写 status 时一并写入） */
+  message: string
+}
+
+/**
+ * 清理上次导入中断留下的 `.part`（配合 C-09 的原子写）。
+ *
+ * 原子写保证正式文件名上不会出现半写文件，代价是崩溃/强杀会留下 `.part` 残体。
+ * 它们扩展名不在媒体白名单里，scanner 会忽略，但会一直占着磁盘。
+ * 导入开始前扫一遍：同一时刻只允许一个导入任务，所以此刻不可能是「正在写的」。
+ */
+export async function cleanupPartFiles(root: string): Promise<void> {
+  if (!fs.existsSync(root)) return
+  let removed = 0
+  const { files } = await walkDir(root)
+  for (const abs of files) {
+    if (!abs.endsWith('.part')) continue
+    try {
+      await fs.promises.rm(abs, { force: true })
+      removed++
+    } catch {
+      /* 单个残体删不掉不影响导入 */
+    }
+  }
+  if (removed > 0) console.log(`[import] 已清理 ${removed} 个上次中断残留的 .part 文件`)
+}
+
+/**
  * 导入主循环：遍历 → 配对 → 提日期 → 归置（复制/移动）→ 补写 EXIF。
  *
  * 单文件失败不中断整体：失败记入 failures，继续下一个。
@@ -97,12 +171,15 @@ export async function collectSourceFiles(sourceDir: string): Promise<RawImportFi
  * （理论上被 isImportBusy 挡住，这里是兜底），本流水线立刻停手且不再写任何状态，
  * 避免旧流水线把新任务的进度与终态冲掉。
  *
+ * 终态归属（审查 C-06）：本函数**只负责归置**，结束时不再写 `status`/`finishedAt`，
+ * 而是把结果返回给编排层——落库扫描还没跑，此刻「完成」是假完成。
+ *
  * @param token 本次运行的令牌；默认取当前令牌（测试直接调用时的常见情形）
  */
 export async function importDirectory(
   opts: ImportOptions,
   token: number = currentImportToken(),
-): Promise<void> {
+): Promise<ImportRunResult> {
   /** 本流水线是否仍持有令牌（被新任务接管后为 false） */
   const owns = (): boolean => token === currentImportToken()
   /** 应当停止处理：被接管 或 收到取消请求 */
@@ -143,11 +220,12 @@ export async function importDirectory(
   }
 
   // 被新任务接管：一个字节的状态都不写，全部交给持有令牌的那个流水线
-  if (!owns()) return
+  if (!owns()) return { cancelled: true, message: '' }
 
   let total = 0
   for (const a of assets) total += 1 + (a.liveVideo ? 1 : 0)
-  // 注：status='running' 由编排层（import/index.ts）在启动时设置，这里只更新进度计数
+  // 注：status='running' 由编排层（import/index.ts）在启动时设置，这里只更新阶段与进度计数
+  importState.phase = 'copying'
   importState.totalFiles = total
   importState.processedFiles = 0
   importState.skipped = 0
@@ -171,17 +249,21 @@ export async function importDirectory(
       continue
     }
     const ymd = dateToDir(date.iso)
-    fs.mkdirSync(path.join(opts.targetRoot, ymd), { recursive: true })
+    const dayDir = path.join(opts.targetRoot, ymd)
 
     for (const f of parts) {
       if (stopped()) break
       try {
+        // 审查 C-08：建目录放在 per-file try 里。旧实现放在循环外的资产循环顶部，
+        // 目标盘满 / 目录被占用时异常会直接冲到编排层 → status='error'，
+        // 剩下的所有资产一个都不再处理，也不进失败清单。
+        // 放进来以后同样的故障只影响当天这一批文件，且每个文件各自记一条原因。
+        fs.mkdirSync(dayDir, { recursive: true })
         const { targetPath, skipped } = pickTargetName(opts.targetRoot, ymd, f.fileName, f.mtimeMs)
         if (skipped) {
           if (owns()) importState.skipped++
         } else if (opts.mode === 'copy') {
-          // preserveTimestamps 是关键：保留源 mtime，让无 EXIF 文件后续 runScan 的 mtime 兜底日期正确
-          await fs.promises.cp(f.absPath, targetPath, { preserveTimestamps: true })
+          await copyAtomically(f.absPath, targetPath)
         } else {
           await moveFileCrossSafe(f.absPath, targetPath)
         }
@@ -199,17 +281,13 @@ export async function importDirectory(
     if (processed % 10 === 0) await yieldToEventLoop()
   }
 
-  // 终态只由仍持有令牌的流水线写（C-01 的核心约束）：被接管后连终态都不许碰，
-  // 否则旧流水线会把新任务的 done/finishedAt 冲掉，前端据此判定「已完成」。
-  if (!owns()) return
-  if (isImportCancelRequested()) {
-    importState.status = 'cancelled'
-    importState.message = '已取消'
-  } else {
-    importState.status = 'done'
-    importState.message = importDoneMessage()
-  }
-  importState.finishedAt = new Date().toISOString()
+  // 终态不在这里写（C-06）：落库扫描还没跑，此刻写 done 等于告诉前端「照片都在了」，
+  // 而库里其实一行都没有。只把结果交给编排层，由它在 runScan 之后统一写终态。
+  //
+  // 被接管时连结果都不许碰（C-01）：旧流水线返回什么，新任务的状态都不该受影响。
+  if (!owns()) return { cancelled: true, message: '' }
+  const cancelled = isImportCancelRequested()
+  return { cancelled, message: cancelled ? '已取消' : importDoneMessage() }
 }
 
 /** 完成文案：把补写结果带上，否则「静默改写文件」用户无从感知 */

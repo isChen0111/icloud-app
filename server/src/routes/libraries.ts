@@ -134,9 +134,17 @@ function toPublic(row: LibraryRow) {
 export function libraryBusyGuard(action: 'switch' | 'delete' | 'delete-asset'): string | null {
   // 导入任务在跑时拒绝切库/删库/删照片（导入会向 import/ 目录写文件并依赖 runScan 落库）
   if (isImportBusy()) {
-    if (action === 'switch') return '正在导入照片，请等待完成或取消后再切换照片库'
-    if (action === 'delete-asset') return '正在导入照片，请等待完成或取消后再删除照片'
-    return '正在导入照片，请等待完成或取消后再删除照片库'
+    // 三个阶段文案不同（C-06）：归置中可取消、取消后正在收尾、落库中不可取消。
+    // 一律说「请等待完成或取消」会在后两种情况下误导用户去点一个已经无效的取消。
+    const what =
+      importState.phase === 'scanning'
+        ? '导入的照片正在入库，请稍候'
+        : importState.cancelRequested
+          ? '导入正在收尾，请稍候'
+          : '正在导入照片，请等待完成或取消'
+    if (action === 'switch') return `${what}再切换照片库`
+    if (action === 'delete-asset') return `${what}再删除照片`
+    return `${what}再删除照片库`
   }
   if (isSyncBusy()) {
     if (action === 'switch') return '同步任务执行中，请先等待完成或取消后再切换照片库'

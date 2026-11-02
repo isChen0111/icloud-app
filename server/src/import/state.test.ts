@@ -51,6 +51,7 @@ test('C-01：isImportBusy 覆盖「已请求取消、流水线尚未收尾」的
 test('C-01：取消只置信号，不直接改 status', () => {
   fresh()
   importState.status = 'running'
+  importState.phase = 'copying'
 
   assert.equal(requestImportCancel(), true)
   // 关键：status 仍是 running。若这里被改成 cancelled，新任务 resetImportState +
@@ -67,6 +68,18 @@ test('C-01：取消只置信号，不直接改 status', () => {
   importState.status = 'done'
   importState.finishedAt = new Date().toISOString()
   assert.equal(requestImportCancel(), false)
+})
+
+test('C-06：落库阶段不受理取消（文件已归置完，中途退只会留下一半入库的照片）', () => {
+  fresh()
+  importState.status = 'running'
+  importState.phase = 'scanning'
+
+  assert.equal(requestImportCancel(), false, '扫描阶段取消会被受理成「已取消」，实际只是白等')
+  assert.equal(isImportCancelRequested(), false)
+  assert.equal(importState.message, '', '也不该把文案改成「正在取消…」')
+  // 但仍然算忙：落库没结束前不能切库
+  assert.equal(isImportBusy(), true)
 })
 
 test('C-01：新任务接管后令牌变化，旧运行随之失去写状态资格', () => {

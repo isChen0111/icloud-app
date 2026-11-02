@@ -217,6 +217,11 @@ export async function registerStatsRoutes(app: FastifyInstance): Promise<void> {
     if (scanProgress.status === 'scanning') {
       return reply.code(409).send({ error: 'scan already running', scan: scanProgress })
     }
+    // 导入期间 watcher 是停着的，手动扫描成了唯一入口；但此刻文件正在被归置，
+    // 扫出来的结果下一秒就过期，还会在导入结束后的统一扫描之外多拍一份快照（C-05）。
+    if (isImportBusy()) {
+      return reply.code(409).send({ error: '正在导入照片，请等待完成或取消后再扫描', scan: scanProgress })
+    }
     // 不阻塞请求：后台执行扫描，前端轮询 /api/stats 看进度
     void runScan().catch((err) => {
       scanProgress.status = 'error'

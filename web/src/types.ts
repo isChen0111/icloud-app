@@ -285,6 +285,11 @@ export interface ImportFailure {
 /** 导入任务状态（与后端 publicImportState 一一对应） */
 export interface ImportState {
   status: 'idle' | 'running' | 'done' | 'error' | 'cancelled'
+  /**
+   * 导入阶段：copying = 归置文件（可取消）；scanning = 正在落库（不可取消，终态未写）。
+   * 终态由后端在落库扫描结束后才写，否则会「显示导入完成但照片墙是空的」。
+   */
+  phase: 'idle' | 'copying' | 'scanning'
   libraryId: number
   source: 'local' | 'upload'
   mode: 'copy' | 'move'

@@ -18,6 +18,19 @@ export type ImportSource = 'local' | 'upload'
 /** 导入任务状态机（仿 scanner 的 scanProgress） */
 export type ImportStatus = 'idle' | 'running' | 'done' | 'error' | 'cancelled'
 
+/**
+ * 导入的阶段（审查 C-06）。
+ *
+ * `status` 表达的是「整个任务」的终态，而一次导入实际分两段：
+ *   ① copying  —— 归置文件到 import/YYYY/MM/DD（可取消）
+ *   ② scanning —— runScan 遍历落库（不可取消）
+ *
+ * 旧实现归置结束就写 `status='done'`，前端立刻停轮询 + 刷新统计，可此刻库里一行都没有
+ * （落库扫描在后面，要几秒到几十秒），用户看到「导入完成」却是一片空白的照片墙。
+ * 现在终态推迟到 scanning 结束后才写，中间用 phase + message 说明正在做什么。
+ */
+export type ImportPhase = 'idle' | 'copying' | 'scanning'
+
 /** 单个失败项（单文件失败不中断整体） */
 export interface ImportFailure {
   /** 失败文件的源相对路径（相对用户目录 / 上传临时目录） */
@@ -29,6 +42,8 @@ export interface ImportFailure {
 /** 导入进度（内存单例，随服务重启清空，仿 scanProgress/syncState） */
 export interface ImportProgress {
   status: ImportStatus
+  /** 当前处在归置阶段还是落库阶段（终态写回后复位为 idle） */
+  phase: ImportPhase
   /** 目标库 id（仅激活库可导入） */
   libraryId: number
   source: ImportSource

@@ -12,7 +12,7 @@
  * 本文件的收尾动作（runScan / 恢复 watcher）同样校验令牌——若已被新任务接管，
  * 这些动作必须交给新任务，否则旧任务会在新导入进行中把 watcher 拉起来。
  */
-import { importDirectory } from './fsImport.js'
+import { importDirectory, cleanupPartFiles, type ImportRunResult } from './fsImport.js'
 import {
   importState,
   isImportBusy,
@@ -22,7 +22,7 @@ import {
   requestImportCancel,
 } from './state.js'
 import { stopWatcher, startWatcher } from '../scanner/watcher.js'
-import { runScan, scanProgress } from '../scanner/index.js'
+import { runScan } from '../scanner/index.js'
 import { libraryImportDir, type LibraryRow } from '../db/libraries.js'
 import type { ImportMode, ImportOptions } from './types.js'
 import { cleanImportTempDir } from './upload.js'
@@ -45,46 +45,79 @@ function targetRootOf(lib: LibraryRow): string {
 /**
  * 核心流水线：停 watcher → 归置文件 → runScan 落库 → 恢复 watcher。
  * 无论归置成功/失败/取消，都做一次 runScan（把已归置的文件入库），最后恢复 watcher。
+ *
+ * 终态归属（审查 C-06）：`status`/`finishedAt` 一律在这里、**在 runScan 之后**才写。
+ * 归置结束就报「导入完成」是假完成——照片盘上有了、库里还没有，前端一刷新就是空墙。
+ * 中间这段用 `phase='scanning'` + 文案说明，前端据此继续轮询、隐藏取消按钮。
  */
 async function runImportPipeline(opts: ImportOptions, token: number): Promise<void> {
   /** 是否仍持有令牌（被新任务接管后，收尾动作一律交给新任务） */
   const owns = (): boolean => token === currentImportToken()
+  /** 归置阶段是否已经失败（失败终态优先，不被后面的扫描结果覆盖） */
+  let copyFailed = false
+  /** 归置阶段的结果（cancelled + 终态文案），由下方统一写入 status */
+  let pendingResult: ImportRunResult = { cancelled: false, message: '' }
 
   try {
     stopWatcher()
     try {
-      await importDirectory(opts, token)
+      // 清理上次中断残留的 .part（C-09 的原子写会留下残体）
+      await cleanupPartFiles(opts.targetRoot)
+      const result = await importDirectory(opts, token)
+      if (!owns()) return
+      // 阶段推进交给下方统一处理
+      pendingResult = result
     } catch (err) {
       // importDirectory 内部已按单文件 try/catch，理论上不抛；这里兜底防整体异常。
+      copyFailed = true
       if (owns()) {
         importState.status = 'error'
         importState.message = (err as Error).message
-        importState.finishedAt = new Date().toISOString()
       }
       console.error('[import] 导入失败:', err)
-    } finally {
-      // 兜底：任何异常路径都不能让 finishedAt 空着。否则「已取消但未收尾」会永久占住
-      // isImportBusy()，导入与切库/删库全部被卡死，只能重启服务。
-      if (owns() && importState.finishedAt == null && importState.status !== 'running') {
-        importState.finishedAt = new Date().toISOString()
-      }
     }
-
     // 已被新任务接管：落库扫描也归新任务负责（它结束时自己会扫一次）
     if (!owns()) return
 
+    // ② 落库阶段：不可取消（文件已归置完，中途退只会留一半入库的照片）
+    importState.phase = 'scanning'
+    importState.message = copyFailed
+      ? '正在整理已导入的照片…'
+      : pendingResult.cancelled
+        ? '已取消，正在整理已取消前导入的照片…'
+        : '正在入库…'
+    let scanError: Error | null = null
     try {
+      // runScan 与其他扫描源串行（C-05），这里排队等前一轮结束即可
       await runScan('manual')
     } catch (err) {
-      scanProgress.status = 'error'
-      scanProgress.message = (err as Error).message
+      scanError = err as Error
       console.error('[import] 落库扫描失败:', err)
+    }
+    if (!owns()) return
+
+    // ③ 终态：落库真的结束了才写。归置阶段已失败时保留它的错误文案，不覆盖。
+    if (!copyFailed) {
+      if (scanError) {
+        // 文件已归置但没入库 —— 对用户来说仍然是失败，据实报告
+        importState.status = 'error'
+        importState.message = `照片已导入，但入库扫描失败：${scanError.message}`
+      } else {
+        importState.status = pendingResult.cancelled ? 'cancelled' : 'done'
+        importState.message = pendingResult.message
+      }
     }
   } finally {
     // watcher 恢复放 finally：停 watcher 本身抛错（或被接管）时也不能把库永久置于
     // 「无监听」状态，否则此后新增文件只能靠手动扫描才发现。
     // 被接管时不恢复——新任务启动时已 stopWatcher，它自己收尾时再恢复。
-    if (owns()) startWatcher()
+    if (owns()) {
+      // 兜底：任何异常路径都不能让 finishedAt 空着。否则「已取消但未收尾」会永久占住
+      // isImportBusy()，导入与切库/删库全部被卡死，只能重启服务。
+      if (importState.finishedAt == null) importState.finishedAt = new Date().toISOString()
+      importState.phase = 'idle'
+      startWatcher()
+    }
   }
 }
 

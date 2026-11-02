@@ -145,16 +145,6 @@ export function collectOrphanIds(
   return orphanIds
 }
 
-/**
- * 全量同步入口：遍历 + 配对 + 入库 + 删除对账。可重复调用（增量幂等）。
- * @param source 触发来源：manual（手动/API）/ watcher（热监听）/ startup（启动对账）/ switch（切库）
- *
- * 容错与断点续跑（审查 P1-B1）：
- *  - 整体 try/catch：任何异常都把 scanProgress 置为 error 并上抛，
- *    不再"半途静默崩溃、状态卡在 scanning"。
- *  - 增量续跑：已入库的 file_path 直接复用元数据（照片库是 iCloudPD
- *    只读快照，文件内容不变），中断后重跑只补新文件，无需全量重来。
- */
 export interface RunScanOptions {
   /**
    * 是否把待生成的缩略图入队预热（默认 true）。
@@ -164,7 +154,54 @@ export interface RunScanOptions {
   enqueueThumbnails?: boolean
 }
 
-export async function runScan(
+/** 扫描串行链尾（见 runScan） */
+let scanChain: Promise<void> = Promise.resolve()
+
+/**
+ * 全量同步入口（串行化包装，审查 C-05）。
+ *
+ * 扫描之间**必须互斥**：每次 `doRunScan` 都在开头拍一份目录快照，结束时按「快照里没有
+ * 的 DB 行」做删除对账。两轮并行时，先开始的那轮用的是旧快照，会把后开始那轮才入库的
+ * 文件判成孤儿 → 删 DB 行 + FTS + 缩略图缓存，而磁盘上的文件还在，下次重扫又以新 id
+ * 复活、用户已忽略/失败的状态全丢。
+ *
+ * 触发源很多且彼此不知情：`/api/scan`、watcher 防抖、启动对账、切库、导入结束，
+ * 所以互斥放在这里而不是各个调用点。排队的调用按到达顺序依次执行（watcher 防抖
+ * 本身已合并突发事件，这里不再做二次合并，保持行为可预测）。
+ *
+ * 注意：返回的 Promise 拒绝语义与串行位置一致——排队中的一轮失败不影响后面排队的。
+ *
+ * @param source 触发来源：manual（手动/API）/ watcher（热监听）/ startup（启动对账）/ switch（切库）
+ */
+export function runScan(
+  source: 'manual' | 'watcher' | 'startup' | 'switch' = 'manual',
+  options: RunScanOptions = {},
+): Promise<void> {
+  const next = scanChain.then(
+    () => doRunScan(source, options),
+    // 上一轮失败也要继续跑这一轮（否则一次 error 会把后续扫描永久卡死）
+    () => doRunScan(source, options),
+  )
+  // 链尾吞掉错误：只影响「排在它后面的」能否继续，本轮的拒绝仍通过 next 返回给调用方
+  scanChain = next.then(
+    () => undefined,
+    () => undefined,
+  )
+  return next
+}
+
+/**
+ * 实际扫描：遍历 + 配对 + 入库 + 删除对账。可重复调用（增量幂等）。
+ *
+ * 只由 runScan 调用——不要直接调用，否则绕过互斥（C-05）。
+ *
+ * 容错与断点续跑（审查 P1-B1）：
+ *  - 整体 try/catch：任何异常都把 scanProgress 置为 error 并上抛，
+ *    不再"半途静默崩溃、状态卡在 scanning"。
+ *  - 增量续跑：已入库的 file_path 直接复用元数据（照片库是 iCloudPD
+ *    只读快照，文件内容不变），中断后重跑只补新文件，无需全量重来。
+ */
+async function doRunScan(
   source: 'manual' | 'watcher' | 'startup' | 'switch' = 'manual',
   options: RunScanOptions = {},
 ): Promise<void> {
@@ -626,7 +663,7 @@ export async function runScan(
     scanProgress.status = 'error'
     scanProgress.message = `扫描失败：${(err as Error).message}`
     console.error('[scan] failed:', err)
-    throw err
+      throw err
   }
 }
 
