@@ -8,11 +8,12 @@
  *   - 上传：其他设备浏览器整文件夹上传（webkitdirectory 保留相对路径），
  *     上传完成后后端走同一条归置流水线。
  *
- * 进度：导入阶段轮询 GET /api/libraries/:id/import（2s），仿同步任务的轮询形态。
+ * 进度：不再自己轮询 —— 导入状态统一来自 tasks store（打开期间 subscribe 提升到 1.5s），
+ * 启动/取消的返回值也直接写回同一份快照，和主界面、设置中心看到的是同一份数据。
  */
-import { computed, onBeforeUnmount, ref } from 'vue'
-import { startLocalImport, uploadImport, fetchImport, cancelImport } from '../api/client'
-import type { ImportState } from '../types'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { uploadImport } from '../api/client'
+import { useTaskStore } from '../stores/tasks'
 
 const props = defineProps<{
   libraryId: number
@@ -28,10 +29,11 @@ const props = defineProps<{
 }>()
 const emit = defineEmits<{
   close: []
-  'need-stats-refresh': []
   /** 导入真正完成（可用于在调用方展示「已导入 N 项」） */
   done: [payload: { processed: number; skipped: number; failed: number; exifPatched: number }]
 }>()
+
+const tasks = useTaskStore()
 
 type Mode = 'local' | 'upload'
 const mode = ref<Mode>('local')
@@ -46,12 +48,41 @@ const uploadPct = ref(0)
 const uploading = ref(false)
 let abortCtrl: AbortController | null = null
 
-/* ===== 导入状态 ===== */
-const state = ref<ImportState | null>(null)
+/* ===== 导入状态（来自 tasks store） ===== */
+const importState = computed(() => tasks.importState)
 const error = ref('')
-let pollTimer: number | undefined
+/** 本次会话发起过导入：用于「请求已发出、快照还没到」的过渡 */
+const justStarted = ref(false)
+/** 打开弹窗时任务已经在跑（用户关掉又打开） */
+const openedDuringRun = ref(false)
+/** 终态已处理过，防重复 emit done */
+const resultSeen = ref(false)
+let releaseTasks: (() => void) | null = null
 
-const running = computed(() => state.value?.status === 'running')
+/** 属于本库且仍在进行；「已取消但还没写 finishedAt」也算（后端流水线还在收尾） */
+const active = computed(() => {
+  const s = importState.value
+  if (!s || s.libraryId !== props.libraryId) return false
+  return s.status === 'running' || (s.status === 'cancelled' && s.finishedAt == null)
+})
+
+/** 属于本库且已到终态 */
+const terminal = computed(() => {
+  const s = importState.value
+  if (!s || s.libraryId !== props.libraryId) return false
+  return (
+    s.status === 'done' ||
+    s.status === 'error' ||
+    (s.status === 'cancelled' && s.finishedAt != null)
+  )
+})
+
+/** 结果视图：已终态，且本次确实发起过（避免打开弹窗就看到上一次的旧结果） */
+const showResult = computed(() => terminal.value && (justStarted.value || openedDuringRun.value))
+
+/** 已发出请求但快照还没更新 → 显示「正在准备…」而不是停留在表单 */
+const preparing = computed(() => justStarted.value && !active.value && !terminal.value)
+
 const totalSizeText = computed(() => {
   const bytes = files.value.reduce((s, f) => s + f.size, 0)
   if (bytes >= 1024 ** 3) return `${(bytes / 1024 ** 3).toFixed(2)} GB`
@@ -72,6 +103,12 @@ function onPickFiles(e: Event): void {
   pickedFolder.value = list[0]?.webkitRelativePath.split('/')[0] ?? ''
 }
 
+/** 标记本次导入已发起（清掉上一次的结果视图状态） */
+function markStarted(): void {
+  justStarted.value = true
+  resultSeen.value = false
+}
+
 async function startLocal(): Promise<void> {
   const p = localPath.value.trim()
   if (!p) {
@@ -81,10 +118,11 @@ async function startLocal(): Promise<void> {
   error.value = ''
   // 切库确认放这里：用户点了「开始导入」才算真的要用这个库，此时打扰他才说得通
   if (props.beforeStart && !(await props.beforeStart('local'))) return
+  markStarted()
   try {
-    await startLocalImport(props.libraryId, p, localMove.value ? 'move' : 'copy')
-    startPolling()
+    await tasks.startLocalImport(props.libraryId, p, localMove.value ? 'move' : 'copy')
   } catch (err) {
+    justStarted.value = false
     error.value = err instanceof Error ? err.message : String(err)
   }
 }
@@ -101,8 +139,16 @@ async function startUpload(): Promise<void> {
   uploadPct.value = 0
   abortCtrl = new AbortController()
   try {
-    await uploadImport(props.libraryId, files.value, (pct) => (uploadPct.value = pct), abortCtrl.signal)
-    startPolling()
+    // 上传是组件级 IO（带进度回调与中断信号），不适合搬进 store；
+    // 但结束后把状态交回 store，后续进度仍走同一份快照
+    const res = await uploadImport(
+      props.libraryId,
+      files.value,
+      (pct) => (uploadPct.value = pct),
+      abortCtrl.signal,
+    )
+    markStarted()
+    tasks.applyImport(res.import)
   } catch (err) {
     error.value = err instanceof Error ? err.message : String(err)
   } finally {
@@ -115,60 +161,52 @@ function cancelUploading(): void {
   abortCtrl?.abort()
 }
 
-async function pollImport(): Promise<void> {
-  try {
-    const { import: next } = await fetchImport(props.libraryId)
-    state.value = next
-    if (next.status === 'done' || next.status === 'error' || next.status === 'cancelled') {
-      stopPolling()
-      if (next.status === 'done') {
-        emit('need-stats-refresh')
-        emit('done', {
-          processed: next.processedFiles,
-          skipped: next.skipped,
-          failed: next.failedCount,
-          exifPatched: next.exifPatched,
-        })
-      }
-    }
-  } catch {
-    // 抖动忽略
-  }
-}
-
-function startPolling(): void {
-  stopPolling()
-  state.value = null
-  pollTimer = window.setInterval(() => void pollImport(), 2000)
-  void pollImport()
-}
-
-function stopPolling(): void {
-  if (pollTimer !== undefined) {
-    window.clearInterval(pollTimer)
-    pollTimer = undefined
-  }
-}
-
 async function cancelRun(): Promise<void> {
   try {
-    await cancelImport(props.libraryId)
-    const { import: next } = await fetchImport(props.libraryId)
-    state.value = next
-    stopPolling()
+    // 返回的是「cancelled + 未写 finishedAt」的中间态，随后靠轮询收尾
+    await tasks.cancelImport(props.libraryId)
   } catch (err) {
     error.value = err instanceof Error ? err.message : String(err)
   }
 }
 
 function close(): void {
-  stopPolling()
   abortCtrl?.abort()
   emit('close')
 }
 
+/**
+ * 终态 → 通知调用方。用 resultSeen 去重：任务状态可能在多次快照里停在同一终态，
+ * 旧实现靠「停轮询」天然只触发一次，这里必须自己守。
+ * 注意不要在这里清 justStarted —— 结果视图正是靠它（或 openedDuringRun）才显示。
+ */
+watch(
+  terminal,
+  (isTerminal) => {
+    if (!isTerminal || resultSeen.value) return
+    resultSeen.value = true
+    const s = importState.value
+    if (s?.status === 'done') {
+      emit('done', {
+        processed: s.processedFiles,
+        skipped: s.skipped,
+        failed: s.failedCount,
+        exifPatched: s.exifPatched,
+      })
+    }
+  },
+  { immediate: true },
+)
+
+onMounted(() => {
+  releaseTasks = tasks.subscribe()
+  // 打开时任务已在跑（关掉又打开、或从别处发起）→ 直接进进度视图
+  openedDuringRun.value = active.value
+  void tasks.refresh()
+})
+
 onBeforeUnmount(() => {
-  stopPolling()
+  releaseTasks?.()
   abortCtrl?.abort()
 })
 </script>
@@ -181,25 +219,25 @@ onBeforeUnmount(() => {
         <button class="import-close" type="button" aria-label="关闭" @click="close">×</button>
       </header>
 
-      <!-- 导入进行中 -->
-      <div v-if="running" class="import-body">
+      <!-- 导入进行中（preparing = 请求已发出、快照还没更新到第一个进度） -->
+      <div v-if="active || preparing" class="import-body">
         <div class="import-status-line">
           <span class="spinner" />
-          <strong>{{ state!.message || '正在导入…' }}</strong>
+          <strong>{{ importState?.message || (preparing ? '正在准备导入…' : '正在导入…') }}</strong>
         </div>
         <div class="import-progress">
-          <div class="import-progress-bar" :style="{ width: `${state!.totalFiles ? Math.round((state!.processedFiles / state!.totalFiles) * 100) : 0}%` }" />
+          <div class="import-progress-bar" :style="{ width: `${importState?.totalFiles ? Math.round(((importState?.processedFiles ?? 0) / importState.totalFiles) * 100) : 0}%` }" />
         </div>
         <p class="import-count">
-          已处理 {{ state!.processedFiles }} / {{ state!.totalFiles }}
-          <template v-if="state!.skipped > 0"> · 跳过 {{ state!.skipped }}</template>
-          <template v-if="state!.failedCount > 0"> · 失败 {{ state!.failedCount }}</template>
+          已处理 {{ importState?.processedFiles ?? 0 }} / {{ importState?.totalFiles ?? 0 }}
+          <template v-if="(importState?.skipped ?? 0) > 0"> · 跳过 {{ importState?.skipped }}</template>
+          <template v-if="(importState?.failedCount ?? 0) > 0"> · 失败 {{ importState?.failedCount }}</template>
         </p>
 
-        <div v-if="state!.failures.length" class="import-failures">
-          <div class="import-failures-title">失败清单（{{ state!.failedCount }} 项）</div>
+        <div v-if="(importState?.failures?.length ?? 0) > 0" class="import-failures">
+          <div class="import-failures-title">失败清单（{{ importState?.failedCount }} 项）</div>
           <ul class="import-failures-list">
-            <li v-for="(f, i) in state!.failures" :key="i">
+            <li v-for="(f, i) in importState?.failures ?? []" :key="i">
               <code>{{ f.relPath }}</code>
               <span>{{ f.reason }}</span>
             </li>
@@ -222,23 +260,23 @@ onBeforeUnmount(() => {
         </footer>
       </div>
 
-      <!-- 完成 / 失败 / 取消 结果 -->
-      <div v-else-if="state && state.status !== 'idle'" class="import-body">
+      <!-- 完成 / 失败 / 取消 结果（仅当本次确实发起过，避免看到上一次的旧结果） -->
+      <div v-else-if="showResult" class="import-body">
         <div class="import-status-line">
-          <svg v-if="state.status === 'done'" class="import-check" viewBox="0 0 16 16"><path d="m3.1 8.1 3.1 3.1 6.7-6.7" /></svg>
+          <svg v-if="importState?.status === 'done'" class="import-check" viewBox="0 0 16 16"><path d="m3.1 8.1 3.1 3.1 6.7-6.7" /></svg>
           <svg v-else class="import-err" viewBox="0 0 16 16"><path d="M8 1.5 15 14H1L8 1.5Z" /><path d="M8 5.2v4.2M8 11.7v.1" /></svg>
-          <strong>{{ state.message }}</strong>
+          <strong>{{ importState?.message }}</strong>
         </div>
         <p class="import-count">
-          已处理 {{ state.processedFiles }} / {{ state.totalFiles }}
-          <template v-if="state.skipped > 0"> · 跳过 {{ state.skipped }}</template>
-          <template v-if="state.exifPatched > 0"> · 补写时间 {{ state.exifPatched }}</template>
-          <template v-if="state.failedCount > 0"> · 失败 {{ state.failedCount }}</template>
+          已处理 {{ importState?.processedFiles ?? 0 }} / {{ importState?.totalFiles ?? 0 }}
+          <template v-if="(importState?.skipped ?? 0) > 0"> · 跳过 {{ importState?.skipped }}</template>
+          <template v-if="(importState?.exifPatched ?? 0) > 0"> · 补写时间 {{ importState?.exifPatched }}</template>
+          <template v-if="(importState?.failedCount ?? 0) > 0"> · 失败 {{ importState?.failedCount }}</template>
         </p>
-        <div v-if="state.failures.length" class="import-failures">
-          <div class="import-failures-title">失败清单（{{ state.failedCount }} 项）</div>
+        <div v-if="(importState?.failures?.length ?? 0) > 0" class="import-failures">
+          <div class="import-failures-title">失败清单（{{ importState?.failedCount }} 项）</div>
           <ul class="import-failures-list">
-            <li v-for="(f, i) in state.failures" :key="i"><code>{{ f.relPath }}</code><span>{{ f.reason }}</span></li>
+            <li v-for="(f, i) in importState?.failures ?? []" :key="i"><code>{{ f.relPath }}</code><span>{{ f.reason }}</span></li>
           </ul>
         </div>
         <footer class="import-actions">

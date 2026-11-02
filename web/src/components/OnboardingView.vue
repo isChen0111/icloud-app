@@ -20,8 +20,8 @@
  *   - 只有用户真正点「开始导入 / 开始上传 / 开始全量拉取」时才切，并且先弹确认说明后果。
  */
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
-import { createLibrary, startSync, fetchSync, cancelSync, switchLibrary } from '../api/client'
-import type { SyncState } from '../types'
+import { createLibrary, switchLibrary } from '../api/client'
+import { useTaskStore } from '../stores/tasks'
 import AuthDialog from './AuthDialog.vue'
 import ImportDialog from './ImportDialog.vue'
 import ConfirmDialog from './ConfirmDialog.vue'
@@ -31,6 +31,8 @@ const emit = defineEmits<{
   /** 引导期间切换了激活库（R-22）：App 关闭引导时要整页刷新，否则页面数据仍是旧库 */
   switched: []
 }>()
+
+const tasks = useTaskStore()
 
 const step = ref<1 | 2>(1)
 const name = ref('')
@@ -46,14 +48,19 @@ const libActive = ref(true)
 const authOpen = ref(false)
 const authDone = ref(false)
 const syncing = ref(false)
-const sync = ref<SyncState | null>(null)
+/** 同步任务快照（仅当归属本库时才有值；避免看到别的库的任务） */
+const sync = computed(() => {
+  const s = tasks.sync
+  return s && s.libraryId === libraryId.value ? s : null
+})
 const syncError = ref('')
 
 /* ===== 卡片二：本地目录 ===== */
 const importOpen = ref(false)
 const imported = ref<{ processed: number; skipped: number; failed: number } | null>(null)
 
-let syncTimer: number | undefined
+/** 轮询订阅释放函数（引导页打开期间把任务频率提到活跃档） */
+let releaseTasks: (() => void) | null = null
 
 /* ===== 切库确认 ===== */
 interface AskState {
@@ -82,10 +89,8 @@ function onKeydown(e: KeyboardEvent): void {
   // 会连带把整个引导关掉 → 子弹窗被卸载 → icloudpd 子进程留在后台占着 8080。
   if (e.key === 'Escape' && !authOpen.value && !importOpen.value && !ask.value) emit('close')
 }
-onMounted(() => window.addEventListener('keydown', onKeydown))
-onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
-
 /** 步骤 ①：创建照片库并激活（成功后展示成功提示，再手动进入下一步） */
+
 async function submitName(): Promise<void> {
   const trimmed = name.value.trim()
   if (!trimmed) {
@@ -155,9 +160,8 @@ async function startFullSync(): Promise<void> {
   if (!(await ensureActive('开始全量拉取'))) return
   syncing.value = true
   try {
-    const res = await startSync(libraryId.value, 'full')
-    sync.value = res.sync
-    startPolling()
+    // 返回值即 running 状态，store 写回后下面的 syncRunning() 立刻为真
+    await tasks.startSync(libraryId.value, 'full')
   } catch (err) {
     syncError.value = err instanceof Error ? err.message : String(err)
   } finally {
@@ -165,37 +169,10 @@ async function startFullSync(): Promise<void> {
   }
 }
 
-async function pollSync(): Promise<void> {
-  if (libraryId.value == null) return
-  try {
-    const { sync: next } = await fetchSync(libraryId.value)
-    sync.value = next
-    if (next.status === 'done' || next.status === 'error' || next.status === 'cancelled') {
-      stopPolling()
-    }
-  } catch {
-    // 抖动忽略
-  }
-}
-
-function startPolling(): void {
-  stopPolling()
-  syncTimer = window.setInterval(() => void pollSync(), 2000)
-}
-
-function stopPolling(): void {
-  if (syncTimer !== undefined) {
-    window.clearInterval(syncTimer)
-    syncTimer = undefined
-  }
-}
-
 async function cancelFullSync(): Promise<void> {
   if (libraryId.value == null) return
   try {
-    const res = await cancelSync(libraryId.value)
-    sync.value = res.sync
-    stopPolling()
+    await tasks.cancelSync(libraryId.value)
   } catch (err) {
     syncError.value = err instanceof Error ? err.message : String(err)
   }
@@ -224,11 +201,19 @@ const finishLabel = computed(() => {
 })
 
 function finish(): void {
-  stopPolling()
   emit('close')
 }
 
-onBeforeUnmount(stopPolling)
+onMounted(() => {
+  window.addEventListener('keydown', onKeydown)
+  // 引导页打开期间把任务频率提到活跃档；同步进度直接读 store，不再自己拉 /sync
+  releaseTasks = tasks.subscribe()
+  void tasks.refresh()
+})
+onBeforeUnmount(() => {
+  window.removeEventListener('keydown', onKeydown)
+  releaseTasks?.()
+})
 </script>
 
 <template>

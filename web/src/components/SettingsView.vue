@@ -12,20 +12,25 @@
  * 多库约束：icloudpd 同步全局单任务——某库执行时其他库点「执行」→ 后端 409 → 提示等待已有任务完成（不排队）；
  * 态（disabled），全局任务释放后自动恢复。
  */
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
-import { fetchLibraries, startSync, cancelSync, deleteLibrary, updateLibraryConfig, switchLibrary } from '../api/client'
-import type { LibraryInfo, Stats } from '../types'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { fetchLibraries, deleteLibrary, updateLibraryConfig, switchLibrary } from '../api/client'
+import { useTaskStore } from '../stores/tasks'
+import type { LibraryInfo } from '../types'
 import SyncButton from './SyncButton.vue'
 import ImportDialog from './ImportDialog.vue'
 
-const props = defineProps<{ stats: Stats | null }>()
+/**
+ * 任务状态（同步进度、全局是否忙碌）统一从 tasks store 读 ——
+ * 以前靠 App 用 props 传 stats 下来，不仅多一条数据通道，
+ * 同步状态还只有 5 秒轮询粒度；现在订阅 store 即可拿到 1.5 秒的活跃频率。
+ */
+const tasks = useTaskStore()
+const stats = computed(() => tasks.stats)
 const emit = defineEmits<{
   close: []
   'open-auth': [lib: { id: number; name: string; account: string | null }]
   'new-library': []
   'library-deleted': [payload: { id: number; wasActive: boolean }]
-  /** 请求 App 立即刷新 stats（任务启动/取消后即时反馈，与主界面 await pollStats 同效） */
-  'need-stats-refresh': []
 }>()
 
 type Tab = 'libs' | 'about'
@@ -39,9 +44,7 @@ const configOpen = ref<number | null>(null)
 /** 展开「运行日志」的库 id（点击折叠展开/收起） */
 const logOpen = ref<number | null>(null)
 /** icloudpd 原始输出日志行（全局单任务，仅当 stats.sync.libraryId 匹配该库时展示） */
-const syncLogLines = computed(() => props.stats?.sync.log ?? [])
-/** 任务刚启动、stats 轮询尚未确认前的本地占位态（防止连点/误开菜单） */
-const starting = ref<Record<number, boolean>>({})
+const syncLogLines = computed(() => stats.value?.sync.log ?? [])
 const syncError = ref('')
 /** 删除确认弹窗（仅本地删除；复选框决定是否连同本地照片副本一起删） */
 const deleteTarget = ref<LibraryInfo | null>(null)
@@ -135,20 +138,17 @@ async function confirmDelete(): Promise<void> {
   }
 }
 
-let pollTimer: number | undefined
-
-/** 全局同步任务是否忙碌（主界面与设置中心共享同一 stats 轮询源） */
+/** 全局同步任务是否忙碌（主界面与设置中心共享同一份任务快照） */
 function globalBusy(): boolean {
-  const s = props.stats?.sync
-  return s?.status === 'running' || s?.status === 'waiting_retry'
+  return tasks.syncBusy
 }
 /** 某库自己是否正在执行任务 */
 function thisLibBusy(id: number): boolean {
-  return globalBusy() && props.stats?.sync.libraryId === id
+  return globalBusy() && stats.value?.sync.libraryId === id
 }
 /** 其他库正在执行（本库点执行会进入等待执行） */
 function otherBusy(id: number): boolean {
-  return globalBusy() && props.stats?.sync.libraryId !== id
+  return globalBusy() && stats.value?.sync.libraryId !== id
 }
 /** 状态行颜色：蓝=进行中 黄=等待 绿=完成 红=失败 */
 function syncStatusClass(status?: string): string {
@@ -170,16 +170,36 @@ async function loadLibraries(): Promise<void> {
   }
 }
 
-/** 5s 轮询：同步全局任务状态；解除本地「启动中」占位（确认执行中→交执行中态；任务已结束→回空闲） */
-function pollStats(): void {
-  void loadLibraries()
-  for (const idStr of Object.keys(starting.value)) {
-    const id = Number(idStr)
-    if (thisLibBusy(id) || !globalBusy()) {
-      starting.value = { ...starting.value, [id]: false }
-    }
-  }
-}
+/**
+ * 库列表的刷新时机：不再 5 秒死循环拉一次。
+ *
+ * 旧实现每 5 秒调一次 /api/libraries，而后端要为**每个库**开一次只读 SQLite 连接
+ * 跑 COUNT（含非激活库），纯粹是为了「解除启动中占位 + 跟上同步状态」。
+ * 现在同步状态直接来自 tasks store，库列表只在「可能真的变了」时重拉：
+ * 扫描轮次/状态、同步状态与归属、导入状态、激活库变化。
+ * 300ms 防抖是为了合并「导入结束 → 立刻触发全库扫描」这种连续跳变。
+ */
+const taskSignature = computed(() => {
+  const s = stats.value
+  if (!s) return ''
+  return [
+    s.library?.id ?? 0,
+    s.library?.authStatus ?? '',
+    s.scan.runId,
+    s.scan.status,
+    s.sync.status,
+    s.sync.libraryId,
+    s.import.status,
+  ].join('|')
+})
+
+let reloadTimer: number | undefined
+watch(taskSignature, (next, prev) => {
+  // 首次快照不算「变化」：onMounted 已经主动拉过一次，避免打开设置页就请求两遍
+  if (!next || !prev || next === prev) return
+  window.clearTimeout(reloadTimer)
+  reloadTimer = window.setTimeout(() => void loadLibraries(), 300)
+})
 
 function pickSync(libId: number, kind: 'full' | 'inc'): void {
   pick.value = { ...pick.value, [libId]: kind }
@@ -191,11 +211,10 @@ async function runSync(libId: number): Promise<void> {
   if (!kind) return
   syncError.value = ''
   try {
-    await startSync(libId, kind)
+    // 后端返回的就是「已开始」的状态，store 直接写回快照 →
+    // 按钮这一刻就进「取消」态，不再需要「启动中…」占位
+    await tasks.startSync(libId, kind)
     pick.value = { ...pick.value, [libId]: null }
-    // 启动成功 → 请求 App 立即刷新 stats；本地「启动中」占位兜底（轮询确认 running 后转执行中/取消）
-    starting.value = { ...starting.value, [libId]: true }
-    emit('need-stats-refresh')
   } catch (err) {
     // 失败（全局已有 icloudpd 任务占用 / 非激活库等）：保留已选操作并提示，用户可稍后重试
     syncError.value = err instanceof Error ? err.message : String(err)
@@ -295,9 +314,8 @@ function configBriefTitle(lib: LibraryInfo): string {
 async function cancelSyncRun(libId: number): Promise<void> {
   syncError.value = ''
   try {
-    await cancelSync(libId)
-    syncError.value = ''
-    emit('need-stats-refresh')
+    // 取消是同步生效的（后端写完 cancelled 才返回），store 写回后按钮立刻回空闲
+    await tasks.cancelSync(libId)
   } catch (err) {
     syncError.value = err instanceof Error ? err.message : String(err)
   }
@@ -320,13 +338,18 @@ function closeMenu(): void {
   menuLibId.value = null
 }
 
+/** 关闭时释放订阅（任务在跑则仍按活跃频率轮询，不受影响） */
+let releaseTasks: (() => void) | null = null
+
 onMounted(() => {
+  // 设置中心打开期间把轮询提到活跃档（1.5s），关闭后自然回落
+  releaseTasks = tasks.subscribe()
   void loadLibraries()
-  pollTimer = window.setInterval(pollStats, 5000)
   window.addEventListener('click', closeMenu)
 })
 onBeforeUnmount(() => {
-  if (pollTimer !== undefined) window.clearInterval(pollTimer)
+  releaseTasks?.()
+  window.clearTimeout(reloadTimer)
   window.removeEventListener('click', closeMenu)
 })
 </script>
@@ -490,18 +513,16 @@ onBeforeUnmount(() => {
                 </button>
                 <SyncButton
                   :busy="thisLibBusy(lib.id)"
-                  :kind="props.stats?.sync.kind ?? 'full'"
-                  :starting="!!starting[lib.id]"
                   :picked="pick[lib.id] ?? null"
                   :disabled="otherBusy(lib.id)"
                   @pick="(k) => pickSync(lib.id, k)"
                   @run="runSync(lib.id)"
                   @cancel="cancelSyncRun(lib.id)"
                 />
-                <span v-if="syncError && (pick[lib.id] || starting[lib.id] || thisLibBusy(lib.id))" class="sync-note err"><i class="sync-dot" aria-hidden="true" />{{ syncError }}</span>
-                <span v-else-if="thisLibBusy(lib.id)" class="sync-note" :class="syncStatusClass(props.stats!.sync.status)"><i class="sync-dot" aria-hidden="true" />{{ props.stats!.sync.message }}</span>
-                <span v-else-if="props.stats?.sync.status === 'done' && props.stats.sync.libraryId === lib.id" class="sync-note ok">
-                  <i class="sync-dot" aria-hidden="true" />同步完成，本次下载 {{ props.stats.sync.downloaded }} 项
+                <span v-if="syncError && (pick[lib.id] || thisLibBusy(lib.id))" class="sync-note err"><i class="sync-dot" aria-hidden="true" />{{ syncError }}</span>
+                <span v-else-if="thisLibBusy(lib.id)" class="sync-note" :class="syncStatusClass(stats!.sync.status)"><i class="sync-dot" aria-hidden="true" />{{ stats!.sync.message }}</span>
+                <span v-else-if="stats?.sync.status === 'done' && stats.sync.libraryId === lib.id" class="sync-note ok">
+                  <i class="sync-dot" aria-hidden="true" />同步完成，本次下载 {{ stats.sync.downloaded }} 项
                 </span>
                 <span v-else-if="otherBusy(lib.id) && pick[lib.id]" class="sync-note warn">
                   <i class="sync-dot" aria-hidden="true" />其他库同步中，请等待完成后再执行
@@ -593,8 +614,8 @@ onBeforeUnmount(() => {
                 </div>
               </div>
 
-              <!-- icloudpd 运行日志（该库任务输出，按钮下方独立整行，随 stats 轮询更新） -->
-              <div v-if="props.stats?.sync.libraryId === lib.id && syncLogLines.length" class="lib-log">
+              <!-- icloudpd 运行日志（该库任务输出，按钮下方独立整行，随任务快照更新） -->
+              <div v-if="stats?.sync.libraryId === lib.id && syncLogLines.length" class="lib-log">
                 <button
                   type="button"
                   class="lib-log-toggle"
@@ -678,7 +699,6 @@ onBeforeUnmount(() => {
       :library-id="importTarget.id"
       :library-name="importTarget.name"
       @close="importTarget = null"
-      @need-stats-refresh="emit('need-stats-refresh')"
     />
   </div>
 </template>

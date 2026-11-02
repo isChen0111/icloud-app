@@ -17,6 +17,7 @@ import type {
   SearchResult,
   Stats,
   SyncState,
+  SyncStateLite,
   ThumbnailFailuresResult,
   ThumbSize,
 } from '../types'
@@ -290,17 +291,20 @@ export function cancelAuth(): Promise<{ ok: boolean }> {
 }
 
 /** 启动同步任务（kind: full 全量拉取 / inc 增量同步） */
-export function startSync(libraryId: number, kind: 'full' | 'inc'): Promise<{ ok: boolean; sync: SyncState }> {
+export function startSync(
+  libraryId: number,
+  kind: 'full' | 'inc',
+): Promise<{ ok: boolean; sync: SyncStateLite }> {
   return post(`/library/${libraryId}/sync`, { kind })
 }
 
-/** 同步任务状态（轮询） */
-export function fetchSync(libraryId: number): Promise<{ sync: SyncState }> {
+/** 同步任务状态（轮询；不含日志，日志只在 /api/stats 里带回） */
+export function fetchSync(libraryId: number): Promise<{ sync: SyncStateLite }> {
   return get(`/library/${libraryId}/sync`)
 }
 
 /** 取消同步任务 */
-export function cancelSync(libraryId: number): Promise<{ ok: boolean; sync: SyncState }> {
+export function cancelSync(libraryId: number): Promise<{ ok: boolean; sync: SyncStateLite }> {
   return fetch(`${BASE}/library/${libraryId}/sync`, { method: 'DELETE' }).then((r) => r.json())
 }
 

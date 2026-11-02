@@ -170,6 +170,24 @@ function onKeydown(e: KeyboardEvent): void {
   if (e.key === 'Escape') void handleClose()
 }
 
+/**
+ * 页面隐藏时停表、回来立刻补拉一次。
+ *
+ * 这是唯一保留的高频轮询（1 秒）：认证是 icloudpd 子进程的独立阶段机，
+ * 与 /api/stats 的任务状态不是一回事，合并进 store 反而会把两种语义搅在一起。
+ * 但它只在弹窗打开期间跑，所以只需要补上「别在后台空转」这一条。
+ */
+function onVisibilityChange(): void {
+  if (document.hidden) {
+    stopPolling()
+    return
+  }
+  if (!started.value) return
+  if (stage.value === 'done' || stage.value === 'error') return
+  void poll()
+  startPolling()
+}
+
 /** 成功后用户点「完成」关闭（成功视图停留，让用户明确看到结果） */
 function finish(): void {
   stopPolling()
@@ -178,6 +196,7 @@ function finish(): void {
 
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', onKeydown)
+  document.removeEventListener('visibilitychange', onVisibilityChange)
   stopPolling()
   // R-27：组件被父级无条件卸载（例如引导页被整体关闭）时也必须收掉 icloudpd
   // 子进程。它继续占着 8080 会让下次认证直接起不来，而界面上看不出任何原因。
@@ -187,6 +206,7 @@ onBeforeUnmount(() => {
 /** 设置中心/主界面点「刷新链接」（已有 account）打开即自动开始认证，不再要求二次点击 */
 onMounted(() => {
   window.addEventListener('keydown', onKeydown)
+  document.addEventListener('visibilitychange', onVisibilityChange)
   if (props.autoStart && props.account) void begin()
 })
 </script>

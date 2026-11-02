@@ -1,13 +1,15 @@
 <!--
   同步按钮（共享组件：主界面顶栏 + 设置中心每库共用，保证视觉/文案/状态机完全一致）
 
-  状态优先级：busy（执行中·可取消）> starting（启动中占位）> picked（已选待执行）> idle（同步▾菜单）
+  状态优先级：busy（执行中·可取消）> picked（已选待执行）> idle（同步▾菜单）
   - busy：本库任务执行中（含 waiting_retry），点击 emit cancel
-  - starting：任务刚启动、stats 轮询尚未确认（仅设置中心需要，主页立即 pollStats 可不用）
   - picked：已选全量/增量待执行，点击 emit run
-  - idle：「同步」主按钮 + 全量/增量菜单，选择 emit pick(kind)
+  - idle：「iCloud 同步」主按钮 + 全量/增量菜单，选择 emit pick(kind)
   - disabled：仅视觉灰显（其他库任务占用），菜单仍可点开，点执行由后端 409 提示
-  - locked：真禁用（如非当前激活库），加 disabled 属性、菜单不展开、附 title 说明
+
+  曾经还有一个 starting「启动中…」占位态，用于「点了执行、但 5 秒轮询还没确认 running」
+  的窗口期。现在 startSync 的响应本身就带回 status='running' 并直接写进快照，
+  按钮立刻进 busy，不再需要这个中间态。
 -->
 <template>
   <div class="sync-btn-wrap">
@@ -17,12 +19,6 @@
       <span>取消</span>
     </button>
     <div v-if="busy" class="sync-prog" aria-hidden="true" />
-
-    <!-- 启动中占位 -->
-    <button v-else-if="starting" class="sync-btn wait" type="button" disabled>
-      <span class="spinner" />
-      <span>启动中…</span>
-    </button>
 
     <!-- 已选待执行 -->
     <button v-else-if="picked" class="sync-btn primary" type="button" @click="$emit('run')">
@@ -38,20 +34,13 @@
     <button
       v-else
       class="sync-btn"
-      :class="{ disabled, locked }"
+      :class="{ disabled }"
       type="button"
-      :disabled="locked"
       :aria-expanded="menuOpen"
-      :title="locked ? '该库不是当前激活库，切换到它之后才能同步' : undefined"
       @click="menuOpen = !menuOpen"
     >
       <span class="ico">
-        <!-- locked：换成锁形图标，静态就能看出点不了（仅靠半透明太不明显） -->
-        <svg v-if="locked" viewBox="0 0 24 24" aria-hidden="true">
-          <rect x="5" y="10.5" width="14" height="9.5" rx="2.2" />
-          <path d="M8.5 10.5V7.8a3.5 3.5 0 0 1 7 0v2.7" />
-        </svg>
-        <svg v-else viewBox="0 0 24 24" aria-hidden="true">
+        <svg viewBox="0 0 24 24" aria-hidden="true">
           <path d="M6.5 17a4 4 0 0 1-.8-7.9A5.5 5.5 0 0 1 17 8.6a3.5 3.5 0 0 1-.5 8.4" />
           <path d="m9.5 13 2.5 2.5 2.5-2.5M12 15.5v-6" />
         </svg>
@@ -87,22 +76,13 @@ import { computed, ref } from 'vue'
 const props = withDefaults(defineProps<{
   /** 本库任务执行中（含 waiting_retry） */
   busy: boolean
-  /** 当前执行任务的类型（busy 文案用） */
-  kind?: 'full' | 'inc'
-  /** 任务刚启动、stats 尚未确认的本地占位 */
-  starting?: boolean
   /** 已选待执行类型 */
   picked?: 'full' | 'inc' | null
   /** 仅视觉灰显（其他库任务占用），不禁用菜单点击 */
   disabled?: boolean
-  /** 真正禁用（如「该库不是当前激活库」）：加 disabled 属性，菜单不展开、点击无响应 */
-  locked?: boolean
 }>(), {
-  kind: 'full',
-  starting: false,
   picked: null,
   disabled: false,
-  locked: false,
 })
 
 const emit = defineEmits<{
@@ -145,23 +125,6 @@ function choose(kind: 'full' | 'inc'): void {
 .sync-btn:hover { border-color: #4384ee; color: #4384ee; box-shadow: 0 2px 6px rgb(10 132 255 / 12%); }
 .sync-btn.disabled { opacity: 0.6; cursor: not-allowed; }
 .sync-btn.disabled:hover { border-color: var(--border); color: var(--text-1); box-shadow: none; }
-/* locked（真禁用）：不用半透明，改成灰底 + 虚线框 + 锁图标，静态即可辨识；
-   hover 也不给任何高亮，避免「看起来还能点」 */
-.sync-btn.locked {
-  border-style: dashed;
-  background: var(--bg-field);
-  color: var(--text-3);
-  opacity: 1;
-}
-.sync-btn.locked:hover {
-  border-color: var(--border);
-  background: var(--bg-field);
-  color: var(--text-3);
-  box-shadow: none;
-}
-/* locked 时箭头也淡一些，整体再降一档存在感 */
-.sync-btn.locked .chev { opacity: 0.5; }
-.sync-btn:disabled { cursor: not-allowed; }
 .sync-btn .ico { display: inline-flex; align-items: center; flex-shrink: 0; color: inherit; margin-top: 1px; }
 .sync-btn .ico svg { width: 12px; height: 12px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
 .sync-btn .chev { width: 11px; height: 11px; flex-shrink: 0; transition: transform 0.18s ease; }
@@ -184,7 +147,6 @@ function choose(kind: 'full' | 'inc'): void {
   border-color: rgb(208 82 69 / 25%);
   border-top-color: #d05245;
 }
-.sync-btn.wait { border-color: var(--border); color: var(--text-2); opacity: 0.8; cursor: default; }
 .sync-btn .spinner {
   display: inline-block;
   width: 12px;

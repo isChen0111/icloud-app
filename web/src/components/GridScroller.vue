@@ -35,7 +35,7 @@ import { useVirtualizer } from '@tanstack/vue-virtual'
 import { useThemeStore } from '../stores/theme'
 import { formatDateRange, formatMonthRange } from '../utils/format'
 import { createGridThumbnailScheduler, gridThumbnailSchedulerKey } from '../composables/gridThumbnailScheduler'
-import { fetchStats } from '../api/client'
+import { useTaskStore } from '../stores/tasks'
 import type { AssetDto, GridDataSource, MonthGroup } from '../types'
 import GridItem from './GridItem.vue'
 import DateNavPanel from './DateNavPanel.vue'
@@ -44,6 +44,7 @@ import DateNavPanel from './DateNavPanel.vue'
 const props = defineProps<{ dataSource: GridDataSource }>()
 
 const themeStore = useThemeStore()
+const taskStore = useTaskStore()
 
 /** 滚动容器 DOM 引用 */
 const scrollEl = ref<HTMLElement | null>(null)
@@ -77,6 +78,18 @@ const thumbnailScheduler = createGridThumbnailScheduler(
   () => rowHeight.value,
 )
 provide(gridThumbnailSchedulerKey, thumbnailScheduler)
+
+/**
+ * 调度器并发上限跟随后端 config.thumbConcurrency（经 tasks store 的快照）。
+ * 旧实现在 onMounted 里单独 fetchStats 一次 —— 既与 App 的轮询重复请求，
+ * 又只在挂载那一刻取一次，后端改配置后已挂载的页面永远不生效。
+ * immediate：首帧可能还没有快照，此时用默认 8，第一份快照到达后自动校正。
+ */
+watch(
+  () => taskStore.thumbConcurrency,
+  (n) => thumbnailScheduler.setMaxConcurrentRequests(n),
+  { immediate: true },
+)
 
 /** '2018-05' → '2018年5月'（月份头/吸顶指示器共用） */
 function fmtMonth(ym: string): string {
@@ -497,12 +510,6 @@ onMounted(async () => {
 
   // 前端缩略图调度器并发上限以后端 /api/stats 的 thumbConcurrency 为准
   // （后端 config 是唯一来源，防止前后端两个"8"各自硬编码后漂移）
-  try {
-    const s = await fetchStats()
-    thumbnailScheduler.setMaxConcurrentRequests(s.thumbConcurrency)
-  } catch {
-    // 后端暂不可用：保持默认值（与 config 默认一致），不影响照片墙
-  }
 })
 
 onBeforeUnmount(() => {

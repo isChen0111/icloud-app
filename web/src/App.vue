@@ -9,25 +9,25 @@
  */
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import {
-  fetchStats,
   fetchThumbnailFailures,
   retryThumbnailFailures,
   setThumbnailFailuresIgnored,
   fetchLibraries,
   switchLibrary,
-  startSync,
-  cancelSync,
 } from './api/client'
 import { useAssetStore } from './stores/assets'
+import { useTaskStore } from './stores/tasks'
 import { useThemeStore } from './stores/theme'
-import type { Stats, ThumbnailFailure, LibraryInfo } from './types'
+import type { ThumbnailFailure, LibraryInfo } from './types'
 import { useRoute } from 'vue-router'
 import OnboardingView from './components/OnboardingView.vue'
 import AuthDialog from './components/AuthDialog.vue'
 import SettingsView from './components/SettingsView.vue'
 import SyncButton from './components/SyncButton.vue'
 
-const stats = ref<Stats | null>(null)
+/** 全局任务状态（stats / 扫描 / 同步 / 导入）由 tasks store 统一持有与轮询 */
+const tasks = useTaskStore()
+const stats = computed(() => tasks.stats)
 const route = useRoute()
 const assetStore = useAssetStore()
 
@@ -100,7 +100,7 @@ async function pickLibrary(id: number): Promise<void> {
     location.reload()
   } catch (err) {
     syncError.value = err instanceof Error ? err.message : String(err)
-    void pollStats()
+    void tasks.refresh({ force: true })
   }
 }
 
@@ -124,7 +124,6 @@ function openAuth(lib: { id: number; name: string; account?: string | null }): v
   authDialogOpen.value = true
 }
 
-const backendReady = ref(false)
 const statusDetailsOpen = ref(false)
 const statusRoot = ref<HTMLElement | null>(null)
 const failureDialogOpen = ref(false)
@@ -149,7 +148,7 @@ const thumbnailIconTone = computed(() => {
 })
 
 const statusSummary = computed(() => {
-  if (!stats.value) return backendReady.value ? '资源状态暂不可用' : '正在连接照片库…'
+  if (!stats.value) return tasks.online ? '资源状态暂不可用' : '正在连接照片库…'
 
   const { scan, thumbnails } = stats.value
   if (scan.status === 'idle') return '等待照片库检查'
@@ -188,7 +187,7 @@ const thumbnailPercent = computed(() => {
 })
 
 /* ---------- P0 同步按钮（视觉/状态机统一在共享组件 SyncButton.vue） ---------- */
-const syncRunning = computed(() => stats.value?.sync.status === 'running' || stats.value?.sync.status === 'waiting_retry')
+const syncRunning = computed(() => tasks.syncBusy)
 
 /** 等待重试倒计时（后端 60 秒后自动重试，前端倒数让用户知道还要等多久） */
 const retryCountdown = ref(0)
@@ -228,14 +227,7 @@ const syncStatusClass = computed(() => {
     default: return ''
   }
 })
-/** 认证状态文案 */
-const authText = computed(() => {
-  const lib = stats.value?.library
-  if (!lib) return ''
-  if (lib.authStatus === 'authed') return `已链接 ${lib.account ?? 'iCloud'}`
-  if (lib.authStatus === 'expired') return 'iCloud 会话已过期，请重新链接'
-  return '尚未链接 iCloud'
-})
+/** 当前库是否需要重新链接 iCloud（文档「未链接/已过期」提示按钮） */
 const authNeedsLink = computed(() => {
   const lib = stats.value?.library
   return lib != null && lib.authStatus !== 'authed'
@@ -253,10 +245,10 @@ async function runSync(): Promise<void> {
   const kind = syncPick.value ?? 'full'
   if (!lib) return
   try {
-    await startSync(lib.id, kind)
+    // store 内部把返回的状态直接写回快照，按钮立刻进「取消」态，无需再拉一次
+    await tasks.startSync(lib.id, kind)
     syncPick.value = null
     syncError.value = ''
-    await pollStats()
   } catch (err) {
     syncError.value = err instanceof Error ? err.message : String(err)
   }
@@ -267,25 +259,45 @@ async function cancelSyncRun(): Promise<void> {
   const lib = stats.value?.library
   if (!lib) return
   try {
-    await cancelSync(lib.id)
+    await tasks.cancelSync(lib.id)
     syncError.value = ''
-    await pollStats()
   } catch (err) {
     syncError.value = err instanceof Error ? err.message : String(err)
   }
 }
 
-/** 首次挂载检查照片库：无任何库 → 打开首次引导 */
+/** 是否正在查库列表（防重入，避免 online 连续变化时叠请求） */
+const checkingLibraries = ref(false)
+
+/**
+ * 首次挂载检查照片库：无任何库 → 打开首次引导。
+ *
+ * 只在**成功**时置 librariesChecked。旧实现在 finally 里无条件置 true，
+ * 于是「先开前端、后开后端」这个常见顺序下，首次请求必然失败、
+ * librariesChecked 却已被标成 true，引导页永远不会自动弹出，只能手动新建库。
+ * 现在失败保持 false，等 tasks.online 从 false 变 true 时自动重试。
+ */
 async function checkLibraries(): Promise<void> {
+  if (librariesChecked.value || checkingLibraries.value) return
+  checkingLibraries.value = true
   try {
     const { libraries } = await fetchLibraries()
     onboardingOpen.value = libraries.length === 0
-  } catch {
-    // 后端未就绪：保持 librariesChecked=false，下次 pollStats 后再查
-  } finally {
     librariesChecked.value = true
+  } catch {
+    // 后端未就绪：保持 false，等 online 变 true 时由下面的 watch 再查
+  } finally {
+    checkingLibraries.value = false
   }
 }
+
+/** 后端就绪（含「先开前端后开后端」的恢复路径）→ 补查一次库列表 */
+watch(
+  () => tasks.online,
+  (isOnline) => {
+    if (isOnline) void checkLibraries()
+  },
+)
 
 /** 引导期间是否切换过激活库（R-22）：切库后页面数据仍是旧库，关闭引导要整页刷新 */
 let onboardingSwitched = false
@@ -302,13 +314,13 @@ function onOnboardingClose(): void {
     location.reload()
     return
   }
-  void pollStats()
+  void tasks.refresh({ force: true })
 }
 
 /** 认证成功：关闭面板并刷新统计（认证状态/库信息） */
 function onAuthDone(): void {
   authDialogOpen.value = false
-  void pollStats()
+  void tasks.refresh({ force: true })
 }
 
 /** 主题：切换深浅（localStorage 持久化，见 stores/theme.ts） */
@@ -323,61 +335,12 @@ watch(
   { immediate: true },
 )
 
-/** 重连轮询定时器句柄 */
-let retryTimer: number | undefined
-let pollInProgress = false
-let disposed = false
-let lastScanRunId = -1
-let lastScanStatus: Stats['scan']['status'] = 'idle'
-
 /**
- * 拉取统计；失败则每 5 秒重试直到连上（修复审查 P1-F4）。
- * 旧实现只重试一次：先开前端、后开后端的常见顺序下会永久停在
- * "等待后端启动"，必须手动刷新。现在持续轮询，后端就绪自动恢复。
+ * 统计拉取与轮询调度已全部移交 stores/tasks.ts：
+ * 那里统一处理间隔自适应（有任务 1.5s / 空闲 15s / 后台停表）、请求去重、
+ * 失败退避，以及「扫描完成 → 刷新照片墙」的副作用。
+ * 本组件只负责生命周期（start/stop）和在动作之后请求一次即时刷新。
  */
-async function pollStats(): Promise<void> {
-  if (pollInProgress) return
-  pollInProgress = true
-  try {
-    const nextStats = await fetchStats()
-    const scan = nextStats.scan
-    const scanFinished =
-      (scan.status === 'done' || scan.status === 'error') &&
-      (scan.runId !== lastScanRunId || lastScanStatus === 'scanning')
-    const galleryNeedsInitialData =
-      scan.status === 'scanning' && nextStats.assets > 0 && assetStore.totalCount === 0
-    stats.value = nextStats
-    backendReady.value = true
-    if (scanFinished || galleryNeedsInitialData) {
-      try {
-        await assetStore.refresh()
-      } catch (err) {
-        console.error(
-          scanFinished ? '[app] 扫描后刷新照片墙失败:' : '[app] 扫描期间初始化照片墙失败:',
-          err,
-        )
-        return
-      }
-    }
-    lastScanRunId = scan.runId
-    lastScanStatus = scan.status
-  } catch {
-    backendReady.value = false
-    stats.value = null
-  } finally {
-    pollInProgress = false
-    scheduleStatsPoll()
-  }
-}
-
-function scheduleStatsPoll(): void {
-  if (disposed) return
-  if (retryTimer !== undefined) window.clearTimeout(retryTimer)
-  retryTimer = window.setTimeout(() => {
-    retryTimer = undefined
-    void pollStats()
-  }, 5000)
-}
 
 function closeStatusDetailsOnOutsideClick(event: PointerEvent): void {
   if (event.target instanceof Node && !statusRoot.value?.contains(event.target)) {
@@ -420,7 +383,7 @@ async function retryFailures(ids?: number[]): Promise<void> {
   failureDialogError.value = ''
   try {
     await retryThumbnailFailures(ids ? { ids } : { all: true })
-    await Promise.all([loadThumbnailFailures(), pollStats()])
+    await Promise.all([loadThumbnailFailures(), tasks.refresh({ force: true })])
   } catch (err) {
     failureDialogError.value = err instanceof Error ? err.message : String(err)
   } finally {
@@ -433,7 +396,7 @@ async function updateFailureIgnored(ids: number[], ignored: boolean): Promise<vo
   failureDialogError.value = ''
   try {
     await setThumbnailFailuresIgnored({ ids }, ignored)
-    await Promise.all([loadThumbnailFailures(), pollStats()])
+    await Promise.all([loadThumbnailFailures(), tasks.refresh({ force: true })])
   } catch (err) {
     failureDialogError.value = err instanceof Error ? err.message : String(err)
   } finally {
@@ -441,28 +404,33 @@ async function updateFailureIgnored(ids: number[], ignored: boolean): Promise<vo
   }
 }
 
+/** 详情页删除照片后：强制刷新统计（顶栏计数/体积要立刻反映，不能等下一轮） */
+function onAssetsDeleted(): void {
+  void tasks.refresh({ force: true })
+}
+
 /** 回到照片墙时刷新统计（详情页删除后返回，顶栏计数保持准确） */
 watch(
   () => route.name,
   (n) => {
-    if (n === 'grid') void pollStats()
+    // 不 force：路由来回切换时复用可能在飞的请求即可
+    if (n === 'grid') void tasks.refresh()
   },
 )
 onMounted(() => {
   document.addEventListener('pointerdown', closeStatusDetailsOnOutsideClick)
   document.addEventListener('keydown', closeStatusDetailsOnEscape)
   void checkLibraries()
-  void pollStats()
+  // 唯一轮询源启动（内部立刻拉一次，并按状态自适应频率）
+  tasks.start()
 })
 onBeforeUnmount(() => {
-  disposed = true
   window.clearTimeout(syncErrorTimer)
+  // 卸载时必须清掉倒计时，否则等待重试时会继续每秒递减（旧实现漏了这一步）
+  window.clearInterval(syncRetryTimer)
   document.removeEventListener('pointerdown', closeStatusDetailsOnOutsideClick)
   document.removeEventListener('keydown', closeStatusDetailsOnEscape)
-  if (retryTimer !== undefined) {
-    window.clearTimeout(retryTimer)
-    retryTimer = undefined
-  }
+  tasks.stop()
 })
 </script>
 
@@ -535,7 +503,6 @@ onBeforeUnmount(() => {
               <div style="position: relative; margin-top: 7px">
                 <SyncButton
                   :busy="syncRunning"
-                  :kind="stats?.sync.kind ?? 'full'"
                   :picked="syncPick"
                   @pick="pickSync"
                   @run="runSync"
@@ -799,7 +766,7 @@ onBeforeUnmount(() => {
     <main class="view-host">
       <RouterView v-slot="{ Component }">
         <KeepAlive :include="['GridView']">
-          <component :is="Component" @deleted="pollStats" />
+          <component :is="Component" @deleted="onAssetsDeleted" />
         </KeepAlive>
       </RouterView>
     </main>
@@ -923,12 +890,10 @@ onBeforeUnmount(() => {
     <!-- P0：设置中心（照片库管理 / 下载与同步 / 关于） -->
     <SettingsView
       v-if="settingsOpen"
-      :stats="stats"
       @close="settingsOpen = false"
       @open-auth="openAuth"
       @new-library="settingsOpen = false; onboardingOpen = true"
       @library-deleted="onLibraryDeleted"
-      @need-stats-refresh="pollStats"
     />
   </div>
 </template>

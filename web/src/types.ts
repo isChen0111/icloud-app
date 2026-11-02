@@ -89,8 +89,11 @@ export interface Stats {
   photos: number
   videos: number
   livePhotos: number
-  totalBytes: number
-  totalSizeGB: number
+  /** 库总体积（字节）。null = 后端正在后台计算（首次启动或任务刚结束，前端当前未消费） */
+  totalBytes: number | null
+  /** 库总体积（GB，1 位小数）。null 含义同上（前端当前未消费） */
+  totalSizeGB: number | null
+  /** 缩略图队列积压数（诊断用，前端当前未消费） */
   thumbQueue: number
   /** 后端缩略图并发预算（config.thumbConcurrency）：前端调度器并发上限以此为源，防止前后端漂移 */
   thumbConcurrency: number
@@ -260,6 +263,15 @@ export interface SyncState {
   /** icloudpd 原始输出（最近 N 行，环形缓冲，供前端「运行日志」展示） */
   log: string[]
 }
+
+/**
+ * 同步任务状态（不含日志）。
+ * `/api/library/:id/sync` 的 POST/GET/DELETE 都走后端的 publicState()，
+ * 它刻意不返回 log（日志只在 /api/stats 里按 200 行截断带回）——
+ * 所以那三个接口的实际形态比 SyncState 少一个 log 字段，
+ * 前端写回快照时必须自己补上，不能直接当成完整 SyncState。
+ */
+export type SyncStateLite = Omit<SyncState, 'log'>
 
 /* ============ 导入本地照片目录 ============ */
 
