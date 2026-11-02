@@ -12,7 +12,9 @@
  *  - 防抖 300ms：避免每个按键都请求后端。
  *  - 搜索结果不再固定 100 条截断：后端分页（offset）+ total，搜索 store
  *    按页拉取全量匹配流，虚拟滚动浏览（搜「2025」几千条也流畅）。
- *  - 删除照片墙/搜索态均可：选中集全局共享（selection store），删除后同步两个数据源缓存。
+ *  - 删除照片墙/搜索态均可；但**选中只在当前数据集内有效**：数据集一变（进搜索 /
+ *    退出搜索 / 搜索换词）就整批清空（见下方 datasetKey）。否则会出现「选中的照片
+ *    不在当前这面墙里，顶栏却仍显示已选 N 项」——删了都不知道删的是哪几张。
  */
 import { computed, nextTick, ref, watch } from 'vue'
 import { deleteAssets } from '../api/client'
@@ -53,6 +55,21 @@ const searchActive = computed(() => hasSearched.value)
 
 /** 搜索词是否过短（trigram 需要至少 3 字符） */
 const tooShort = computed(() => hasInput.value && query.value.trim().length < 3)
+
+/**
+ * 数据集标识：照片墙 = 'grid'；搜索态 = 搜索词。
+ *
+ * 它变化 == 「墙上展示的照片整体换了一批」，此时旧选中必须整批作废：
+ *  - 墙里选了 3 张 → 进搜索：那 3 张多半不在结果里，顶栏却还写「已选 3 项」；
+ *  - 搜索里选了 2 张 → 回墙：照片确实还在，但淹没在成千上万张里，看不出选了谁；
+ *  - 搜索态换词（2024 → 2025）：同理，旧结果里的选中已不可见。
+ *
+ * 用「一个 key + 一个 watch」而不是在三个分支里各写一次 clearSelection：
+ * 换词这种「数据源没变、但数据变了」的切换最容易漏，集中成一处才不会漏。
+ * watch 默认 flush='pre'，在 DOM 更新前执行，所以不会闪一帧「已选 N 项」。
+ */
+const datasetKey = computed(() => (searchActive.value ? `s:${query.value.trim()}` : 'grid'))
+watch(datasetKey, () => selectionStore.clearSelection())
 
 /** 搜索无结果（墙区中央空态条件；「未搜索」/「过短」都不算空结果） */
 const emptyResult = computed(

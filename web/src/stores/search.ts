@@ -11,7 +11,8 @@
  * 与 assets store 的差异：
  *  - 查询词变化 → 旧响应作废（searchSeq 版本守卫）：快速连续输入不会串结果
  *  - total/months 来自搜索 API 的匹配集聚合（首次响应带回并缓存，幂等）
- *  - 选中集独立为全局 selection store（照片墙/搜索共享，审查 C-17），本 store 不再持有选中状态
+ *  - 选中集不归本 store，由独立的 selection store 持有（审查 C-17）；其生命周期
+ *    绑定「当前数据集」——GridView 切数据集（进/退搜索、换词）时统一清空
  */
 import { defineStore } from 'pinia'
 import { computed, reactive, ref } from 'vue'

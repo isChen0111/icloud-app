@@ -21,8 +21,10 @@ const props = defineProps<{
   asset: AssetDto
   width: number
   selected: boolean
-  /** 选中动作由全局 selection store 提供（照片墙/搜索共享，审查 C-17）：
-   *  组件不硬编码任何数据源 store，避免搜索结果点选写进照片墙选中集导致误删。 */
+  /** 选中动作由全局 selection store 提供（照片墙/搜索同用一套，审查 C-17）：
+   *  组件不硬编码任何数据源 store，避免搜索结果点选写进照片墙选中集导致误删。
+   *  注意选中的「生命周期」由 GridView 的 datasetKey 统一管理——切换数据集即清空，
+   *  所以这里不需要关心当前是照片墙还是搜索结果。 */
   selectOnly: (id: number) => void
   toggleSelect: (id: number) => void
   clearSelection: () => void
