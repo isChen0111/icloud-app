@@ -301,6 +301,10 @@ export interface ImportState {
   exifPatched: number
   /** 补写失败数（文件仍已导入，只是没写上时间） */
   exifFailed: number
+  /** 需要补写但因缺少 exiftool 被整体跳过 */
+  exifSkipped: number
+  /** 补写成功但 mtime 还原失败（判重键损坏，重复导入会多出副本） */
+  exifMtimeFailed: number
   failedCount: number
   failures: ImportFailure[]
   /** 已收到取消请求但流水线尚未收尾（大文件 cp 可能还要跑一阵） */

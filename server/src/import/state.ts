@@ -35,7 +35,9 @@ export const importState: ImportProgress = {
   processedFiles: 0,
   skipped: 0,
   exifPatched: 0,
+  exifSkipped: 0,
   exifFailed: 0,
+  exifMtimeFailed: 0,
   failedCount: 0,
   failures: [],
   cancelRequested: false,
@@ -60,7 +62,9 @@ export function resetImportState(): void {
   importState.processedFiles = 0
   importState.skipped = 0
   importState.exifPatched = 0
+  importState.exifSkipped = 0
   importState.exifFailed = 0
+  importState.exifMtimeFailed = 0
   importState.failedCount = 0
   importState.failures = []
   importState.cancelRequested = false

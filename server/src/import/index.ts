@@ -24,8 +24,9 @@ import {
 import { stopWatcher, startWatcher } from '../scanner/watcher.js'
 import { runScan } from '../scanner/index.js'
 import { libraryImportDir, type LibraryRow } from '../db/libraries.js'
-import type { ImportMode, ImportOptions } from './types.js'
+import type { ImportFailure, ImportMode, ImportOptions } from './types.js'
 import { cleanImportTempDir } from './upload.js'
+import { getCurrentLibrary } from '../context.js'
 
 /**
  * 请求取消当前导入。只置取消信号，**不改 status**：终态由持有令牌的流水线在真正退出时写。
@@ -149,9 +150,23 @@ export function startLocalImport(lib: LibraryRow, sourceDir: string, mode: Impor
 /**
  * 启动「上传导入」：上传端点已把文件流式写到 tmpDir，这里把它当成本机目录走同一条流水线
  * （mode='move'：从临时目录 move 进 import/，省空间），结束后清理临时目录。
+ *
+ * 重校验激活库（审查 C-12）：上传可能持续几十分钟，而路由只在请求开始时确认过一次。
+ * 期间用户切库的话，文件会按旧库落盘、末尾的 runScan 却扫新库 —— 旧库一个都不入库，
+ * 接口照样返回成功。本机迁移没有这个窗口（请求里直接启动，不经过耗时阶段）。
+ *
+ * @param seedFailures 上传阶段已失败的文件（C-11），并进同一份失败清单
  */
-export function startUploadImport(lib: LibraryRow, tmpDir: string): { ok: boolean; message: string } {
+export function startUploadImport(
+  lib: LibraryRow,
+  tmpDir: string,
+  seedFailures: ImportFailure[] = [],
+): { ok: boolean; message: string } {
   if (isImportBusy()) return { ok: false, message: '已有导入任务执行中，请等待完成或取消' }
+  const current = getCurrentLibrary()
+  if (!current || current.id !== lib.id) {
+    return { ok: false, message: '上传期间切换了照片库，请回到该库重新上传' }
+  }
   resetImportState()
   const token = beginImportRun()
   importState.status = 'running'
@@ -167,6 +182,7 @@ export function startUploadImport(lib: LibraryRow, tmpDir: string): { ok: boolea
           targetRoot: targetRootOf(lib),
           mode: 'move',
           source: 'upload',
+          seedFailures,
         },
         token,
       )

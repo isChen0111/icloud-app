@@ -189,3 +189,45 @@ test('上传链路端到端：filename 保留相对目录，mtime 按 relPath �
     fs.rmSync(dir, { recursive: true, force: true })
   }
 })
+
+/* ============ 审查 C-10：文件名净化（Windows 保留名 / 非法字符 / 结尾点空格 / 超长） ============ */
+
+test('C-10：Windows 保留设备名加前缀，避免字节流向设备、文件不落盘', () => {
+  // CON.jpg 在 Win32 上 open 成功但内容进了设备，接口却返回 200「导入完成」
+  assert.equal(sanitizeRelPath('CON.jpg'), '_CON.jpg')
+  assert.equal(sanitizeRelPath('nul.mp4'), '_nul.mp4')
+  assert.equal(sanitizeRelPath('COM1.mov'), '_COM1.mov')
+  assert.equal(sanitizeRelPath('LPT9'), '_LPT9')
+  // 只是以保留名开头的正常文件名不受影响（判断只看第一个点之前）
+  assert.equal(sanitizeRelPath('CONSOLE.jpg'), 'CONSOLE.jpg')
+  assert.equal(sanitizeRelPath('NUL_2.jpg'), 'NUL_2.jpg')
+})
+
+test('C-10：非法字符替换为下划线，目录段同样处理', () => {
+  // a:b.jpg 在 NTFS 上会变成备用数据流，写出来是 0 字节
+  assert.equal(sanitizeRelPath('a:b.jpg'), 'a_b.jpg')
+  assert.equal(sanitizeRelPath('a*b?c.jpg'), 'a_b_c.jpg')
+  assert.equal(sanitizeRelPath('x<y>z|w.jpg'), 'x_y_z_w.jpg')
+  assert.equal(sanitizeRelPath('2024/三亚:海边/IMG_1.jpg'), '2024/三亚_海边/IMG_1.jpg')
+})
+
+test('C-10：结尾的点与空格去掉，避免两个不同文件归一化成同一个', () => {
+  // Win32 会静默丢弃结尾点，`x.jpg.` 与 `x.jpg` 指向同一文件 → 后传的覆盖前一个
+  assert.equal(sanitizeRelPath('x.jpg.'), 'x.jpg')
+  assert.equal(sanitizeRelPath('x.jpg   '), 'x.jpg')
+  assert.equal(sanitizeRelPath('dir./a.jpg'), 'dir/a.jpg')
+  // 整段只有点 → 兜底成 _
+  assert.equal(sanitizeRelPath('...'), '_')
+})
+
+test('C-10：超长段截断但保留扩展名', () => {
+  const long = `${'a'.repeat(300)}.jpg`
+  const out = sanitizeRelPath(long)
+  assert.ok(out.length <= 200, `截断后不应超过 200，实际 ${out.length}`)
+  assert.ok(out.endsWith('.jpg'), '必须保留扩展名，否则 scanner 不认')
+})
+
+test('C-10：mtimes 的 key 与落盘路径用同一套净化，回设才不会静默失效', () => {
+  const map = parseUploadMtimes(JSON.stringify({ 'a:b.jpg': 1700000000000, 'CON.jpg': 1700000000001 }))
+  assert.deepEqual(Object.keys(map).sort(), ['_CON.jpg', 'a_b.jpg'])
+})

@@ -57,8 +57,19 @@ export interface ImportProgress {
   skipped: number
   /** 落位后成功补写拍摄时间（EXIF 0x9003/0x9004）的文件数 */
   exifPatched: number
+  /**
+   * 需要补写但被整体跳过的数量（审查 C-13）。
+   * exiftool 不可用（未安装/被杀软拦截）时旧实现直接 return，两个计数都是 0，
+   * 界面显示「导入完成」，用户事后无法区分「本来就有 EXIF」与「降级跳过」。
+   */
+  exifSkipped: number
   /** 补写失败数（不影响文件已落位入库，单独计数避免与 failedCount 混淆） */
   exifFailed: number
+  /**
+   * 补写成功但 mtime 还原失败的数量（审查 C-13）。后果不是「少一层日期固化」，
+   * 而是判重键当场损坏——再导一次同一目录会凭空多出 (n) 副本。
+   */
+  exifMtimeFailed: number
   failedCount: number
   /** 失败清单（环形缓冲，最多保留最近 200 条） */
   failures: ImportFailure[]
@@ -83,4 +94,10 @@ export interface ImportOptions {
   targetRoot: string
   mode: ImportMode
   source: ImportSource
+  /**
+   * 归置开始前就已失败的条目（审查 C-11）。
+   * 上传链路的失败发生在「字节流写临时目录」阶段，那时归置还没开始；
+   * 这些项要并进同一份失败清单，否则用户只看到「已处理 N / N」而永远不知道少了几个文件。
+   */
+  seedFailures?: ImportFailure[]
 }

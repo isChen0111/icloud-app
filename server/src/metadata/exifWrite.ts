@@ -74,11 +74,29 @@ export function toExifDateTime(localIso: string): string {
 }
 
 /**
+ * mtime 还原失败（审查 C-13）。
+ *
+ * 单独成类型是因为后果和「补写失败」完全不同：补写失败时文件仍是原样、mtime 也没动，
+ * 下次导入还能靠 mtime 判重；而 mtime 还原失败意味着 EXIF 已经写进去、mtime 却变成了
+ * 「现在」——**判重键当场损坏**，再导一次必然多出 (1) 副本。调用方要单独计数并提示用户。
+ */
+export class MtimeRestoreError extends Error {
+  constructor(
+    readonly filePath: string,
+    readonly cause: string,
+  ) {
+    super(`mtime 还原失败，判重键可能已损坏: ${cause}`)
+    this.name = 'MtimeRestoreError'
+  }
+}
+
+/**
  * 把拍摄时间写入文件的 DateTimeOriginal + CreateDate，并保证 mtime 不变。
  *
  * @param absPath  目标绝对路径（调用方保证是 JPEG）
  * @param localIso 要写入的日期（本地时间 + 偏移的 ISO8601，如导入时 resolveDate 的结果）
  * @throws exiftool 执行失败（文件被占用、只读、非 JPEG 等）时向上抛，由调用方记失败计数
+ * @throws MtimeRestoreError 已写入但 mtime 还原失败（判重键损坏，需单独计数）
  */
 export async function writeDateTaken(absPath: string, localIso: string): Promise<void> {
   const exifDt = toExifDateTime(localIso)
@@ -91,6 +109,10 @@ export async function writeDateTaken(absPath: string, localIso: string): Promise
   // 兜底：-P 未生效时手动还原 mtime（判重键不能被写 EXIF 带跑）
   const after = fs.statSync(absPath)
   if (Math.trunc(after.mtimeMs) !== Math.trunc(before.mtimeMs)) {
-    fs.utimesSync(absPath, before.atime, before.mtime)
+    try {
+      fs.utimesSync(absPath, before.atime, before.mtime)
+    } catch (err) {
+      throw new MtimeRestoreError(absPath, (err as Error).message)
+    }
   }
 }

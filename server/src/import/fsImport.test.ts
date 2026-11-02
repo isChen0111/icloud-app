@@ -15,7 +15,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import sharp from 'sharp'
-import { importDirectory, collectSourceFiles, copyAtomically } from './fsImport.js'
+import { importDirectory, collectSourceFiles, copyAtomically, importDoneMessage } from './fsImport.js'
 import {
   importState,
   resetImportState,
@@ -446,4 +446,21 @@ test('C-09：复制途中正式文件名不存在（先写 .part，最后才 ren
   } finally {
     fs.rmSync(dir, { recursive: true, force: true })
   }
+})
+
+test('C-13：完成文案把「降级跳过」和「mtime 还原失败」说出来，不再一律「导入完成」', () => {
+  resetImportState()
+  assert.equal(importDoneMessage(), '导入完成')
+
+  // exiftool 不可用：一张都没补，旧实现两个计数都是 0 → 界面看不出任何异常
+  importState.exifSkipped = 920
+  assert.match(importDoneMessage(), /未补写 920 个（缺少 exiftool）/)
+
+  // mtime 还原失败：后果是判重键损坏，必须和「补写失败」分开说
+  resetImportState()
+  importState.exifMtimeFailed = 3
+  importState.exifFailed = 1
+  const msg = importDoneMessage()
+  assert.match(msg, /补写失败 1 个/)
+  assert.match(msg, /mtime 还原失败 3 个（重复导入可能多出副本）/)
 })

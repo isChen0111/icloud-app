@@ -98,6 +98,12 @@ export async function registerImportRoutes(app: FastifyInstance): Promise<void> 
     let received = 0
     let mtimesJson: string | undefined
     const written: { dest: string; rel: string }[] = []
+    /**
+     * 单 part 失败不再中断整批（审查 C-11）：5000 张里 1 个文件写失败，不能让已经传完的
+     * 几个 GB 白费（旧实现在 catch 里连临时目录一起删掉，用户只能从头再传）。
+     * 注：协议层错误（超出总大小限制、连接中断）仍会终止整个请求，那一层不在这里兜。
+     */
+    const failures: { relPath: string; reason: string }[] = []
     try {
       const parts = request.parts()
       for await (const part of parts) {
@@ -106,12 +112,16 @@ export async function registerImportRoutes(app: FastifyInstance): Promise<void> 
           continue
         }
         if (part.type !== 'file') continue
-        const rel = sanitizeRelPath(part.filename)
-        const dest = path.join(tmpDir, rel)
-        await fsp.mkdir(path.dirname(dest), { recursive: true })
-        await pipeline(part.file, createWriteStream(dest))
-        written.push({ dest, rel })
-        received++
+        try {
+          const rel = sanitizeRelPath(part.filename)
+          const dest = path.join(tmpDir, rel)
+          await fsp.mkdir(path.dirname(dest), { recursive: true })
+          await pipeline(part.file, createWriteStream(dest))
+          written.push({ dest, rel })
+          received++
+        } catch (err) {
+          failures.push({ relPath: part.filename, reason: (err as Error).message })
+        }
       }
     } catch (err) {
       await cleanImportTempDir(tmpDir)
@@ -119,7 +129,11 @@ export async function registerImportRoutes(app: FastifyInstance): Promise<void> 
     }
     if (received === 0) {
       await cleanImportTempDir(tmpDir)
-      return reply.code(400).send({ error: '未收到任何文件' })
+      const first = failures[0]?.reason
+      return reply.code(400).send({ error: first ? `上传失败：${first}` : '未收到任何文件' })
+    }
+    if (failures.length > 0) {
+      console.warn(`[import] 上传阶段 ${failures.length} 个文件失败，其余 ${received} 个继续导入`)
     }
 
     // 回设 mtime：无 EXIF 日期的文件若只靠「上传时刻」兜底，会被归到上传当天（日期错）。
@@ -130,12 +144,12 @@ export async function registerImportRoutes(app: FastifyInstance): Promise<void> 
       console.warn('[import] 上传时间戳回设失败:', (err as Error).message)
     }
 
-    const result = startUploadImport(lib, tmpDir)
+    const result = startUploadImport(lib, tmpDir, failures)
     if (!result.ok) {
       await cleanImportTempDir(tmpDir)
       return reply.code(409).send({ error: result.message })
     }
-    return reply.send({ ok: true, import: publicImportState() })
+    return reply.send({ ok: true, import: publicImportState(), failures })
   })
 
   app.get('/api/libraries/:id/import', async (request, reply) => {

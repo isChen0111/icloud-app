@@ -13,17 +13,61 @@ import type { FastifyMultipartOptions } from '@fastify/multipart'
 const IMPORT_TMP_DIRNAME = 'import-tmp'
 
 /**
+ * Windows 保留设备名（审查 C-10）。
+ * `CON.jpg` / `NUL.mp4` 这类名字在 Win32 上 open 是**成功的**，但字节流向设备而不是磁盘：
+ * 文件根本不落盘，接口却返回 200「导入完成」。带扩展名同样中招（设备名判断只看第一个点之前）。
+ */
+const WINDOWS_RESERVED = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i
+
+/** 单个路径段里的非法字符（Windows 全平台通用的一套；`/` 已由分隔符归一化处理） */
+const ILLEGAL_SEGMENT_CHARS = /[*?"<>|:]/g
+
+/**
+ * 单段最大长度。NTFS 单段上限 255 个 UTF-16 码元，Win32 整路径还有 260 限制；
+ * 这里取 200 留出日期目录与库根的余量，超长时保留扩展名截断主体。
+ */
+const MAX_SEGMENT_LENGTH = 200
+
+/**
+ * 清洗单个路径段（文件名或目录名），非法则**改名而不是整批失败**（审查 C-10）。
+ *
+ * 处理四种情况：
+ *   ① 非法字符 `* ? " < > | :` → `_`（`a:b.jpg` 在 NTFS 上会被当备用数据流，写出来是 0 字节）
+ *   ② 结尾的点与空格 → 去掉（Win32 会静默丢弃，于是 `x.jpg.` 与 `x.jpg` 指向同一个文件，
+ *      后传的悄悄覆盖前一个；两个不同的源文件互相覆盖是数据丢失）
+ *   ③ Windows 保留设备名 → 前缀 `_`
+ *   ④ 超长 → 保留扩展名，截断主体
+ *
+ * 同一套规则同时用于落盘的相对路径（`sanitizeRelPath`）与 mtimes 的 key，
+ * 两边必须一致，否则回设 mtime 会静默失效。
+ */
+export function sanitizeFileSegment(seg: string): string {
+  let s = seg.replace(ILLEGAL_SEGMENT_CHARS, '_').replace(/[. ]+$/g, '')
+  if (s === '') return '_'
+  if (WINDOWS_RESERVED.test(s.split('.')[0] ?? '')) s = `_${s}`
+  if (s.length > MAX_SEGMENT_LENGTH) {
+    const dot = s.lastIndexOf('.')
+    const ext = dot > 0 && s.length - dot <= 12 ? s.slice(dot) : ''
+    s = s.slice(0, MAX_SEGMENT_LENGTH - ext.length) + ext
+  }
+  return s
+}
+
+/**
  * 清洗上传带来的相对路径（前端 webkitRelativePath），防止目录穿越。
  * 规则：
  *   - 归一化分隔符（Windows 反斜杠 → 正斜杠）
  *   - 拒绝绝对路径（/ 开头或盘符 C:）
  *   - 拒绝含 .. 段（目录穿越）
  *   - 去掉空段与 . 段
+ *   - 每段再做 sanitizeFileSegment（保留名/非法字符/结尾点空格/超长）
  * @throws 非法路径时抛错
  */
 export function sanitizeRelPath(p: string): string {
   const norm = path.normalize(p).replace(/\\/g, '/')
-  if (norm.startsWith('/') || /^[a-z]:/i.test(norm)) {
+  // 盘符绝对路径（C:/…）。注意不能只判 `^[a-z]:`——那会把 `a:b.jpg` 这种合法文件名
+  // （macOS 允许冒号）误判成盘符路径。真正的穿越风险由下面的 `..` 段检查兜住。
+  if (norm.startsWith('/') || /^[a-z]:\//i.test(norm)) {
     throw new Error(`非法相对路径（绝对路径）: ${p}`)
   }
   const segs = norm.split('/')
@@ -32,7 +76,7 @@ export function sanitizeRelPath(p: string): string {
   }
   const cleaned = segs.filter((s) => s !== '' && s !== '.')
   if (cleaned.length === 0) throw new Error(`非法相对路径（空）: ${p}`)
-  return cleaned.join('/')
+  return cleaned.map(sanitizeFileSegment).join('/')
 }
 
 /** 生成一次上传会话的临时目录绝对路径（唯一，避免并发上传互相覆盖） */

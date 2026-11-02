@@ -16,7 +16,7 @@ import { resolveDate, type ResolvedDate } from './resolveDate.js'
 import { dateToDir, pickTargetName } from './conflict.js'
 import { groupByPair, type RawImportFile } from './pair.js'
 import { importState, currentImportToken, isImportCancelRequested } from './state.js'
-import { isExifToolAvailable, isPatchableImage, writeDateTaken } from '../metadata/exifWrite.js'
+import { isExifToolAvailable, isPatchableImage, writeDateTaken, MtimeRestoreError } from '../metadata/exifWrite.js'
 import type { ImportOptions } from './types.js'
 
 /** 与 scanner 一致的媒体扩展名（小写） */
@@ -207,14 +207,24 @@ export async function importDirectory(
    *
    * 补写失败不记入 failedCount：文件已经成功落位、能被扫描入库，只是少了一层日期固化；
    * 混进「失败清单」会让用户以为照片没导进来。单独用 exifFailed 计数并在完成文案里提示。
+   *
+   * 审查 C-13：两种「不正常」要分开记，否则用户看到的都是「导入完成」：
+   *   - exiftool 不可用 → exifSkipped（一张都没补，但界面必须说出来）
+   *   - mtime 还原失败 → exifMtimeFailed（判重键已损坏，后果比补写失败严重）
    */
   const patchExif = async (targetPath: string, date: ResolvedDate): Promise<void> => {
     try {
-      if (!(await ensureExifReady())) return
+      if (!(await ensureExifReady())) {
+        if (owns()) importState.exifSkipped++
+        return
+      }
       await writeDateTaken(targetPath, date.iso)
       if (owns()) importState.exifPatched++
     } catch (err) {
-      if (owns()) importState.exifFailed++
+      if (owns()) {
+        if (err instanceof MtimeRestoreError) importState.exifMtimeFailed++
+        else importState.exifFailed++
+      }
       console.warn(`[import] 补写拍摄时间失败 ${targetPath}: ${(err as Error).message}`)
     }
   }
@@ -233,6 +243,11 @@ export async function importDirectory(
   importState.exifFailed = 0
   importState.failedCount = 0
   importState.failures = []
+  // 归置前就失败的条目（上传阶段写盘失败）并进同一份清单（C-11）
+  if (opts.seedFailures && opts.seedFailures.length > 0) {
+    importState.failures = opts.seedFailures.slice(-MAX_FAILURES)
+    importState.failedCount = opts.seedFailures.length
+  }
   importState.startedAt = new Date().toISOString()
   importState.message = '正在导入…'
 
@@ -290,13 +305,18 @@ export async function importDirectory(
   return { cancelled, message: cancelled ? '已取消' : importDoneMessage() }
 }
 
-/** 完成文案：把补写结果带上，否则「静默改写文件」用户无从感知 */
-function importDoneMessage(): string {
-  const patched = importState.exifPatched
-  const failed = importState.exifFailed
-  if (patched === 0 && failed === 0) return '导入完成'
+/**
+ * 完成文案：把补写结果带上，否则「静默改写文件」用户无从感知。
+ * 导出供单测直接验证四种降级分支的文案（用户唯一能看到的说明就在这里）。
+ */
+export function importDoneMessage(): string {
   const parts: string[] = []
-  if (patched > 0) parts.push(`已补写拍摄时间 ${patched} 个`)
-  if (failed > 0) parts.push(`补写失败 ${failed} 个`)
-  return `导入完成（${parts.join('，')}）`
+  if (importState.exifPatched > 0) parts.push(`已补写拍摄时间 ${importState.exifPatched} 个`)
+  if (importState.exifSkipped > 0) parts.push(`未补写 ${importState.exifSkipped} 个（缺少 exiftool）`)
+  if (importState.exifFailed > 0) parts.push(`补写失败 ${importState.exifFailed} 个`)
+  // 单独一条：后果不同（判重键损坏 → 重复导入会多出副本），不能和「补写失败」混为一谈
+  if (importState.exifMtimeFailed > 0) {
+    parts.push(`mtime 还原失败 ${importState.exifMtimeFailed} 个（重复导入可能多出副本）`)
+  }
+  return parts.length > 0 ? `导入完成（${parts.join('，')}）` : '导入完成'
 }
