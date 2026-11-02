@@ -464,3 +464,70 @@ test('C-13：完成文案把「降级跳过」和「mtime 还原失败」说出�
   assert.match(msg, /补写失败 1 个/)
   assert.match(msg, /mtime 还原失败 3 个（重复导入可能多出副本）/)
 })
+
+/* ============ 审查 C-10 补漏：本机迁移的目标文件名也要净化 ============ */
+
+test('C-10 补漏：保留设备名落盘时加 _ 前缀，原名不得出现在库里', async () => {
+  const dir = tempDir('import-reserved-')
+  try {
+    const src = path.join(dir, 'src')
+    const target = path.join(dir, 'import')
+    // 这类名字用 Node 能造出来（libuv 对绝对路径加 \\?\ 前缀绕过了设备名解析），
+    // 从 macOS / 网络盘 / 备份介质拷来的目录里也会真实存在。
+    await writeJpeg(path.join(src, 'CON.JPG'), 4)
+    await writeJpeg(path.join(src, 'NUL.jpg'), 4)
+    await writeJpeg(path.join(src, 'IMG_1.jpg'), 4)
+
+    resetImportState()
+    importState.status = 'running'
+    const result = await importDirectory({
+      libraryId: 1,
+      sourceDir: src,
+      targetRoot: target,
+      mode: 'copy',
+      source: 'local',
+    })
+
+    assert.equal(result.cancelled, false)
+    assert.equal(importState.failedCount, 0, '改名不是失败，不能进失败清单')
+    assert.ok(findFile(target, '_CON.JPG'), 'CON.JPG 应改名成 _CON.JPG 后落盘')
+    assert.ok(findFile(target, '_NUL.jpg'), 'NUL.jpg 应改名成 _NUL.jpg 后落盘')
+    assert.ok(findFile(target, 'IMG_1.jpg'), '普通文件名不该被动')
+    // 关键：原名一个都不能留。CON.JPG 在 Win32 上写得进、读得到，但资源管理器
+    // 与备份/同步工具走 FindFirstFile，看不到它 —— 用户看到照片却删不掉、备份不到。
+    assert.equal(findFile(target, 'CON.JPG'), null, '原名 CON.JPG 不得落盘')
+    assert.equal(findFile(target, 'NUL.jpg'), null, '原名 NUL.jpg 不得落盘')
+  } finally {
+    resetImportState()
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('C-10 补漏：改名后的名字是稳定判重键 —— 重导全部 skipped，不多出 (1) 副本', async () => {
+  const dir = tempDir('import-reserved-idem-')
+  try {
+    const src = path.join(dir, 'src')
+    const target = path.join(dir, 'import')
+    await writeJpeg(path.join(src, 'CON.JPG'), 4)
+    await writeJpeg(path.join(src, 'AUX.jpg'), 4)
+
+    const opts = { libraryId: 1, sourceDir: src, targetRoot: target, mode: 'copy' as const, source: 'local' as const }
+
+    resetImportState()
+    importState.status = 'running'
+    await importDirectory(opts)
+    assert.equal(importState.processedFiles, 2)
+
+    // 第二次：净化规则固定 → 目标名与第一次完全一致 → 按「同名 + mtime」判为已导入
+    resetImportState()
+    importState.status = 'running'
+    await importDirectory(opts)
+
+    assert.equal(importState.skipped, 2, '改名后的名字必须仍能判重，否则每重导一次就多一份副本')
+    assert.equal(findFile(target, '_CON(1).JPG'), null, '不得产生 (1) 副本')
+    assert.equal(findFile(target, '_AUX(1).jpg'), null)
+  } finally {
+    resetImportState()
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})

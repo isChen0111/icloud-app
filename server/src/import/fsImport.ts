@@ -14,6 +14,7 @@ import path from 'node:path'
 import { walkDir } from '../scanner/index.js'
 import { resolveDate, type ResolvedDate } from './resolveDate.js'
 import { dateToDir, pickTargetName } from './conflict.js'
+import { sanitizeFileSegment } from '../utils/filename.js'
 import { groupByPair, type RawImportFile } from './pair.js'
 import { importState, currentImportToken, isImportCancelRequested } from './state.js'
 import { isExifToolAvailable, isPatchableImage, writeDateTaken, MtimeRestoreError } from '../metadata/exifWrite.js'
@@ -274,7 +275,13 @@ export async function importDirectory(
         // 剩下的所有资产一个都不再处理，也不进失败清单。
         // 放进来以后同样的故障只影响当天这一批文件，且每个文件各自记一条原因。
         fs.mkdirSync(dayDir, { recursive: true })
-        const { targetPath, skipped } = pickTargetName(opts.targetRoot, ymd, f.fileName, f.mtimeMs)
+        // 审查 C-10 补漏（2026-11-02）：本机迁移的文件名来自源目录，同样要过净化。
+        // 之前只在「上传」路由层清洗，这条入口直接把 `CON.JPG`、`a:b.jpg` 原样落盘：
+        // CON.JPG 在 Win32 上写成功但 shell 侧（资源管理器/FindFirstFile/备份工具）认为
+        // 文件不存在（读得到、删不掉、Test-Path 返回 False）；a:b.jpg 会被 NTFS 解释成
+        // `a` 的备用数据流，主数据流直接丢。basename 是防御——fileName 理论上已是基名。
+        const safeName = sanitizeFileSegment(path.basename(f.fileName))
+        const { targetPath, skipped } = pickTargetName(opts.targetRoot, ymd, safeName, f.mtimeMs)
         if (skipped) {
           if (owns()) importState.skipped++
         } else if (opts.mode === 'copy') {
