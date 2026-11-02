@@ -66,6 +66,12 @@ CREATE INDEX IF NOT EXISTS idx_assets_date ON assets(date_taken DESC, id DESC);
 -- 类型索引：统计照片/视频数量
 CREATE INDEX IF NOT EXISTS idx_assets_type ON assets(type);
 
+-- 缩略图失败计数索引：/api/stats 要按 thumb_status='error' 分组统计
+-- 「未忽略 / 已忽略」两个数。旧实现是两条各自的 COUNT(*)，assets 表没有
+-- thumb_status 索引 → 每次请求两次全表扫描（2 万行 × 每 1.5 秒一次）。
+-- 复合索引让合并后的 GROUP BY 走覆盖索引，不再回表。
+CREATE INDEX IF NOT EXISTS idx_assets_thumb_status ON assets(thumb_status, thumb_ignored);
+
 -- ============ FTS5 全文搜索（P2 落地） ============
 -- 用 trigram（3 字符滑动窗口）分词器：支持「任意子串」匹配，等于把 LIKE '%xx%' 变成走索引。
 -- 为什么不用默认 unicode61？它按单词切 token，"IMG_9188" 会被切成 "IMG"、"9188"，

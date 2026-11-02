@@ -14,6 +14,11 @@
  *     a) 体积缓存落盘到 cache/stats.json（进程重启不重算）；
  *     b) 未命中缓存时后台异步分片计算（每批让出事件循环），本次响应先返回
  *        totalBytes=null，算完写盘，后续请求读到真实值。
+ *
+ * 体积缓存第二轮修复（2026-11-02，逻辑已抽到 stats/sizeCache.ts）：
+ *   上面 b) 只解决了"阻塞"，没解决"重复"——只要资产数或扫描轮次变化就重算，
+ *   扫描期间资产数每 200 条提交就变一次，等于每 5 秒重走一遍整库。
+ *   现在：任务运行期不遍历、缓存按库归属校验、过期期间返回旧值。
  */
 import type { FastifyInstance } from 'fastify'
 import fs from 'node:fs'
@@ -24,19 +29,29 @@ import { runScan, scanProgress } from '../scanner/index.js'
 import { getThumbnailProgress, getQueueMetrics, queueSize } from '../pipeline/queue.js'
 import { getCurrentLibrary } from '../context.js'
 import { syncState } from '../icloudpd/state.js'
-import { publicImportState } from '../import/state.js'
+import { publicImportState, importState } from '../import/state.js'
+import { createSizeCache } from '../stats/sizeCache.js'
 
 /** 体积缓存文件（落盘，避免每次启动重算）。函数取当前激活库 cacheDir（切库后自动跟随） */
 function statsCachePath(): string {
   return path.join(config.cacheDir, 'stats.json')
 }
 
-/** 异步分片遍历一个目录树，累加所有文件字节数；每批让出事件循环，避免阻塞其他请求 */
-async function walkSize(dir: string, batchSize = 256): Promise<number> {
+/**
+ * 异步分片遍历一个目录树，累加所有文件字节数；每批让出事件循环，避免阻塞其他请求。
+ * shouldAbort 用于「遍历期间切了库」时提前收尾 —— 结果会被 sizeCache 丢弃，
+ * 不必为了一个注定作废的结果把整个旧库走完。
+ */
+async function walkSize(
+  dir: string,
+  batchSize = 256,
+  shouldAbort?: () => boolean,
+): Promise<number> {
   let total = 0
   const stack = [dir]
   let pending = 0 // 本批已 stat 的文件数，用于周期性让出事件循环
   while (stack.length > 0) {
+    if (shouldAbort?.()) return total
     const cur = stack.pop()!
     let entries: fs.Dirent[]
     try {
@@ -65,72 +80,72 @@ async function walkSize(dir: string, batchSize = 256): Promise<number> {
   return total
 }
 
+/**
+ * 统计缩略图失败项：「未忽略」与「已忽略」两个数。
+ *
+ * 合并成一条 GROUP BY（旧实现是两条独立 COUNT(*)，assets 表无 thumb_status 索引时
+ * 等于每次请求两次全表扫描，见 schema.ts 的 idx_assets_thumb_status）。
+ * thumb_ignored 为历史 NULL 的行按「未忽略」计，与旧 SQL 的 `= 0` 口径一致 ——
+ * 这条边界容易写错，故导出本函数供单测直接验口径。
+ */
+export function countThumbFailures(db: ReturnType<typeof getDb>): {
+  active: number
+  ignored: number
+} {
+  const rows = db
+    .prepare(
+      `SELECT thumb_ignored AS ignored, COUNT(*) AS count
+       FROM assets WHERE thumb_status = 'error' GROUP BY thumb_ignored`,
+    )
+    .all() as { ignored: number | null; count: number }[]
+  let active = 0
+  let ignored = 0
+  for (const row of rows) {
+    if (row.ignored === 1) ignored = row.count
+    else active += row.count
+  }
+  return { active, ignored }
+}
+
 export async function registerStatsRoutes(app: FastifyInstance): Promise<void> {
   const db = getDb()
 
-  /** 内存中的体积缓存（null = 尚未算出） */
-  let totalBytesCache: number | null = null
-  let assetCountAtCompute: number | null = null
-  let scanRunAtCompute = -1
-  /** 后台计算任务（防止并发触发多次全库遍历） */
-  let computing: Promise<void> | null = null
+  /**
+   * 体积缓存（逻辑见 stats/sizeCache.ts）。
+   *
+   * 三条规则决定它什么时候真的去遍历磁盘：
+   *   ① 扫描 / 导入 / 同步在跑时不遍历（否则扫描期间资产数每 200 条一变，
+   *      等于每 5 秒把 2 万文件重走一遍）；
+   *   ② contextKey 绑定库，切库即失效，落盘前再校验一次归属；
+   *   ③ 单飞 + 脏标记，过期期间返回旧值而不是 null。
+   *
+   * 注意 isQuiet **不包含**缩略图生成：体积统计的是源文件字节数，跟缩略图无关，
+   * 否则新库首次扫描后要等缩略图全生成完（可能数小时）体积才更新。
+   */
+  const sizeCache = createSizeCache({
+    contextKey: () => `${config.dbPath}|${config.libraryRoot}`,
+    libraryRoot: () => config.libraryRoot,
+    cachePath: statsCachePath,
+    countAssets: () => (db.prepare(`SELECT COUNT(*) AS c FROM assets`).get() as { c: number }).c,
+    scanRunId: () => scanProgress.runId,
+    isQuiet: () =>
+      scanProgress.status !== 'scanning' &&
+      importState.status !== 'running' &&
+      syncState.status !== 'running' &&
+      syncState.status !== 'waiting_retry',
+    walk: (dir, shouldAbort) => walkSize(dir, 256, shouldAbort),
+    exists: (p) => fs.existsSync(p),
+    readFile: (p) => fs.readFileSync(p, 'utf8'),
+    writeFile: (p, data) => {
+      fs.mkdirSync(path.dirname(p), { recursive: true })
+      fs.writeFileSync(p, data)
+    },
+    now: Date.now,
+    log: (message, err) => console.error(message, err),
+  })
 
-  /** 从落盘缓存恢复体积；文件内容与当前库路径不匹配时忽略 */
-  function loadCacheFromDisk(): void {
-    try {
-      if (!fs.existsSync(statsCachePath())) return
-      const data = JSON.parse(fs.readFileSync(statsCachePath(), 'utf8')) as {
-        libraryRoot: string
-        totalBytes: number
-        assetCount?: number
-        scanRunId?: number
-      }
-      if (
-        data.libraryRoot === config.libraryRoot &&
-        typeof data.totalBytes === 'number' &&
-        typeof data.assetCount === 'number' &&
-        typeof data.scanRunId === 'number'
-      ) {
-        totalBytesCache = data.totalBytes
-        assetCountAtCompute = data.assetCount
-        scanRunAtCompute = data.scanRunId
-      }
-    } catch {
-      /* 缓存损坏/版本不符：忽略，触发重算 */
-    }
-  }
-
-  /** 后台计算体积并落盘（幂等：同时只跑一个） */
-  function ensureSizeComputed(): void {
-    if (totalBytesCache !== null || computing) return
-    computing = (async () => {
-      try {
-        const bytes = await walkSize(config.libraryRoot)
-        totalBytesCache = bytes
-        assetCountAtCompute = (db.prepare(`SELECT COUNT(*) AS c FROM assets`).get() as { c: number }).c
-        scanRunAtCompute = scanProgress.runId
-        // 落盘：下次进程重启直接读取
-        fs.mkdirSync(config.cacheDir, { recursive: true })
-        fs.writeFileSync(
-          statsCachePath(),
-          JSON.stringify({
-            libraryRoot: config.libraryRoot,
-            totalBytes: bytes,
-            assetCount: assetCountAtCompute,
-            scanRunId: scanRunAtCompute,
-          }),
-        )
-      } catch (err) {
-        console.error('[stats] 体积计算失败:', err)
-      } finally {
-        computing = null
-      }
-    })()
-  }
-
-  // 启动即恢复缓存 + 若未命中立即后台开算（不阻塞任何请求）
-  loadCacheFromDisk()
-  ensureSizeComputed()
+  // 启动即尝试恢复落盘缓存；未命中且当前无任务时后台开算（不阻塞任何请求）
+  sizeCache.ensure()
 
   app.get('/api/stats', async (_req, reply) => {
     const byType = db
@@ -142,36 +157,14 @@ export async function registerStatsRoutes(app: FastifyInstance): Promise<void> {
 
     const total = counts.photo + counts.video + counts.live
 
-    // 资产数量变化或扫描完成后，之前的体积快照已不再可信。
-    if (
-      totalBytesCache !== null &&
-      (assetCountAtCompute !== total || scanRunAtCompute !== scanProgress.runId)
-    ) {
-      totalBytesCache = null
-      assetCountAtCompute = null
-      try {
-        fs.rmSync(statsCachePath(), { force: true })
-      } catch (err) {
-        console.error('[stats] 清理过期体积缓存失败:', err)
-      }
-    }
-
-    // 若尚未算完（进程启动后第一次），后台继续算，本次返回 null 给前端
-    ensureSizeComputed()
-    const bytes = totalBytesCache
+    // 资产数 / 扫描轮次变化只标记过期；真正重算要等没有任务在跑
+    sizeCache.touch(total)
+    sizeCache.ensure()
+    const bytes = sizeCache.bytes
 
     const thumbnailProgress = getThumbnailProgress()
-    const activeThumbnailFailures = (
-      db
-        .prepare(`SELECT COUNT(*) AS count FROM assets WHERE thumb_status = 'error' AND thumb_ignored = 0`)
-        .get() as { count: number }
-    ).count
-    // 已忽略失败项计数（F-07 系列）：浮层「失败 0 但有忽略项」时显示入口，忽略项始终可管理
-    const ignoredThumbnailFailures = (
-      db
-        .prepare(`SELECT COUNT(*) AS count FROM assets WHERE thumb_status = 'error' AND thumb_ignored = 1`)
-        .get() as { count: number }
-    ).count
+    const { active: activeThumbnailFailures, ignored: ignoredThumbnailFailures } =
+      countThumbFailures(db)
     const adjustedThumbnailProgress = {
       ...thumbnailProgress,
       failed: activeThumbnailFailures,

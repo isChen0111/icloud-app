@@ -29,7 +29,7 @@ import { runScan, scanProgress } from '../scanner/index.js'
 import { clearThumbnailQueue } from '../pipeline/queue.js'
 import { isSyncBusy } from '../icloudpd/sync.js'
 import { resetSyncState } from '../icloudpd/state.js'
-import { isImportBusy } from '../import/state.js'
+import { isImportBusy, importState } from '../import/state.js'
 import fs from 'node:fs'
 import { promises as fsp } from 'node:fs'
 import path from 'node:path'
@@ -57,6 +57,52 @@ function countAssets(dbPath: string): { photos: number; videos: number } {
   } catch {
     return { photos: 0, videos: 0 }
   }
+}
+
+/**
+ * 库计数缓存（10 秒 TTL）
+ *
+ * 背景：GET /api/libraries 对**每个库**都 `new Database(dbPath)` 开一次只读连接、
+ * 跑一次 GROUP BY、再 close。设置中心打开期间每 5 秒拉一次列表，3 个库就是
+ * 每 5 秒 3 次连接开闭 + 3 次索引扫描（含非激活库，产生无谓的 WAL 读锁与句柄抖动）。
+ * 而库计数只在「扫描落库 / 删照片」时变化，属低频数据，没必要每轮都真算。
+ *
+ * 失效策略：key 带 token（扫描轮次 + 扫描状态 + 导入状态）。状态位一变 key 就变，
+ * 扫描结束立刻重算，不用等 TTL 过期 —— 这是 TTL 之外的必要补充，因为扫描期间
+ * runId 早已自增、结束时不带新信号，只看 runId 会让「扫描完成」滞后 10 秒。
+ */
+const COUNT_CACHE_TTL_MS = 10_000
+/** 缓存条目上限：切库/删库 + 状态位组合会累积，超限整体丢弃（比 LRU 简单且够用） */
+const COUNT_CACHE_MAX = 32
+interface CountCacheEntry {
+  photos: number
+  videos: number
+  at: number
+}
+const countCache = new Map<string, CountCacheEntry>()
+
+/** 测试隔离：模块级缓存必须在用例之间清空，否则前一个用例的数字会串到后一个 */
+export function resetCountCache(): void {
+  countCache.clear()
+}
+
+/** 构造缓存 token：把「会影响资产数」的离散状态位拼进来，任一变化即视为新 key */
+export function countCacheToken(): string {
+  return `${scanProgress.runId}:${scanProgress.status}:${importState.status}`
+}
+
+/** 带缓存的库计数（导出供测试直接驱动，路由内部使用） */
+export function countAssetsCached(dbPath: string, token: string): { photos: number; videos: number } {
+  const key = `${dbPath}#${token}`
+  const now = Date.now()
+  const hit = countCache.get(key)
+  if (hit && now - hit.at < COUNT_CACHE_TTL_MS) {
+    return { photos: hit.photos, videos: hit.videos }
+  }
+  const fresh = countAssets(dbPath)
+  if (countCache.size >= COUNT_CACHE_MAX) countCache.clear()
+  countCache.set(key, { ...fresh, at: now })
+  return fresh
 }
 
 /** 库列表的对外形态（激活标记 + 目录展示；本地单机应用，账号原样返回供完整显示） */
@@ -110,10 +156,12 @@ export function libraryBusyGuard(action: 'switch' | 'delete' | 'delete-asset'): 
 export async function registerLibraryRoutes(app: FastifyInstance): Promise<void> {
   app.get('/api/libraries', async () => {
     const current = getCurrentLibrary()
+    // token 在循环外算一次：同一次响应里所有库共享同一份状态快照，口径一致
+    const token = countCacheToken()
     return {
       libraries: listLibraries().map((l) => ({
         ...toPublic(l),
-        ...countAssets(path.join(l.cache_dir, 'library.db')),
+        ...countAssetsCached(path.join(l.cache_dir, 'library.db'), token),
       })),
       activeId: current?.id ?? null,
     }
