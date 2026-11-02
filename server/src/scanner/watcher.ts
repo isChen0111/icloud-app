@@ -127,7 +127,13 @@ export function stopWatcher(): void {
   }
   dirty = false
   if (watcher) {
-    void watcher.close()
+    const w = watcher
     watcher = null
+    // 审查 C-16：close() 返回 Promise，旧实现 `void watcher.close()` 把拒绝直接丢掉 →
+    // 关闭失败时变成 unhandledRejection，进而在优雅关闭流程里触发一次「未处理的 Promise 拒绝」，
+    // 把真正的失败原因埋掉。这里显式捕获并打印。
+    void w.close().catch((err: unknown) => {
+      console.error('[watcher] 关闭失败:', err instanceof Error ? err.message : String(err))
+    })
   }
 }

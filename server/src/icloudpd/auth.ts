@@ -258,24 +258,7 @@ export function startAuth(username: string, cookieDir: string): AuthSession {
   })
   child.on('exit', (code) => {
     if (proc !== child) return // R-09：旧进程迟到的事件不得影响新会话（见上方注释）
-    stopPolling()
-    if (!session) return
-    // 无提示直接退 = 已有有效 cookie 或异常
-    if (code === 0 && cookieExists(cookieDir)) {
-      session.stage = 'done'
-      session.message = '认证成功，cookie 已保存'
-      // R-09：认证成功后必须清掉 10 分钟超时定时器。
-      // 之前这里没清，10 分钟后 onAuthTimeout() 会把 done 无条件改写成「认证超时」——
-      // 认证成功面板上却显示失败。（auth.test.ts 的注释曾假设 teardown 会清理，实际不会）
-      if (authTimer) {
-        clearTimeout(authTimer)
-        authTimer = null
-      }
-    } else if (code !== 0 && session.stage !== 'done') {
-      session.stage = 'error'
-      session.message = `icloudpd 认证退出（code=${code}）。常见原因：密码错误 / Apple 临时限流 / 认证服务端口被占用`
-    }
-    proc = null
+    applyAuthExit(code)
   })
 
   // 等内嵌服务起来后开始轮询状态
@@ -293,15 +276,55 @@ export function startAuth(username: string, cookieDir: string): AuthSession {
  * teardownAuthProcess 保留 session 引用：error 状态供前端轮询读取。
  */
 export function onAuthTimeout(): void {
-  if (session) {
+  // 审查 C-14 ①：已经收敛到终态就不要再改写文案。
+  // done 早就有保护；error 以前没有 —— 而 error 往往带着更准确的原因（密码错误 code=1、
+  // 进程退出没落 cookie、提交超时），被一句「认证超时（10 分钟）」盖掉会让用户
+  // 完全按错误方向排查（以为是网络慢，其实密码错了）。
+  // 这道保护和「进程退出时清掉定时器」是双保险：定时器该清的地方清，万一被别的
+  // 路径触发（比如停进程时的竞态），也不会抹掉真实原因。
+  if (session && session.stage !== 'done' && session.stage !== 'error') {
     session.stage = 'error'
     session.message = '认证超时（10 分钟），请重试'
   }
   teardownAuthProcess()
 }
 
-/** 提交防重锁：同一时刻只处理一次提交，避免并发/连点造成重复发验证请求（用户手机重复收到验证码） */
-let inputLock = false
+/**
+ * 认证进程退出后的状态收敛（审查 C-14）。抽成独立函数便于单测：
+ * 归属校验（`proc !== child`）留在调用处 —— 那是「这个事件属于哪个进程」的问题；
+ * 这里只回答「当前会话该收敛成什么」。
+ *
+ * 三条出口：
+ *   code=0 且有 cookie → done
+ *   code=0 但没 cookie → error（旧实现两个分支都不进，stage 永远停在 waiting_code，
+ *                        轮询停了、进程也没了，前端就地永久转圈且无任何文案）
+ *   code≠0            → error（带 code 便于按「密码错误 / 限流 / 端口占用」排查）
+ *
+ * 无论哪条都先无条件清掉 10 分钟超时定时器：进程已经没了，超时监管没有意义，
+ * 留着只会在 10 分钟后把准确的失败原因改写成「认证超时」（C-14 ①）。
+ */
+export function applyAuthExit(code: number | null): void {
+  stopPolling()
+  if (authTimer) {
+    clearTimeout(authTimer)
+    authTimer = null
+  }
+  proc = null
+  if (!session) return
+  if (code === 0 && cookieExists(session.cookieDir)) {
+    session.stage = 'done'
+    session.message = '认证成功，cookie 已保存'
+  } else if (code === 0) {
+    session.stage = 'error'
+    session.message =
+      '认证进程已退出，但没有生成 cookie。请关闭后重新链接（若刚在设备上点了「允许」，可直接重试）'
+  } else if (session.stage !== 'done') {
+    session.stage = 'error'
+    session.message = `icloudpd 认证退出（code=${code}）。常见原因：密码错误 / Apple 临时限流 / 认证服务端口被占用`
+  }
+}
+
+/** 提交防重锁：同一时刻只处理一次提交，避免并发/连点造成重复发验证请求（用户手机重复收到验证码） */let inputLock = false
 /**
  * 提交确认窗口：提交后置 true，轮询确认「需要新输入（密码/验证码错误）或进入下一步」才解锁。
  * 校验中（webui 显示 NO_INPUT_NEEDED）保持锁定——即使前端异常连发两次，第二次也会被拒，

@@ -17,10 +17,12 @@ import {
   countAssetsCached,
   countCacheToken,
   resetCountCache,
+  prepareLibrarySwitch,
 } from './libraries.js'
 import { syncState, resetSyncState } from '../icloudpd/state.js'
 import { importState } from '../import/state.js'
 import { scanProgress } from '../scanner/index.js'
+import { newSession, authStatus, stopAuth } from '../icloudpd/auth.js'
 
 function resetBusyState(): void {
   resetSyncState()
@@ -183,4 +185,24 @@ test('countCacheToken：包含扫描轮次/扫描状态/导入状态', () => {
   resetBusyState()
   scanProgress.runId = 0
   importState.status = 'idle'
+})
+
+/* ============ 审查 C-15：切库/删库必须停掉认证会话 ============ */
+
+test('C-15：切库前的收尾会停掉认证会话，否则旧库的验证码表单会挂在新库上', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lib-switch-auth-'))
+  try {
+    // 造一个「旧库等待验证码」的会话：cookieDir 指向旧库目录
+    newSession(path.join(dir, 'cookies'), 'waiting_code', '请输入发送到设备的验证码')
+    assert.ok(authStatus(), '前置条件：会话确实存在')
+
+    prepareLibrarySwitch()
+
+    // 停掉后 /api/auth 必须返回 null。若仍是旧会话，前端在新库界面会继续显示
+    // 「等待验证码」，用户输的码也会被提交到这个属于旧库的会话里（C-15）
+    assert.equal(authStatus(), null, '切库必须停掉认证会话')
+  } finally {
+    stopAuth()
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
 })

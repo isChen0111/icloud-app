@@ -30,6 +30,7 @@ import { clearThumbnailQueue } from '../pipeline/queue.js'
 import { isSyncBusy } from '../icloudpd/sync.js'
 import { resetSyncState } from '../icloudpd/state.js'
 import { isImportBusy, importState } from '../import/state.js'
+import { stopAuth } from '../icloudpd/auth.js'
 import fs from 'node:fs'
 import { promises as fsp } from 'node:fs'
 import path from 'node:path'
@@ -161,6 +162,28 @@ export function libraryBusyGuard(action: 'switch' | 'delete' | 'delete-asset'): 
   return null
 }
 
+/**
+ * 切库 / 删激活库前的统一收尾（审查 C-15）。
+ *
+ * 为什么必须停认证会话：`startAuth` 时 cookieDir 就固定成当时那个库的目录，
+ * 会话与库是绑定的。不停掉会出三件事：
+ *   ① icloudpd 继续往旧库目录写 cookie（删库场景下是往一个马上要被删的目录写）；
+ *   ② `GET /api/auth` 对新库的前端返回旧库的会话 —— 用户看到的「等待输验证码」
+ *      其实是旧库的；
+ *   ③ 用户在界面上输入的验证码经 `/api/auth/input` 转交给旧库会话。
+ * 会话停掉后 `/api/auth` 返回 null，前端认证弹窗随之关闭。
+ * 切库/删库都是用户显式操作，静默终止一个属于旧库的认证流程是符合预期的。
+ *
+ * 抽成导出函数同时便于单测：这是唯一能直接断言「切库会停认证」的入口
+ * （switchToLibrary 是闭包内的私有函数）。
+ */
+export function prepareLibrarySwitch(): void {
+  stopAuth()
+  stopWatcher()
+  clearThumbnailQueue()
+  closeDb()
+}
+
 export async function registerLibraryRoutes(app: FastifyInstance): Promise<void> {
   app.get('/api/libraries', async () => {
     const current = getCurrentLibrary()
@@ -257,11 +280,9 @@ export async function registerLibraryRoutes(app: FastifyInstance): Promise<void>
     /** 删除后要接管的库（删除前算好；无剩余库则为 null） */
     let next: ReturnType<typeof getLibraryById> = null
 
-    // 删除激活库：先停 watcher / 清缩略图队列 / 关库 DB，避免删到打开的文件
+    // 删除激活库：先停认证/watcher / 清缩略图队列 / 关库 DB，避免删到打开的文件
     if (isActive) {
-      stopWatcher()
-      clearThumbnailQueue()
-      closeDb()
+      prepareLibrarySwitch()
 
       // R-02 修复（2026-10-28 竞态）：closeDb() 之后 config.dbPath 仍指向被删库，
       // 而下面的 fsp.rm 是异步的（缓存目录可能有几万个缩略图，耗时数十秒），
@@ -339,9 +360,7 @@ export async function registerLibraryRoutes(app: FastifyInstance): Promise<void>
    * 停 watcher → 清缩略图队列 → 关旧 DB → 覆写 config → 重开新 DB → 增量扫描 → 启 watcher
    */
   function switchToLibrary(id: number): void {
-    stopWatcher()
-    clearThumbnailQueue()
-    closeDb()
+    prepareLibrarySwitch()
     // 切库后同步状态复位（全局单例；否则新库 stats 会残留旧库的「同步完成/已下载 N 项」文案）
     resetSyncState()
 

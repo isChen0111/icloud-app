@@ -10,7 +10,7 @@
  * 学习提示：Fastify 5 的插件式组织 —— 每个路由文件是一个 register 函数，
  * 在这里统一挂载，互不依赖。
  */
-import Fastify from 'fastify'
+import Fastify, { type FastifyInstance } from 'fastify'
 import fastifyStatic from '@fastify/static'
 import fastifyMultipart from '@fastify/multipart'
 import fs from 'node:fs'
@@ -35,6 +35,7 @@ import { runScan, scanProgress } from './scanner/index.js'
 import { startWatcher } from './scanner/watcher.js'
 import { cleanStaleTempFiles } from './pipeline/thumbnails.js'
 import { cleanStaleImportTemp, resolveMultipartOptions } from './import/upload.js'
+import { shutdown } from './shutdown.js'
 
 /** 项目根目录（server/src/../..） */
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
@@ -141,6 +142,30 @@ async function main(): Promise<void> {
   app.log.info(`   照片库: ${config.libraryRoot}`)
   app.log.info(`   数据库: ${config.dbPath}`)
   app.log.info(`   API:    http://127.0.0.1:${config.port}/api/stats`)
+
+  // ③.5 进程收尾（审查 C-16）：Ctrl+C / kill / tsx watch 重启都会走到这些信号。
+  //    没有它，每次重启都留孤儿 icloudpd 与 exiftool，WAL 也不 checkpoint。
+  //
+  // ⚠️ 平台限制（别指望它解决所有场景）：
+  //    - Windows 上 Node 只支持 SIGINT（Ctrl+C）与 SIGBREAK，SIGTERM 注册了也永远不会触发
+  //    - `tsx watch` 重启子进程在 Windows 走 TerminateProcess，不会触发任何 handler
+  //    所以真正兜住「重启残留」的是两处：这里（用户主动 Ctrl+C）与
+  //    auth.ts 的 killResidualIcloudpd()（下次认证前清掉占着 8080 的旧 icloudpd）。
+  for (const sig of ['SIGINT', 'SIGBREAK', 'SIGTERM'] as const) {
+    process.on(sig, () => {
+      void shutdown(app, sig).then(() => process.exit(0))
+    })
+  }
+  // 兜底：未捕获异常 / 未处理的拒绝。Node 默认会直接退出，这里先收尾再退，
+  // 至少不把子进程变成孤儿。Fastify 会自己捕获 handler 异常，不会流到这里。
+  process.on('uncaughtException', (err) => {
+    console.error('[fatal] 未捕获异常:', err)
+    void shutdown(app, 'uncaughtException').then(() => process.exit(1))
+  })
+  process.on('unhandledRejection', (reason) => {
+    console.error('[fatal] 未处理的 Promise 拒绝:', reason)
+    void shutdown(app, 'unhandledRejection').then(() => process.exit(1))
+  })
 
   // ④ 启动后台全量同步（P2+-1）：幂等增量，新增入库 + 删除对账 + 配对修正。
   //    不 await；前端轮询 /api/stats 获取状态并在结束时刷新照片墙。

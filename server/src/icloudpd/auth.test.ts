@@ -6,7 +6,17 @@
  */
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { newSession, onAuthTimeout, authStatus, stopAuth, extractError } from './auth.js'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
+import {
+  newSession,
+  onAuthTimeout,
+  authStatus,
+  stopAuth,
+  extractError,
+  applyAuthExit,
+} from './auth.js'
 
 const COOKIE_DIR = 'C:\\tmp\\nonexistent-cookie-dir'
 
@@ -117,4 +127,61 @@ test('authStatus：未提交时 pending=false（前端据此解锁输入）', ()
   assert.equal(s.pending, false, 'pending 必须显式返回，前端依赖它判断提交是否落定')
   assert.equal(s.stage, 'waiting_code')
   stopAuth()
+})
+
+/* ============ 审查 C-14：进程退出后的状态收敛 ============ */
+
+test('C-14 ②：code=0 但没落 cookie → 置 error 并给文案，不再停在 waiting_code', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'auth-nocookie-'))
+  try {
+    stopAuth()
+    newSession(dir, 'waiting_code', '请输入发送到设备的验证码')
+    applyAuthExit(0)
+    const s = authStatus()
+    assert.ok(s)
+    // 旧实现：code===0 且 cookieExists() 为假 → 两个分支都不进，stopPolling 已跑、进程已退出，
+    // stage 永远停在 waiting_code。前端轮询拿到「等待验证码」，但永远等不到变化。
+    assert.equal(s.stage, 'error', '进程已退出、轮询已停，停在 waiting_code 就是永久转圈')
+    assert.match(s.message, /没有生成 cookie/)
+  } finally {
+    stopAuth()
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('C-14 ②对照：code=0 且 cookie 已落盘 → done', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'auth-cookie-'))
+  try {
+    stopAuth()
+    fs.writeFileSync(path.join(dir, 'isChen@example.com'), 'cookie')
+    newSession(dir, 'waiting_code', '')
+    applyAuthExit(0)
+    const s = authStatus()
+    assert.equal(s?.stage, 'done')
+    assert.match(s!.message, /认证成功/)
+  } finally {
+    stopAuth()
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('C-14：非零退出码 → error 且带 code，便于按原因排查', () => {
+  stopAuth()
+  newSession(COOKIE_DIR, 'waiting_password', '')
+  applyAuthExit(1)
+  const s = authStatus()
+  assert.equal(s?.stage, 'error')
+  assert.match(s!.message, /code=1/)
+})
+
+test('C-14 ①：error 阶段被超时回调兜底 → 保留准确原因，不改写成「认证超时」', () => {
+  stopAuth()
+  const s = newSession(COOKIE_DIR, 'error', '')
+  // 模拟进程退出时写入的准确原因（这是用户排错的唯一线索）
+  s.message = 'icloudpd 认证退出（code=1）。常见原因：密码错误 / Apple 临时限流'
+  onAuthTimeout()
+  const after = authStatus()!
+  assert.match(after.message, /code=1/, '准确的失败原因不能被一句「认证超时」盖掉')
+  assert.doesNotMatch(after.message, /认证超时/)
+  assert.equal(after.stage, 'error')
 })
