@@ -56,7 +56,7 @@
           <path d="m9.5 13 2.5 2.5 2.5-2.5M12 15.5v-6" />
         </svg>
       </span>
-      <span>同步</span>
+      <span>iCloud 同步</span>
       <svg class="chev" :class="{ open: menuOpen }" viewBox="0 0 12 12" aria-hidden="true">
         <path d="m3 4.5 3 3 3-3" />
       </svg>
@@ -202,7 +202,8 @@ function choose(kind: 'full' | 'inc'): void {
   left: 0;
   top: calc(100% + 3px);
   height: 2px;
-  width: 138px;
+  /* 跟按钮等宽：按钮文案从「同步」改成「iCloud 同步」后会变宽，写死 138px 会短一截 */
+  width: 100%;
   border-radius: 2px;
   background: linear-gradient(90deg, #4384ee, #7cc2ff);
   animation: sync-prog-slide 2.6s linear infinite;

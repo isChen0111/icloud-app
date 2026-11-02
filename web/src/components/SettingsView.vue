@@ -34,7 +34,7 @@ const libraries = ref<LibraryInfo[]>([])
 const loading = ref(false)
 /** 每库已选待执行：{ [libId]: 'full'|'inc' } */
 const pick = ref<Record<number, 'full' | 'inc' | null>>({})
-/** 展开「照片库配置」的库 id（点击库卡片的配置下拉展开/收起） */
+/** 展开「iCloud 同步设置」的库 id（点击库卡片的配置下拉展开/收起） */
 const configOpen = ref<number | null>(null)
 /** 展开「运行日志」的库 id（点击折叠展开/收起） */
 const logOpen = ref<number | null>(null)
@@ -274,7 +274,7 @@ async function copyPath(lib: LibraryInfo, field: 'root' | 'cache' | 'cookie'): P
 }
 
 /**
- * 照片库配置摘要（折叠状态下也显示）：把两个最常调、也最容易忘的参数摆在明面上。
+ * iCloud 同步设置摘要（折叠状态下也显示）：把两个最常调、也最容易忘的参数摆在明面上。
  * - 连续命中数：只作用于增量同步（--until-found），是「停」的条件而不是数量；
  * - 下载限量：--recent，全量与增量都会追加，0 = 全部。
  */
@@ -303,12 +303,31 @@ async function cancelSyncRun(libId: number): Promise<void> {
   }
 }
 
+/**
+ * 「更多」菜单：同时只允许一个库展开。
+ *
+ * 目的是把低频/危险操作（重新登录、删除）从标题行的按钮群里移出去——
+ * 之前一行能挤四个按钮（切换 / 刷新链接 / 导入 / 删除），视觉上分不出主次，
+ * 删除这种不可逆操作和「导入」并排也容易误点。
+ */
+const menuLibId = ref<number | null>(null)
+
+function toggleMenu(id: number): void {
+  menuLibId.value = menuLibId.value === id ? null : id
+}
+
+function closeMenu(): void {
+  menuLibId.value = null
+}
+
 onMounted(() => {
   void loadLibraries()
   pollTimer = window.setInterval(pollStats, 5000)
+  window.addEventListener('click', closeMenu)
 })
 onBeforeUnmount(() => {
   if (pollTimer !== undefined) window.clearInterval(pollTimer)
+  window.removeEventListener('click', closeMenu)
 })
 </script>
 
@@ -349,58 +368,65 @@ onBeforeUnmount(() => {
               <div class="lib-card-head">
                 <div class="lib-card-title-wrap">
                   <strong class="lib-card-name">{{ lib.name }}</strong>
-                  <span v-if="lib.active" class="pill current">当前</span>
+                  <!-- 两个状态维度并列：是否当前库 / iCloud 是否已链接。
+                       两边都有底色，多个库之间扫一眼就能比出差异 -->
+                  <span class="pill" :class="lib.active ? 'current' : 'idle'">{{ lib.active ? '当前' : '未激活' }}</span>
                   <span class="pill" :class="lib.authStatus === 'authed' ? 'ok' : 'warn'">
                     {{ lib.authStatus === 'authed' ? '已链接' : lib.authStatus === 'expired' ? '会话过期' : '未链接' }}
                   </span>
                 </div>
                 <div class="lib-card-actions">
-                  <!-- 非激活库：只切换，不启动同步（有时只是想切过去看看）。
-                       蓝色描边 + 双向箭头：与灰描边的「刷新链接/删除」拉开层级，一眼能找到 -->
+                  <!-- 只在「从未链接」时把登录按钮放出来：这是新建库的第一个动作。
+                       已链接后低频重登收进「更多」，标题行只留一个入口 -->
                   <button
-                    v-if="!lib.active"
-                    class="btn-ghost switch"
-                    type="button"
-                    :disabled="switchingId === lib.id || globalBusy()"
-                    :title="globalBusy() ? '有同步任务正在执行，请等待完成或取消后再切换' : '切换到这个照片库（不会启动同步）'"
-                    @click="switchTo(lib)"
-                  >
-                    <span v-if="switchingId === lib.id" class="spinner" />
-                    <svg v-else class="switch-ico" viewBox="0 0 16 16" aria-hidden="true">
-                      <path d="M2.4 8h7.2" />
-                      <path d="M7 5 10 8l-3 3" />
-                      <path d="M13.2 3.4v9.2" />
-                    </svg>
-                    {{ switchingId === lib.id ? '切换中…' : '切换照片库' }}
-                  </button>
-                  <!-- 链接 iCloud / 导入：把照片弄进来的两条路径，是卡片里最重要的两个动作。
-                       用淡蓝底 + 蓝字表达层级，不用实心块——标题行已有蓝色「当前」胶囊，
-                       再加两个实心按钮会互相打架 -->
-                  <button
+                    v-if="lib.authStatus === 'none'"
                     class="btn-ghost accent"
                     type="button"
-                    :title="lib.authStatus === 'none' ? '登录 iCloud 账号，之后可以同步拉取云端照片' : '更新 iCloud 会话（会话过期时需要）'"
+                    title="登录 Apple ID，之后才能从 iCloud 同步照片"
                     @click="emit('open-auth', { id: lib.id, name: lib.name, account: lib.account })"
                   >
-                    {{ lib.authStatus === 'none' ? '链接 iCloud' : '刷新链接' }}
+                    登录 iCloud
                   </button>
-                  <!-- 非激活库真禁用：导入依赖激活库（后端 runScan 只能扫激活库）。
-                       样式对齐同步按钮的 locked——虚线框 + 灰底 + 锁图标，静态即可辨识 -->
-                  <button
-                    class="btn-ghost accent"
-                    :class="{ locked: !lib.active }"
-                    type="button"
-                    :disabled="!lib.active"
-                    :title="lib.active ? '导入本地照片目录（本机迁移 / 其他设备上传）' : '该库不是当前照片库，切换过来之后才能导入'"
-                    @click="openImport(lib)"
-                  >
-                    <svg v-if="!lib.active" class="lock-ico" viewBox="0 0 24 24" aria-hidden="true">
-                      <rect x="5" y="10.5" width="14" height="9.5" rx="2.2" />
-                      <path d="M8.5 10.5V7.8a3.5 3.5 0 0 1 7 0v2.7" />
-                    </svg>
-                    导入
-                  </button>
-                  <button class="btn-ghost danger" type="button" @click="openDelete(lib)">删除</button>
+                  <div class="more-wrap">
+                    <button
+                      class="btn-ghost more"
+                      type="button"
+                      :aria-expanded="menuLibId === lib.id"
+                      aria-haspopup="menu"
+                      title="更多操作"
+                      @click.stop="toggleMenu(lib.id)"
+                    >
+                      <svg viewBox="0 0 16 16" aria-hidden="true">
+                        <circle cx="3.4" cy="8" r="1.5" />
+                        <circle cx="8" cy="8" r="1.5" />
+                        <circle cx="12.6" cy="8" r="1.5" />
+                      </svg>
+                    </button>
+                    <div v-if="menuLibId === lib.id" class="more-menu" role="menu">
+                      <button
+                        v-if="lib.authStatus !== 'none'"
+                        type="button"
+                        role="menuitem"
+                        @click.stop="emit('open-auth', { id: lib.id, name: lib.name, account: lib.account }); closeMenu()"
+                      >
+                        <svg viewBox="0 0 16 16" aria-hidden="true">
+                          <path d="M6.2 2.2a5.8 5.8 0 1 0 3.6 10.6" />
+                          <path d="M9.6 2.4h4.2v4.2" />
+                          <path d="m13.6 2.6-5 5" />
+                        </svg>
+                        重新登录 iCloud
+                      </button>
+                      <button class="danger" type="button" role="menuitem" @click.stop="openDelete(lib); closeMenu()">
+                        <svg viewBox="0 0 16 16" aria-hidden="true">
+                          <path d="M2.6 4.2h10.8" />
+                          <path d="M6.2 4.2V2.9a.8.8 0 0 1 .8-.8h2a.8.8 0 0 1 .8.8v1.3" />
+                          <path d="M4 4.2v8.2a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1V4.2" />
+                          <path d="M6.6 6.8v4M9.4 6.8v4" />
+                        </svg>
+                        删除照片库
+                      </button>
+                    </div>
+                  </div>
                 </div>
               </div>
               <div class="lib-card-count">{{ lib.photos }} 张照片 · {{ lib.videos }} 个视频</div>
@@ -445,7 +471,73 @@ onBeforeUnmount(() => {
                 <div class="meta-row"><span class="meta-key">最近同步</span><code>{{ lib.lastSyncAt ? new Date(lib.lastSyncAt).toLocaleString('zh-CN') : '从未' }}</code></div>
               </div>
 
-              <!-- 照片库配置：untilFound / recentLimit 可编辑；其他官方参数按默认值锁死只读。
+              <!-- 激活库：一条动作栏 = 「往库里加东西」的两种方式。
+                   导入照片（本地）与 iCloud 同步并排，右侧跟状态说明。
+                   iCloud 接口只接受当前激活库，所以整条只对激活库渲染 -->
+              <div v-if="lib.active" class="lib-sync-row">
+                <button
+                  class="btn-ghost accent import"
+                  type="button"
+                  title="导入本地照片目录（本机迁移 / 其他设备上传）"
+                  @click="openImport(lib)"
+                >
+                  <svg viewBox="0 0 16 16" aria-hidden="true">
+                    <path d="M8 2.6v7" />
+                    <path d="m5.2 6.9 2.8 2.8 2.8-2.8" />
+                    <path d="M3 11.4v1.4a.8.8 0 0 0 .8.8h8.4a.8.8 0 0 0 .8-.8v-1.4" />
+                  </svg>
+                  导入照片
+                </button>
+                <SyncButton
+                  :busy="thisLibBusy(lib.id)"
+                  :kind="props.stats?.sync.kind ?? 'full'"
+                  :starting="!!starting[lib.id]"
+                  :picked="pick[lib.id] ?? null"
+                  :disabled="otherBusy(lib.id)"
+                  @pick="(k) => pickSync(lib.id, k)"
+                  @run="runSync(lib.id)"
+                  @cancel="cancelSyncRun(lib.id)"
+                />
+                <span v-if="syncError && (pick[lib.id] || starting[lib.id] || thisLibBusy(lib.id))" class="sync-note err"><i class="sync-dot" aria-hidden="true" />{{ syncError }}</span>
+                <span v-else-if="thisLibBusy(lib.id)" class="sync-note" :class="syncStatusClass(props.stats!.sync.status)"><i class="sync-dot" aria-hidden="true" />{{ props.stats!.sync.message }}</span>
+                <span v-else-if="props.stats?.sync.status === 'done' && props.stats.sync.libraryId === lib.id" class="sync-note ok">
+                  <i class="sync-dot" aria-hidden="true" />同步完成，本次下载 {{ props.stats.sync.downloaded }} 项
+                </span>
+                <span v-else-if="otherBusy(lib.id) && pick[lib.id]" class="sync-note warn">
+                  <i class="sync-dot" aria-hidden="true" />其他库同步中，请等待完成后再执行
+                </span>
+              </div>
+
+              <!-- 非激活库：不再摆一排禁用按钮（锁定同步 + 锁定导入 + 切换，说明还各占一句），
+                   改成一条说明 + 一个出口。锁定态本来就没法用，摆出来只是噪音 -->
+              <div v-else class="lib-inactive-bar">
+                <div class="inactive-line">
+                  <svg class="inactive-lock" viewBox="0 0 24 24" aria-hidden="true">
+                    <rect x="5" y="10.5" width="14" height="9.5" rx="2.2" />
+                    <path d="M8.5 10.5V7.8a3.5 3.5 0 0 1 7 0v2.7" />
+                  </svg>
+                  <span class="inactive-text">未激活，切换到此库后才能导入照片、同步 iCloud</span>
+                  <button
+                    class="btn-ghost switch"
+                    type="button"
+                    :disabled="switchingId === lib.id || globalBusy()"
+                    :title="globalBusy() ? '有同步任务正在执行，请等待完成或取消后再切换' : '切换到这个照片库（不会启动同步）'"
+                    @click="switchTo(lib)"
+                  >
+                    <span v-if="switchingId === lib.id" class="spinner" />
+                    <svg v-else class="switch-ico" viewBox="0 0 16 16" aria-hidden="true">
+                      <path d="M2.4 8h7.2" />
+                      <path d="M7 5 10 8l-3 3" />
+                      <path d="M13.2 3.4v9.2" />
+                    </svg>
+                    {{ switchingId === lib.id ? '切换中…' : '切换到此库' }}
+                  </button>
+                </div>
+                <!-- 切库失败（如任务在跑 409）就地说清，否则点了没反应 -->
+                <p v-if="switchFailId === lib.id && syncError" class="inactive-err" role="alert">{{ syncError }}</p>
+              </div>
+              <!-- iCloud 同步设置：untilFound / recentLimit 可编辑；其他 icloudpd 官方参数按默认值锁死只读。
+                   叫「照片库配置」会让人以为照片目录/缓存也能在这里改，实际这两项由程序按库名派生。
                    折叠状态下也显示当前两个关键参数，顺序为「标题 → 折叠箭头 → 参数摘要」 -->
               <button
                 class="config-toggle"
@@ -454,7 +546,7 @@ onBeforeUnmount(() => {
                 :title="configBriefTitle(lib)"
                 @click="openConfig(lib)"
               >
-                <span class="config-toggle-label">照片库配置</span>
+                <span class="config-toggle-label">iCloud 同步设置</span>
                 <svg class="chev" :class="{ open: configOpen === lib.id }" viewBox="0 0 12 12" aria-hidden="true">
                   <path d="m3 4.5 3 3 3-3" />
                 </svg>
@@ -501,31 +593,6 @@ onBeforeUnmount(() => {
                 </div>
               </div>
 
-              <!-- 每库同步：共享组件 SyncButton（与主界面视觉/状态机完全一致）。
-                   同步接口只允许当前激活库，非激活库用 locked 真正禁用（不是仅灰显），
-                   要同步请先点上方的「切换照片库」 -->
-              <div class="lib-sync-row">
-                <SyncButton
-                  :busy="thisLibBusy(lib.id)"
-                  :kind="props.stats?.sync.kind ?? 'full'"
-                  :starting="!!starting[lib.id]"
-                  :picked="pick[lib.id] ?? null"
-                  :disabled="otherBusy(lib.id)"
-                  :locked="!lib.active"
-                  @pick="(k) => pickSync(lib.id, k)"
-                  @run="runSync(lib.id)"
-                  @cancel="cancelSyncRun(lib.id)"
-                />
-                <span v-if="!lib.active" class="sync-note">该库不是当前激活库，切换后才能同步</span>
-                <span v-else-if="syncError && (pick[lib.id] || starting[lib.id] || thisLibBusy(lib.id) || switchFailId === lib.id)" class="sync-note err"><i class="sync-dot" aria-hidden="true" />{{ syncError }}</span>
-                <span v-else-if="thisLibBusy(lib.id)" class="sync-note" :class="syncStatusClass(props.stats!.sync.status)"><i class="sync-dot" aria-hidden="true" />{{ props.stats!.sync.message }}</span>
-                <span v-else-if="props.stats?.sync.status === 'done' && props.stats.sync.libraryId === lib.id" class="sync-note ok">
-                  <i class="sync-dot" aria-hidden="true" />同步完成，本次下载 {{ props.stats.sync.downloaded }} 项
-                </span>
-                <span v-else-if="otherBusy(lib.id) && pick[lib.id]" class="sync-note warn">
-                  <i class="sync-dot" aria-hidden="true" />其他库同步中，请等待完成后再执行
-                </span>
-              </div>
               <!-- icloudpd 运行日志（该库任务输出，按钮下方独立整行，随 stats 轮询更新） -->
               <div v-if="props.stats?.sync.libraryId === lib.id && syncLogLines.length" class="lib-log">
                 <button
@@ -544,7 +611,8 @@ onBeforeUnmount(() => {
             </article>
 
             <button class="add-lib-btn" type="button" @click="emit('new-library')">
-              <span>+</span> 添加照片库（新建库 → 链接 → 全量拉取）
+              <span>+</span> 添加照片库
+              <small>新建后可从 iCloud 拉取，或导入本地照片目录</small>
             </button>
           </template>
 
@@ -722,7 +790,71 @@ onBeforeUnmount(() => {
 .pill.current { background: #4384ee; color: #fff; }
 .pill.ok { background: rgb(44 154 97 / 12%); color: #2c9a61; }
 .pill.warn { background: rgb(255 159 10 / 14%); color: #a87515; }
-.lib-card-actions { display: flex; gap: 6px; flex-shrink: 0; }
+/* 未激活：中性灰。与蓝色「当前」成对，但比橙色「未链接」安静——
+   未激活只是「当前没在用」，不是需要处理的异常 */
+.pill.idle { background: var(--bg-field); color: var(--text-2); }
+.lib-card-actions { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
+/* 「更多」：把低频/危险操作收进菜单，标题行只剩一个入口 */
+.more-wrap { position: relative; display: inline-flex; }
+.btn-ghost.more {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 24px;
+  padding: 0;
+  color: var(--text-2);
+}
+.btn-ghost.more svg { width: 14px; height: 14px; fill: currentColor; }
+.btn-ghost.more:hover { color: var(--text-1); }
+.more-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 40;
+  min-width: 158px;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--bg-panel);
+  box-shadow: 0 10px 28px rgb(15 23 42 / 16%);
+  animation: more-pop 0.12s ease;
+}
+@keyframes more-pop {
+  from { opacity: 0; transform: translateY(-3px); }
+  to { opacity: 1; transform: none; }
+}
+.more-menu button {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  padding: 7px 9px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-1);
+  font: inherit;
+  font-size: 11.5px;
+  text-align: left;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.more-menu button svg {
+  width: 13px;
+  height: 13px;
+  flex: 0 0 auto;
+  fill: none;
+  stroke: var(--text-3);
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.more-menu button:hover { background: rgb(67 132 238 / 9%); color: #3577dc; }
+.more-menu button:hover svg { stroke: #3577dc; }
+.more-menu button.danger { color: #d05245; }
+.more-menu button.danger svg { stroke: #d05245; }
+.more-menu button.danger:hover { background: rgb(208 82 69 / 9%); color: #d05245; }
 .btn-ghost {
   padding: 4px 10px;
   border: 1px solid var(--border);
@@ -734,14 +866,13 @@ onBeforeUnmount(() => {
   cursor: pointer;
 }
 .btn-ghost:hover { background: var(--bg-field-hover); color: var(--text-1); }
-.btn-ghost.danger { color: #d05245; }
-.btn-ghost.danger:hover { background: rgb(208 82 69 / 9%); color: #d05245; }
 /* 「切换照片库」：蓝色描边 + 图标，比灰描边的「刷新链接/删除」高一级，
    但不用实心块——卡片里已有蓝色「当前」徽标，再加实心按钮会打架 */
 .btn-ghost.switch {
   display: inline-flex;
   align-items: center;
   gap: 4px;
+  white-space: nowrap;
   border-color: #4384ee;
   color: #4384ee;
 }
@@ -774,31 +905,6 @@ onBeforeUnmount(() => {
   border-color: #4384ee;
   background: rgb(67 132 238 / 15%);
   color: #2f6ed0;
-}
-/* 非激活库的「导入」：真禁用。对齐同步按钮的 locked——虚线框 + 灰底 + 锁图标，
-   静态即可辨识，hover 不给任何高亮，避免「看起来还能点」 */
-.btn-ghost.accent.locked {
-  border-style: dashed;
-  border-color: var(--border);
-  background: var(--bg-field);
-  color: var(--text-3);
-  font-weight: 500;
-  opacity: 1;
-}
-.btn-ghost.accent.locked:hover {
-  border-color: var(--border);
-  background: var(--bg-field);
-  color: var(--text-3);
-}
-.lock-ico {
-  width: 11px;
-  height: 11px;
-  flex-shrink: 0;
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 2;
-  stroke-linecap: round;
-  stroke-linejoin: round;
 }
 /* 信息列表：label 固定宽灰色，value 主色，扫读对齐 */
 .lib-card-meta {
@@ -891,7 +997,7 @@ onBeforeUnmount(() => {
   font-size: 11.5px;
 }
 
-/* 照片库配置展开区 */
+/* iCloud 同步设置展开区 */
 .config-toggle {
   display: flex;
   align-items: center;
@@ -973,16 +1079,62 @@ onBeforeUnmount(() => {
 .btn-ghost.primary:disabled { opacity: 0.6; cursor: default; }
 /* 只读参数区 */
 .config-readonly { padding-bottom: 4px; }
+/* 激活库动作栏：「导入照片」与「iCloud 同步」并排——两者都是往库里加内容，
+   放同一行比散落在标题行/卡片底部更容易理解。窄屏允许换行，状态说明自然落到下一步 */
 .lib-sync-row {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 9px;
+  flex-wrap: wrap;
   margin-top: 10px;
   padding-top: 10px;
   border-top: 1px dashed var(--border);
 }
-/* 「切换照片库」按钮的加载指示（组件内自带，不依赖 App.vue 的 scoped 样式） */
-.lib-sync-row .spinner {
+/* 导入照片：与同步按钮等高，accent 语义与「往库里加内容」一致 */
+.btn-ghost.accent.import {
+  height: 26px;
+  padding: 0 11px;
+  gap: 5px;
+  white-space: nowrap;
+}
+.btn-ghost.accent.import svg {
+  width: 12px;
+  height: 12px;
+  flex-shrink: 0;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+/* 非激活库：一条说明 + 一个出口。原先这里是「锁定同步按钮 + 一句说明 + 锁定导入按钮」，
+   三个东西都在说同一件事（先切换），现在合并成一条 */
+.lib-inactive-bar {
+  display: grid;
+  gap: 6px;
+  margin-top: 10px;
+  padding: 9px 11px;
+  border: 1px dashed var(--border);
+  border-radius: 9px;
+  background: var(--bg-field);
+}
+.inactive-line { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.inactive-err { margin: 0; color: #d05245; font-size: 11px; line-height: 1.5; }
+.inactive-lock {
+  width: 13px;
+  height: 13px;
+  flex: 0 0 auto;
+  fill: none;
+  stroke: var(--text-3);
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.inactive-text { color: var(--text-2); font-size: 11px; line-height: 1.5; }
+.inactive-line .btn-ghost.switch { margin-left: auto; flex-shrink: 0; }
+/* 「切换到此库」按钮的加载指示（现在这个按钮在非激活提示条里，
+   选择器要跟着一起改，否则 spinner 会退化成无样式的 span） */
+.lib-inactive-bar .spinner {
   display: inline-block;
   width: 11px;
   height: 11px;
@@ -1076,6 +1228,7 @@ onBeforeUnmount(() => {
 }
 .add-lib-btn:hover { background: rgb(67 132 238 / 5%); }
 .add-lib-btn span { font-weight: 700; }
+.add-lib-btn small { color: var(--text-3); font-size: 11px; font-weight: 400; }
 
 .config-card {
   padding: 13px 15px;
