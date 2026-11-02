@@ -14,8 +14,24 @@ import { computed, onBeforeUnmount, ref } from 'vue'
 import { startLocalImport, uploadImport, fetchImport, cancelImport } from '../api/client'
 import type { ImportState } from '../types'
 
-const props = defineProps<{ libraryId: number; libraryName: string }>()
-const emit = defineEmits<{ close: []; 'need-stats-refresh': [] }>()
+const props = defineProps<{
+  libraryId: number
+  libraryName: string
+  /**
+   * 启动前钩子：返回 false 表示取消。
+   *
+   * 导入接口只接受「当前激活库」，而新建的库在有其他库时并不会被激活。调用方（引导页）
+   * 需要在实际点「开始导入/开始上传」的这一刻才切库，并且先给出确认——所以把切库时机
+   * 交给这个钩子，而不是打开弹窗就切。
+   */
+  beforeStart?: (mode: 'local' | 'upload') => Promise<boolean>
+}>()
+const emit = defineEmits<{
+  close: []
+  'need-stats-refresh': []
+  /** 导入真正完成（可用于在调用方展示「已导入 N 项」） */
+  done: [payload: { processed: number; skipped: number; failed: number; exifPatched: number }]
+}>()
 
 type Mode = 'local' | 'upload'
 const mode = ref<Mode>('local')
@@ -63,6 +79,8 @@ async function startLocal(): Promise<void> {
     return
   }
   error.value = ''
+  // 切库确认放这里：用户点了「开始导入」才算真的要用这个库，此时打扰他才说得通
+  if (props.beforeStart && !(await props.beforeStart('local'))) return
   try {
     await startLocalImport(props.libraryId, p, localMove.value ? 'move' : 'copy')
     startPolling()
@@ -77,6 +95,8 @@ async function startUpload(): Promise<void> {
     return
   }
   error.value = ''
+  // 与「开始导入」同理：上传真正提交前才切库并确认
+  if (props.beforeStart && !(await props.beforeStart('upload'))) return
   uploading.value = true
   uploadPct.value = 0
   abortCtrl = new AbortController()
@@ -101,7 +121,15 @@ async function pollImport(): Promise<void> {
     state.value = next
     if (next.status === 'done' || next.status === 'error' || next.status === 'cancelled') {
       stopPolling()
-      if (next.status === 'done') emit('need-stats-refresh')
+      if (next.status === 'done') {
+        emit('need-stats-refresh')
+        emit('done', {
+          processed: next.processedFiles,
+          skipped: next.skipped,
+          failed: next.failedCount,
+          exifPatched: next.exifPatched,
+        })
+      }
     }
   } catch {
     // 抖动忽略
