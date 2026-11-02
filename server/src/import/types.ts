@@ -47,6 +47,13 @@ export interface ImportProgress {
   failedCount: number
   /** 失败清单（环形缓冲，最多保留最近 200 条） */
   failures: ImportFailure[]
+  /**
+   * 是否已收到取消请求（审查 C-01）。
+   * 注意与 status 的区别：取消只是信号，流水线可能正卡在某个大文件的 cp 上，
+   * 要等它回到循环顶部才会退出。这段期间 status 仍是 'running'，前端据此显示
+   * 「正在取消…」并禁用按钮，而不是让用户以为点击无效反复点。
+   */
+  cancelRequested: boolean
   startedAt: string | null
   finishedAt: string | null
 }

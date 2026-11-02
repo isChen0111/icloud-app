@@ -208,7 +208,8 @@ export function registerThumbnailCancelled(): void {
 /**
  * 切库时作废旧库的缩略图任务（R-06 修复，2026-10-28）：
  * 世代 +1 → 排队中的旧库任务轮到执行时直接空转退出，Promise 正常 settle（不再悬挂）；
- * 正在运行的旧库任务继续跑完（ensureThumbnail 内部按当前 getDb 查行，切库后旧 id 查不到即跳过，无害）。
+ * 正在运行的旧库任务继续跑完，但它在写库前会校验库归属（thumbnails.ts 的 ownerDbPath，
+ * 审查 C-02），切库后整段放弃、一条 UPDATE 都不执行 —— 不会写到新库的同 id 行。
  * 进度账本复位，避免旧库进度串到新库。
  */
 export function clearThumbnailQueue(): void {

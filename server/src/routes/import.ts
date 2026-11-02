@@ -3,8 +3,8 @@
  *
  * POST   /api/libraries/:id/import/scan   ：本机迁移（后端运行机器的本地目录）
  * POST   /api/libraries/:id/import/upload ：上传（其他设备整文件夹上传，multipart）
- * GET    /api/libraries/:id/import        ：查询导入进度（前端 2s 轮询）
- * DELETE /api/libraries/:id/import        ：取消导入
+ * GET    /api/libraries/:id/import        ：查询导入进度（前端经 tasks store 的 /api/stats 轮询）
+ * DELETE /api/libraries/:id/import        ：请求取消导入（只置信号，终态由流水线写回）
  *
  * 约束（与 sync 一致，P0 单活跃库 + 全局单任务）：
  *   - 只允许对当前激活库导入（runScan 只能扫激活库）；

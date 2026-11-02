@@ -101,6 +101,29 @@ test('handleSyncExit：error 终态不被非零 exit 覆盖（P3a）', () => {
   assert.equal(syncState.message, 'iCloud 索引长时间未就绪（已重试 5 次），请稍后再试')
 })
 
+test('handleSyncExit：旧进程迟到的 exit 不归它管（审查 C-04）', () => {
+  resetSyncState()
+  syncState.status = 'running'
+  syncState.message = '全量拉取开始…'
+
+  // 模拟「取消后立刻再点同步」：旧进程已被 taskkill，proc 已被新进程接管；
+  // 但 libuv 的 exit 事件可能在新任务启动之后才送达。此时 proc !== child，
+  // 旧事件的终态写入必须被丢弃，否则新任务会被写成 error（用户看到 error 再点一次
+  // 就出现两个 icloudpd 同时写同一库目录）。
+  const staleChild = { pid: 111 } as unknown as Parameters<typeof handleSyncExit>[2]
+  handleSyncExit(1, lib, staleChild)
+
+  assert.equal(syncState.status, 'running', '旧进程的退出不得改写当前任务状态')
+  assert.equal(syncState.message, '全量拉取开始…')
+})
+
+test('handleSyncExit：不传 child 时保持原行为（向后兼容与已有用例）', () => {
+  resetSyncState()
+  syncState.status = 'running'
+  handleSyncExit(0, lib)
+  assert.equal(syncState.status, 'done')
+})
+
 test('handleLine：索引未就绪自动重试 → 计数递增、状态 waiting_retry', () => {
   resetSyncState()
   syncState.status = 'running'

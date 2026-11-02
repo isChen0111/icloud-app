@@ -77,6 +77,9 @@ const terminal = computed(() => {
   )
 })
 
+/** 已请求取消、流水线还在收尾（后端 status 仍是 running，只是 cancelRequested 置真） */
+const cancelling = computed(() => active.value && importState.value?.cancelRequested === true)
+
 /** 结果视图：已终态，且本次确实发起过（避免打开弹窗就看到上一次的旧结果） */
 const showResult = computed(() => terminal.value && (justStarted.value || openedDuringRun.value))
 
@@ -246,7 +249,11 @@ onBeforeUnmount(() => {
 
         <p v-if="error" class="import-error" role="alert">{{ error }}</p>
         <footer class="import-actions">
-          <button class="onboard-btn" type="button" @click="cancelRun">取消导入</button>
+          <!-- 取消只是置信号：大文件可能正卡在拷贝中，收尾要等它回到循环顶部。
+               这期间禁用按钮，避免用户以为没点上而反复点 -->
+          <button class="onboard-btn" type="button" :disabled="cancelling" @click="cancelRun">
+            {{ cancelling ? '正在取消…' : '取消导入' }}
+          </button>
         </footer>
       </div>
 

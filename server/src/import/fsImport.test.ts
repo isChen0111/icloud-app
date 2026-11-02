@@ -16,7 +16,13 @@ import os from 'node:os'
 import path from 'node:path'
 import sharp from 'sharp'
 import { importDirectory, collectSourceFiles } from './fsImport.js'
-import { importState, resetImportState } from './state.js'
+import {
+  importState,
+  resetImportState,
+  beginImportRun,
+  requestImportCancel,
+  isImportBusy,
+} from './state.js'
 import { toLocalIso } from '../utils/date.js'
 import { closeExifTool, isExifToolAvailable, writeDateTaken } from '../metadata/exifWrite.js'
 
@@ -140,6 +146,119 @@ test('importDirectory：补写后重复导入同一目录 → 全部 skipped，�
     assert.equal(findFile(target, '生日(1).jpg'), null, '不能凭空多出 (1) 副本')
     assert.equal(findFile(target, '有日期(1).jpg'), null, '没补写的文件也不能多出 (1) 副本')
     assert.equal(fs.statSync(landed).size, sizeAfterPatch, '目标文件不应被二次改写')
+  } finally {
+    resetImportState()
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('C-01：取消只置信号，终态与 finishedAt 由持有令牌的流水线写回', async () => {
+  const dir = tempDir('import-fs-')
+  try {
+    const src = path.join(dir, 'src')
+    const target = path.join(dir, 'import')
+    for (let i = 1; i <= 5; i++) await writeJpeg(path.join(src, `C_${i}.jpg`), 4)
+
+    resetImportState()
+    const token = beginImportRun()
+    importState.status = 'running'
+    const running = importDirectory(
+      { libraryId: 1, sourceDir: src, targetRoot: target, mode: 'copy', source: 'local' },
+      token,
+    )
+    // 同一个 tick 内取消：此时流水线正卡在 collectSourceFiles 的 await 上
+    assert.equal(requestImportCancel(), true)
+    assert.equal(importState.status, 'running', '取消不得直接改 status，否则新任务一 reset 信号就失效')
+    assert.equal(isImportBusy(), true, '取消后到收尾前仍须占住忙碌位')
+
+    await running
+
+    assert.equal(importState.status, 'cancelled')
+    assert.ok(importState.finishedAt, '流水线必须写 finishedAt，否则忙碌位永久占住（只能重启服务）')
+    assert.equal(isImportBusy(), false, '收尾后应放行')
+    assert.ok(importState.processedFiles <= 1, '取消后不应继续处理文件')
+  } finally {
+    resetImportState()
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('C-01：旧流水线被新任务接管 → 不处理文件、不写任何状态（含终态）', async () => {
+  const dir = tempDir('import-fs-')
+  try {
+    const src = path.join(dir, 'src')
+    const target = path.join(dir, 'import')
+    for (let i = 1; i <= 5; i++) await writeJpeg(path.join(src, `D_${i}.jpg`), 4)
+
+    // 第一次运行：令牌 A
+    resetImportState()
+    const tokenA = beginImportRun()
+    importState.status = 'running'
+    const oldRun = importDirectory(
+      { libraryId: 1, sourceDir: src, targetRoot: target, mode: 'copy', source: 'local' },
+      tokenA,
+    )
+
+    // 同一 tick 内被新任务接管（模拟「取消后立刻再点导入」，旧流水线还卡在 cp 上）
+    resetImportState()
+    const tokenB = beginImportRun()
+    importState.status = 'running'
+    importState.totalFiles = 99
+    importState.message = '正在导入…（新任务）'
+
+    await oldRun
+
+    // 旧流水线必须先收手：令牌不符时连终态都不许写，否则会把新任务冲成 done/cancelled
+    assert.equal(importState.status, 'running', '旧流水线不得覆盖新任务状态')
+    assert.equal(importState.message, '正在导入…（新任务）')
+    assert.equal(importState.totalFiles, 99, '旧流水线不得重置新任务的进度基数')
+    assert.equal(importState.processedFiles, 0, '旧流水线不得再处理任何文件')
+    assert.equal(
+      fs.existsSync(target),
+      false,
+      '旧流水线不该往库里拷任何东西（否则会与新任务同名/生成 (n) 副本）',
+    )
+    assert.notEqual(tokenA, tokenB)
+  } finally {
+    resetImportState()
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('C-01：跑到一半被接管 → 停在循环里，且不写终态（终态守卫的关键场景）', async () => {
+  const dir = tempDir('import-fs-')
+  try {
+    const src = path.join(dir, 'src')
+    const target = path.join(dir, 'import')
+    for (let i = 1; i <= 40; i++) await writeJpeg(path.join(src, `E_${i}.jpg`), 4)
+
+    resetImportState()
+    const tokenA = beginImportRun()
+    importState.status = 'running'
+    const oldRun = importDirectory(
+      { libraryId: 1, sourceDir: src, targetRoot: target, mode: 'copy', source: 'local' },
+      tokenA,
+    )
+
+    // 等流水线真正进入主循环（totalFiles 是在收集完源文件、进循环之前写的），再接管。
+    // 此时它已经过半，靠的是循环内的 stopped() 检查 + 终态守卫，而不是入口处那一次判断。
+    for (let i = 0; i < 500 && importState.totalFiles === 0; i++) {
+      await new Promise((resolve) => setImmediate(resolve))
+    }
+    assert.ok(importState.totalFiles > 0, '流水线应已进入主循环')
+
+    resetImportState()
+    beginImportRun()
+    importState.status = 'running'
+    importState.totalFiles = 99
+    importState.message = '新任务'
+
+    await oldRun
+
+    assert.equal(importState.status, 'running', '旧流水线跑到一半被接管后不得写终态')
+    assert.equal(importState.totalFiles, 99)
+    assert.equal(importState.message, '新任务')
+    assert.equal(importState.finishedAt, null, '旧流水线不得替新任务写 finishedAt')
   } finally {
     resetImportState()
     fs.rmSync(dir, { recursive: true, force: true })

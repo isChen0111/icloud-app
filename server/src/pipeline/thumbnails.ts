@@ -8,6 +8,11 @@
  *
  * 缓存路径：cache/thumbs/<size>/<assetId>.webp
  * 生成后把 assets 表对应 status 置为 done；网格预览图失败时持久化原因。
+ *
+ * 库归属（审查 C-02）：`getDb()` 返回的是「永不失效」的 Proxy，每次 `.prepare()` 都解析到
+ * **当前**激活库。生成一张缩略图要几百毫秒到几十秒（视频抽帧更久），期间用户切库的话，
+ * 结尾那几条 UPDATE 就会写到新库的同 id 资产上。所以 generate/ensureSize 都在开始时
+ * 快照 `config.dbPath`，写库前重新比对，不一致就整段放弃（一条 UPDATE 都不执行）。
  */
 import fs from 'node:fs'
 import path from 'node:path'
@@ -171,6 +176,8 @@ async function generate(
 ): Promise<string | null> {
   const outPath = thumbCachePath(size, assetId)
   const db = getDb()
+  /** 本次任务开始时所属的库（写库前必须仍等于当前库，见文件头「库归属」） */
+  const ownerDbPath = config.dbPath
   const row = db
     .prepare(`SELECT file_path, type, width, height, duration FROM assets WHERE id = ?`)
     .get(assetId) as
@@ -233,6 +240,12 @@ async function generate(
       )
     }
 
+    // 写库前重新校验库归属：切库了就直接放弃，一条 UPDATE 都不执行。
+    // 缩略图文件写的是旧库 cacheDir，对新库那张同 id 的照片没有任何意义。
+    if (config.dbPath !== ownerDbPath) {
+      console.warn(`[thumb] 生成期间切换了照片库，放弃写库 asset=${assetId} size=${size}`)
+      return null
+    }
     // 更新状态（detail 生成成功时也顺带记录宽高兜底）
     if (size === 'grid') {
       // 先查旧状态（必须在 UPDATE 之前）：失败项重新生成成功 → 打自愈日志，解释失败清单里「项消失」的原因
@@ -254,7 +267,7 @@ async function generate(
     // 写入已改原子（先 .tmp 再 rename），正常失败不会留下半成品；但这里仍要删——
     // 目标路径可能躺着上次遗留的坏文件（截断但长度非 0），留着会被 isCacheUsable 判为可用
     fs.rmSync(outPath, { force: true })
-    if (size === 'grid') {
+    if (size === 'grid' && config.dbPath === ownerDbPath) {
       // grid 失败持久化 thumb_status='error' → 进失败清单（浮层可忽略/重试）。
       // 修复（F-07 系列）：不再覆盖 thumb_ignored——忽略状态由用户显式管理，失败不清除
       db.prepare(`UPDATE assets SET thumb_status='error', thumb_error=? WHERE id=?`)
@@ -362,6 +375,9 @@ async function extractVideoFrame(
  */
 export async function ensureSize(assetId: number): Promise<{ width: number; height: number } | null> {
   const db = getDb()
+  /** 任务开始时所属的库；await 之后写库前必须仍一致（审查 C-02，同 generate） */
+  const ownerDbPath = config.dbPath
+  const ownsLibrary = (): boolean => config.dbPath === ownerDbPath
   const row = db.prepare(`SELECT file_path, width, height FROM assets WHERE id = ?`).get(assetId) as
     | { file_path: string; width: number | null; height: number | null }
     | undefined
@@ -375,7 +391,9 @@ export async function ensureSize(assetId: number): Promise<{ width: number; heig
   try {
     const meta = await sharp(abs, { failOn: 'none' }).metadata()
     if (meta.width && meta.height) {
-      db.prepare(`UPDATE assets SET width=?, height=? WHERE id=?`).run(meta.width, meta.height, assetId)
+      if (ownsLibrary()) {
+        db.prepare(`UPDATE assets SET width=?, height=? WHERE id=?`).run(meta.width, meta.height, assetId)
+      }
       return { width: meta.width, height: meta.height }
     }
   } catch {
@@ -386,7 +404,9 @@ export async function ensureSize(assetId: number): Promise<{ width: number; heig
   try {
     const size = await probeSize(abs)
     if (size) {
-      db.prepare(`UPDATE assets SET width=?, height=? WHERE id=?`).run(size.width, size.height, assetId)
+      if (ownsLibrary()) {
+        db.prepare(`UPDATE assets SET width=?, height=? WHERE id=?`).run(size.width, size.height, assetId)
+      }
       return size
     }
   } catch {

@@ -298,6 +298,8 @@ export interface ImportState {
   exifFailed: number
   failedCount: number
   failures: ImportFailure[]
+  /** 已收到取消请求但流水线尚未收尾（大文件 cp 可能还要跑一阵） */
+  cancelRequested: boolean
   startedAt: string | null
   finishedAt: string | null
 }

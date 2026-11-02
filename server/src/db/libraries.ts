@@ -32,7 +32,13 @@ export interface LibraryRow {
   recent_limit: number
 }
 
-/** Windows 路径非法字符（库名会用作 cache/cookie 目录名，须过滤）。不带 g 标志：.test() 无状态（审查 P3c） */
+/**
+ * Windows 路径非法字符。
+ *
+ * 注意：库名**不参与**目录命名——目录一律是 `lib<id>`（见 createLibrary），库名只是别名。
+ * 这里仍然校验非法字符，是因为库名会出现在前端展示与导出文件名等文本位置，
+ * 顺带把明显不合法的名字挡在入口。不带 g 标志：.test() 无状态（审查 P3c）
+ */
 const INVALID_DIR_CHARS = /[\\/:*?"<>|]/
 
 /** 库名校验：非空、≤32 字符、唯一、不含路径非法字符 */

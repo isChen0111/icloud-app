@@ -29,7 +29,7 @@ import { runScan, scanProgress } from '../scanner/index.js'
 import { getThumbnailProgress, getQueueMetrics, queueSize } from '../pipeline/queue.js'
 import { getCurrentLibrary } from '../context.js'
 import { syncState } from '../icloudpd/state.js'
-import { publicImportState, importState } from '../import/state.js'
+import { publicImportState, isImportBusy } from '../import/state.js'
 import { createSizeCache } from '../stats/sizeCache.js'
 
 /** 体积缓存文件（落盘，避免每次启动重算）。函数取当前激活库 cacheDir（切库后自动跟随） */
@@ -130,7 +130,9 @@ export async function registerStatsRoutes(app: FastifyInstance): Promise<void> {
     scanRunId: () => scanProgress.runId,
     isQuiet: () =>
       scanProgress.status !== 'scanning' &&
-      importState.status !== 'running' &&
+      // 用 isImportBusy 而不是比 status：取消后流水线仍在拷文件（cancelled 且未收尾），
+      // 那段时间体积仍在变，不能当成安静期去遍历
+      !isImportBusy() &&
       syncState.status !== 'running' &&
       syncState.status !== 'waiting_retry',
     walk: (dir, shouldAbort) => walkSize(dir, 256, shouldAbort),

@@ -132,13 +132,17 @@ function spawnOnce(lib: LibraryRow, kind: 'full' | 'inc'): void {
   child.stderr.on('data', onData)
 
   child.on('error', (err) => {
+    // 归属校验（审查 C-04）：已被取消/被新任务取代的旧进程，它的 error 不得改写状态
+    if (proc !== child) return
     syncState.status = 'error'
     syncState.message = `无法启动 icloudpd：${err.message}`
     syncState.finishedAt = new Date().toISOString()
     proc = null
   })
 
-  child.on('exit', (code) => handleSyncExit(code, lib))
+  // 归属校验（审查 C-04）：把 child 一并传下去，由 handleSyncExit 首行比对。
+  // 只写 `proc !== child` 在这里也能拦住，但放进被单测覆盖的函数里才能防止「守卫被改反」。
+  child.on('exit', (code) => handleSyncExit(code, lib, child))
 }
 
 /**
@@ -149,8 +153,15 @@ function spawnOnce(lib: LibraryRow, kind: 'full' | 'inc'): void {
  *   （被杀或自行退出）不得再覆盖为通用异常或 done，防止：
  *     ① 具体文案（"会话已过期请重新链接"）被"icloudpd 异常退出"冲掉；
  *     ② 重试耗尽后进程自行退出 0 时 error→done 翻转并错误更新 last_sync_at
+ *
+ * @param child 触发本次退出的子进程。传了就做归属校验（审查 C-04）：`proc` 已经不是它，
+ *   说明这个进程被取消或被新任务取代了，它的退出不得改任何状态 —— 否则「取消后立刻再点
+ *   同步」时，旧进程迟到的 exit 会把新任务写成 error，用户再点一次就出现两个 icloudpd
+ *   同时写同一库目录（代码注释里最担心的场景）。auth.ts 的认证进程早就有这道校验（R-09），
+ *   同步侧一直漏着。
  */
-export function handleSyncExit(code: number | null, lib: LibraryRow): void {
+export function handleSyncExit(code: number | null, lib: LibraryRow, child?: ChildProcess): void {
+  if (child && proc !== child) return
   proc = null
   if (syncState.status === 'cancelled') return // 用户取消，不覆盖状态
   if (syncState.status === 'waiting_retry') return // 重试定时器已接管
