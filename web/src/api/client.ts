@@ -137,11 +137,6 @@ export async function searchAssets(q: string, opts: { offset?: number; limit?: n
   return res.json() as Promise<SearchResult>
 }
 
-/** 触发扫描 */
-export function triggerScan(): Promise<{ started: boolean }> {
-  return fetch(`${BASE}/scan`, { method: 'POST' }).then((r) => r.json())
-}
-
 /**
  * 缩略图内容版本号（cache-busting）
  *
@@ -193,12 +188,6 @@ export function videoStreamUrl(id: number): string {
 export function videoPosterUrl(id: number, size: ThumbSize = 'grid', mtime: number = 0): string {
   return `${BASE}/video/${id}/poster?size=${size}&rev=${revParam(mtime)}`
 }
-
-/** 给对象 URL 加防缓存参数（本地 dev 调试用，生产可去掉） */
-export function withCacheBust(url: string, t: number): string {
-  return `${url}&_=${t}`
-}
-
 
 /** 批量删除资产（客户端删除：DB 行 + 缓存 + 磁盘源文件，不可逆）
  * 详情页删除单张 = 传 [id]；照片墙多选删除 = 传选中集合 */

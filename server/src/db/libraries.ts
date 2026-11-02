@@ -160,20 +160,32 @@ export function createLibrary(name: string): LibraryRow {
   // 已有激活库时新建库不激活——创建完不自动切换主页面/下拉/设置中心的当前库
   const existingActive = meta.prepare(`SELECT id FROM libraries WHERE active = 1`).get() as { id: number } | undefined
   const active = existingActive ? 0 : 1
-  const info = meta
-    .prepare(
-      `INSERT INTO libraries (name, library_root, cache_dir, cookie_dir, created_at, active)
-       VALUES (?, '', '', '', ?, ?)`,
-    )
-    .run(trimmed, now, active)
-  const id = info.lastInsertRowid as number
-  // 照片根：<项目根>/iCloudPhoto/lib<id>
-  const photosRoot = path.join(projectRoot, 'iCloudPhoto', `lib${id}`)
-  const cacheDir = path.join(path.dirname(config.metaDbPath), `lib${id}`)
-  const cookieDir = path.join(cacheDir, 'cookies')
-  meta
-    .prepare(`UPDATE libraries SET library_root = ?, cache_dir = ?, cookie_dir = ? WHERE id = ?`)
-    .run(photosRoot, cacheDir, cookieDir, id)
+
+  // P2-1：INSERT（占位路径）+ 回填路径 + 清其他 active 用同一事务包裹。
+  // 否则进程在两步之间崩溃会留下 library_root='' 的半成品库（服务能起但一张图没有）。
+  const writeReg = meta.transaction((): { id: number; photosRoot: string; cacheDir: string; cookieDir: string } => {
+    const info = meta
+      .prepare(
+        `INSERT INTO libraries (name, library_root, cache_dir, cookie_dir, created_at, active)
+         VALUES (?, '', '', '', ?, ?)`,
+      )
+      .run(trimmed, now, active)
+    const id = info.lastInsertRowid as number
+    // 照片根：<项目根>/iCloudPhoto/lib<id>
+    const photosRoot = path.join(projectRoot, 'iCloudPhoto', `lib${id}`)
+    const cacheDir = path.join(path.dirname(config.metaDbPath), `lib${id}`)
+    const cookieDir = path.join(cacheDir, 'cookies')
+    meta
+      .prepare(`UPDATE libraries SET library_root = ?, cache_dir = ?, cookie_dir = ? WHERE id = ?`)
+      .run(photosRoot, cacheDir, cookieDir, id)
+    // 激活新库时（首次建库）清掉其他库的 active 标记
+    if (active === 1) {
+      meta.prepare(`UPDATE libraries SET active = 0 WHERE id <> ?`).run(id)
+    }
+    return { id, photosRoot, cacheDir, cookieDir }
+  })
+  const { id, photosRoot, cacheDir, cookieDir } = writeReg()
+
   // 建库即建目录（2026-10-28 三层 → 2026-10-30 加 icloud/import 两子目录）：
   // 照片根 + 其下 icloud/、import/ + 缓存 + cookies。
   // 动机：设置中心直接展示这些路径，而原先只有 icloudpd 首次下载（照片根）和认证成功（cookies）
@@ -189,10 +201,6 @@ export function createLibrary(name: string): LibraryRow {
   ])
   for (const dir of failedDirs) {
     console.warn(`[libraries] 预建目录失败 ${dir}（不影响建库，同步时会再次尝试创建）`)
-  }
-  // 激活新库时（首次建库）清掉其他库的 active 标记
-  if (active === 1) {
-    meta.prepare(`UPDATE libraries SET active = 0 WHERE id <> ?`).run(id)
   }
   return getLibraryById(id)!
 }
@@ -215,8 +223,11 @@ export function getActiveLibrary(): LibraryRow | null {
 /** 切换激活库（单活跃库模型） */
 export function setActiveLibrary(id: number): LibraryRow {
   const meta = getMetaDb()
-  meta.prepare(`UPDATE libraries SET active = 0`).run()
-  meta.prepare(`UPDATE libraries SET active = 1 WHERE id = ?`).run(id)
+  // P2-1：两条 UPDATE 用事务，进程崩溃/中途失败不会留下「无激活库」的半状态
+  meta.transaction(() => {
+    meta.prepare(`UPDATE libraries SET active = 0`).run()
+    meta.prepare(`UPDATE libraries SET active = 1 WHERE id = ?`).run(id)
+  })()
   return getLibraryById(id)!
 }
 

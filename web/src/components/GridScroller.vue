@@ -355,6 +355,8 @@ function remeasureKeepingAnchor(): void {
 let widthMeasureRaf = 0
 
 /** 容器宽度监听 */
+let widthObserver: ResizeObserver | null = null
+
 function observeWidth(): void {
   if (!scrollEl.value) return
   const ro = new ResizeObserver(() => {
@@ -374,6 +376,7 @@ function observeWidth(): void {
     })
   })
   ro.observe(scrollEl.value)
+  widthObserver = ro
   viewportWidth.value = scrollEl.value.clientWidth
 }
 
@@ -516,6 +519,9 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   if (widthMeasureRaf) cancelAnimationFrame(widthMeasureRaf)
+  // P2-14：ResizeObserver 与前端缩略图调度器的定时器此前无引用可清理，卸载后仍可能触发
+  if (widthObserver) widthObserver.disconnect()
+  thumbnailScheduler.dispose()
   window.removeEventListener('keydown', onKeydown)
   window.removeEventListener('pointerup', onWindowPointerUp)
   window.removeEventListener('pointercancel', onWindowPointerUp)

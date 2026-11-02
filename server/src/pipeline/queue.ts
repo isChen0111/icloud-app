@@ -174,8 +174,11 @@ export function enqueueAsset(item: EnqueueItem, priority: 'background' | 'user' 
 
 function recordThumbnailResult(batchId: number, succeeded: boolean): void {
   if (batchId !== thumbnailBatchId || thumbnailProgress.status !== 'preparing') return
-  thumbnailProgress.processed++
-  thumbnailProgress.pending--
+  // P2-3：账本边界保护。重试失败项（error→pending 重新统计）与在途任务过继
+  // 等边界下，pending 计数可能短暂与在途任务数不对齐，clamp 保证 pending 不为负、
+  // processed 不超 total（前端百分比不会 >100%、进度条不会卡在 preparing）。
+  thumbnailProgress.pending = Math.max(0, thumbnailProgress.pending - 1)
+  thumbnailProgress.processed = Math.min(thumbnailProgress.total, thumbnailProgress.processed + 1)
   if (succeeded) thumbnailProgress.completed++
   else thumbnailProgress.failed++
   if (thumbnailProgress.pending === 0) thumbnailProgress.status = 'done'

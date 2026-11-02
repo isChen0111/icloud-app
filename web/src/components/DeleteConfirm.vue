@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import { onBeforeUnmount, onMounted } from 'vue'
+
 /**
  * DeleteConfirm —— 删除确认弹框（客户端删除功能通用）
  * 照片墙多选删除传 count=N；详情页删除传 count=1。
@@ -6,6 +8,17 @@
  */
 defineProps<{ count: number; deleting?: boolean }>()
 const emit = defineEmits<{ confirm: []; cancel: [] }>()
+
+/** P2-15：Esc 关闭弹窗。用 capture 阶段拦截，阻止 GridScroller 的 window keydown
+ *  （bubble 阶段）也收到这个 Esc 去 clearSelection —— 否则选中被清空、count 变 0，
+ *  弹窗变成「删除 0 个项目」。 */
+function onKeydown(e: KeyboardEvent): void {
+  if (e.key !== 'Escape') return
+  e.stopPropagation()
+  emit('cancel')
+}
+onMounted(() => window.addEventListener('keydown', onKeydown, true))
+onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown, true))
 </script>
 
 <template>
@@ -20,8 +33,8 @@ const emit = defineEmits<{ confirm: []; cancel: [] }>()
       <h3 class="title">确定删除选中的 {{ count }} 个项目？</h3>
       <p class="desc">这些项目将从本地照片库中永久删除，且无法恢复。</p>
       <div class="actions">
-        <button class="btn cancel" @click="emit('cancel')">取消</button>
-        <button class="btn danger" :disabled="deleting" @click="emit('confirm')">
+        <button type="button" class="btn cancel" @click="emit('cancel')">取消</button>
+        <button type="button" class="btn danger" :disabled="deleting" @click="emit('confirm')">
           {{ deleting ? '删除中…' : '删除' }}
         </button>
       </div>

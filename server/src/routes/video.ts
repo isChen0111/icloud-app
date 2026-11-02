@@ -18,6 +18,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { getDb } from '../db/index.js'
 import { config } from '../config.js'
+import { resolveInsideRoot } from '../utils/path.js'
 
 /**
  * 解析 "bytes=start-end" 请求头 → { start, end }，不合法返回 null（回退整文件）
@@ -74,17 +75,18 @@ export async function registerVideoRoutes(app: FastifyInstance): Promise<void> {
   const db = getDb()
 
   app.get('/api/video/:id/stream', async (req, reply) => {
-    const { id } = req.params as { id: string }
-    const row = db.prepare(`SELECT type, file_path, live_video FROM assets WHERE id = ?`).get(Number(id)) as
+    const idNum = Number((req.params as { id: string }).id)
+    if (!Number.isInteger(idNum) || idNum <= 0) return reply.code(400).send({ error: 'invalid id' })
+    const row = db.prepare(`SELECT type, file_path, live_video FROM assets WHERE id = ?`).get(idNum) as
       | { type: string; file_path: string; live_video: string | null }
       | undefined
 
     const rel = row ? resolvePlaybackPath(row.type, row.file_path, row.live_video) : null
     if (!rel) return reply.code(404).send({ error: 'not a video asset' })
 
-    // 相对路径 → 库根下的绝对路径
-    const abs = path.join(config.libraryRoot, rel)
-    if (!fs.existsSync(abs)) return reply.code(404).send({ error: 'file missing' })
+    // 相对路径 → 库根下的绝对路径（越界返回 null，按文件缺失处理）
+    const abs = resolveInsideRoot(config.libraryRoot, rel)
+    if (!abs || !fs.existsSync(abs)) return reply.code(404).send({ error: 'file missing' })
 
     const stat = fs.statSync(abs)
     const total = stat.size

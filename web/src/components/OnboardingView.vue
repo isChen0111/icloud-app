@@ -603,7 +603,6 @@ onBeforeUnmount(() => {
 .src-note { margin: 0; color: var(--text-3); font-size: 10.5px; line-height: 1.55; }
 .src-result { margin: 0; color: var(--text-2); font-size: 11px; }
 
-.onboard-warn { color: #a87515 !important; }
 .onboard-error { margin: 0; color: #d05245; font-size: 11px; line-height: 1.5; }
 .onboard-actions { display: flex; justify-content: flex-end; gap: 9px; }
 .onboard-btn {

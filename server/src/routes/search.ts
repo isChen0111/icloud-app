@@ -112,7 +112,7 @@ export async function registerSearchRoutes(app: FastifyInstance): Promise<void> 
     // try/catch 兜底（审查 P2-B6）：清洗后仍有极少数输入会让 FTS5 抛语法错误
     // （如超长输入/畸形 token 组合），此时返回空结果而非 500。
     let total = 0
-    let months: { ym: string; label: string; count: number; offset: number; thumbId: number | null }[] = []
+    let months: { ym: string; label: string; count: number; offset: number; thumbId: number | null; thumbRev: number }[] = []
     let rows: AssetRow[] = []
     try {
       // 性能优化（审查）：total/months 只在首屏（offset=0）计算——
@@ -134,9 +134,10 @@ export async function registerSearchRoutes(app: FastifyInstance): Promise<void> 
         const groups = db
           .prepare(
             `SELECT ym, COUNT(*) AS cnt,
-                    MAX(CASE WHEN rn = 1 THEN id END) AS thumb_id
+                    MAX(CASE WHEN rn = 1 THEN id END) AS thumb_id,
+                    MAX(CASE WHEN rn = 1 THEN file_mtime END) AS thumb_rev
              FROM (
-               SELECT substr(a.date_taken, 1, 7) AS ym, a.id,
+               SELECT substr(a.date_taken, 1, 7) AS ym, a.id, a.file_mtime,
                       ROW_NUMBER() OVER (
                         PARTITION BY substr(a.date_taken, 1, 7)
                         ORDER BY a.date_taken DESC, a.id DESC
@@ -147,7 +148,7 @@ export async function registerSearchRoutes(app: FastifyInstance): Promise<void> 
              )
              GROUP BY ym ORDER BY ym DESC`,
           )
-          .all(query, ...exactArgs) as { ym: string; cnt: number; thumb_id: number | null }[]
+          .all(query, ...exactArgs) as { ym: string; cnt: number; thumb_id: number | null; thumb_rev: number | null }[]
 
         let acc = 0
         months = groups.map((g) => {
@@ -157,6 +158,7 @@ export async function registerSearchRoutes(app: FastifyInstance): Promise<void> 
             count: g.cnt,
             offset: acc,
             thumbId: g.thumb_id,
+            thumbRev: g.thumb_rev ?? 0, // 与 /api/dates 同构：月份小图缓存版本（覆盖后联动 URL）
           }
           acc += g.cnt
           return item

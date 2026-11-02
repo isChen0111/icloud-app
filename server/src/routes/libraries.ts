@@ -206,6 +206,14 @@ export async function registerLibraryRoutes(app: FastifyInstance): Promise<void>
     const existing = listLibraries().find((l) => l.name === name.trim())
     if (existing) return reply.code(409).send({ error: '库名已存在' })
 
+    // P2-7：首次建库（当前无库）会触发激活切换（停 watcher/清队列/关 DB），
+    // 与切库/删库同等需要过守卫，保持「写操作都过 guard」的一致契约。
+    const willActivate = listLibraries().length === 0
+    if (willActivate) {
+      const busy = libraryBusyGuard('switch')
+      if (busy) return reply.code(409).send({ error: busy })
+    }
+
     const lib = createLibrary(name)
     // 仅首次建库（无任何库、createLibrary 内部会激活）需要切换上下文启动扫描；
     // 已有激活库时新建库不激活、不切换——主页面/下拉/设置中心的当前库保持不变
@@ -235,7 +243,7 @@ export async function registerLibraryRoutes(app: FastifyInstance): Promise<void>
   /**
    * 更新单库同步参数：untilFound（增量：连续 N 个已存在则停，默认 20）
    *                       recentLimit（下载限量，0=全量不限，默认 0）
-   * 环境变量 ICLOUDPD_RECENT 已废弃，仅保留在 .env.example 作兼容说明。
+   * 环境变量 ICLOUDPD_RECENT 已废弃并移除（config.ts 不再读取），下载限量按库在此配置。
    */
   app.patch('/api/libraries/:id/config', async (request, reply) => {
     const id = Number((request.params as { id: string }).id)

@@ -15,6 +15,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { getDb } from '../db/index.js'
 import { config } from '../config.js'
+import { resolveInsideRoot } from '../utils/path.js'
 import { readImageFullMeta, readVideoFullMeta } from '../metadata/index.js'
 
 /** 扩展名 → 用户可读格式名（iCloud 信息面板同款口径） */
@@ -35,13 +36,15 @@ export async function registerInfoRoutes(app: FastifyInstance): Promise<void> {
   const db = getDb()
 
   app.get('/api/assets/:id/info', async (req, reply) => {
-    const { id } = req.params as { id: string }
-    const row = db.prepare(`SELECT * FROM assets WHERE id = ?`).get(Number(id)) as
+    const idNum = Number((req.params as { id: string }).id)
+    if (!Number.isInteger(idNum) || idNum <= 0) return reply.code(400).send({ error: 'invalid id' })
+    const row = db.prepare(`SELECT * FROM assets WHERE id = ?`).get(idNum) as
       | (Record<string, unknown> & { id: number; type: string; filename: string; file_path: string; date_taken: string; width: number | null; height: number | null; duration: number | null })
       | undefined
     if (!row) return reply.code(404).send({ error: 'asset not found' })
 
-    const absPath = path.join(config.libraryRoot, row.file_path)
+    const absPath = resolveInsideRoot(config.libraryRoot, row.file_path)
+    if (!absPath) return reply.code(404).send({ error: 'asset not found' })
     // 原文件被移动/删除时优雅降级（不 500）
     let sizeBytes = 0
     try {

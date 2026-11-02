@@ -123,7 +123,9 @@ function decodeCursor(cursor: string | undefined): { dateTaken: string; id: numb
   try {
     const [dateTaken, id] = Buffer.from(cursor, 'base64url').toString('utf8').split('|')
     if (!dateTaken || !id) return null
-    return { dateTaken, id: Number(id) }
+    const idNum = Number(id)
+    if (!Number.isInteger(idNum) || idNum <= 0) return null
+    return { dateTaken, id: idNum }
   } catch {
     return null
   }
@@ -175,8 +177,9 @@ export async function registerAssetRoutes(app: FastifyInstance): Promise<void> {
 
   /** 单个资产详情 + 前后邻居 id */
   app.get('/api/assets/:id', async (req, reply) => {
-    const { id } = req.params as { id: string }
-    const row = db.prepare(`SELECT * FROM assets WHERE id = ?`).get(Number(id)) as AssetDetailRow | undefined
+    const idNum = Number((req.params as { id: string }).id)
+    if (!Number.isInteger(idNum) || idNum <= 0) return reply.code(400).send({ error: 'invalid id' })
+    const row = db.prepare(`SELECT * FROM assets WHERE id = ?`).get(idNum) as AssetDetailRow | undefined
 
     if (!row) {
       return reply.code(404).send({ error: 'asset not found' })

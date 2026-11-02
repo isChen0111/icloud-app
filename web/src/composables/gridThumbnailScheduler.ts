@@ -9,6 +9,8 @@ export interface GridThumbnailScheduler {
   prioritizeNextScroll(): void
   /** 并发上限更新：以后端 /api/stats 的 thumbConcurrency 为准（防前后端漂移） */
   setMaxConcurrentRequests(n: number): void
+  /** 清理未决定时器与队列（GridScroller 卸载时调用，P2-14） */
+  dispose(): void
 }
 
 interface PendingThumbnail {
@@ -193,6 +195,18 @@ export function createGridThumbnailScheduler(
       concurrencyLimit = next
       // 上限调大后可能有余量：立即补发一轮
       if (!scrollbarDragging) requestPump()
+    },
+    dispose() {
+      // P2-14：清理未决定时器与队列（GridScroller 卸载时调用），
+      // 避免 settleTimer/dragLoadTimer 在组件销毁后仍触发并访问已卸载的滚动容器
+      if (pumpRaf !== 0) cancelAnimationFrame(pumpRaf)
+      pumpRaf = 0
+      if (settleTimer !== undefined) window.clearTimeout(settleTimer)
+      settleTimer = undefined
+      if (dragLoadTimer !== undefined) window.clearTimeout(dragLoadTimer)
+      dragLoadTimer = undefined
+      pending.clear()
+      active.clear()
     },
   }
 }

@@ -155,10 +155,17 @@ export async function registerImportRoutes(app: FastifyInstance): Promise<void> 
   app.get('/api/libraries/:id/import', async (request, reply) => {
     const id = Number((request.params as { id: string }).id)
     if (!Number.isInteger(id) || id <= 0) return reply.code(400).send({ error: 'invalid id' })
+    const resolved = resolveActiveLib(id)
+    if (resolved.error) return reply.code(resolved.error === '库不存在' ? 404 : 409).send({ error: resolved.error })
     return reply.send({ import: publicImportState() })
   })
 
-  app.delete('/api/libraries/:id/import', async (_request, reply) => {
+  app.delete('/api/libraries/:id/import', async (request, reply) => {
+    const id = Number((request.params as { id: string }).id)
+    if (!Number.isInteger(id) || id <= 0) return reply.code(400).send({ error: 'invalid id' })
+    // P2-8：DELETE 此前完全忽略 :id（永远对全局单例取消），与 GET/POST 归属校验不对称
+    const resolved = resolveActiveLib(id)
+    if (resolved.error) return reply.code(resolved.error === '库不存在' ? 404 : 409).send({ error: resolved.error })
     // 落库阶段不受理取消（C-06）：文件已归置完，中途退只会留下一半入库的照片。
     // 返回 409 让前端把按钮收起来，而不是「点了没反应」。
     if (!cancelImport()) {

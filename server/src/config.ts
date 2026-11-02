@@ -96,12 +96,6 @@ export const config = {
   scanLimit: Number(process.env.SCAN_LIMIT ?? 0),
 
   /**
-   * icloudpd 限量拉取（仅测试/验证用，正式功能不暴露）：>0 时同步命令追加 --recent N
-   * （icloudpd 官方参数：只处理最近 N 张，避免测试时拉全库）。0 = 不限制。
-   */
-  icloudpdRecent: Number(process.env.ICLOUDPD_RECENT ?? 0),
-
-  /**
    * 单文件上传大小上限（字节），供「导入本地目录」的远程上传使用。
    * 0 = 不限（默认）；可用 MAX_UPLOAD_BYTES 覆盖，防止误传超大文件。
    * ⚠️ 「不限」在 index.ts 里必须显式转成 Infinity（不能传 undefined，否则

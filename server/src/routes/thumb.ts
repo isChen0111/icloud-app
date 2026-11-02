@@ -43,6 +43,7 @@ export async function registerThumbRoutes(app: FastifyInstance): Promise<void> {
     }
 
     const assetId = Number(id)
+    if (!Number.isInteger(assetId) || assetId <= 0) return reply.code(400).send({ error: 'invalid id' })
     const row = db.prepare(`SELECT type, width, height FROM assets WHERE id = ?`).get(assetId) as
       | { type: string; width: number | null; height: number | null }
       | undefined
@@ -60,6 +61,11 @@ export async function registerThumbRoutes(app: FastifyInstance): Promise<void> {
     if (!outPath || !isCacheUsable(outPath)) {
       // 断开与真失败区分：客户端已断开时静默结束，不算生成失败（不进失败清单）
       if (clientDisconnected(req)) return reply.raw.end()
+      // P2-4：切库代际空转也会走到这里（runInteractiveThumbnail 返回 null），
+      // 此时资产已随切库不在当前库——查不到就返回 404（语义=资源不在当前库，
+      // 前端刷新后重新请求即得新库数据），而非 500（误导为生成错误且不触发重试）。
+      const stillExists = db.prepare(`SELECT 1 FROM assets WHERE id = ?`).get(assetId)
+      if (!stillExists) return reply.code(404).send({ error: 'asset not found' })
       return reply.code(500).send({ error: 'thumbnail generation failed' })
     }
 
@@ -103,13 +109,15 @@ export async function registerThumbRoutes(app: FastifyInstance): Promise<void> {
     if (!VALID_SIZES.has(size)) {
       return reply.code(400).send({ error: `size must be one of: ${[...VALID_SIZES].join(',')}` })
     }
+    const assetId = Number(id)
+    if (!Number.isInteger(assetId) || assetId <= 0) return reply.code(400).send({ error: 'invalid id' })
     const outPath = await runInteractiveThumbnail<string | null>(() => {
       // F-02 轻量版：任务开始执行时客户端已断开 → 跳过抽帧，仅计数
       if (clientDisconnected(req)) {
         registerThumbnailCancelled()
         return Promise.resolve(null)
       }
-      return ensureThumbnail(Number(id), size)
+      return ensureThumbnail(assetId, size)
     })
     if (!outPath || !isCacheUsable(outPath)) {
       // 断开与真失败区分：客户端已断开时静默结束，不算封面生成失败

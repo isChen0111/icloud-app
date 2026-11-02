@@ -14,6 +14,7 @@ import { getLibraryById } from '../db/libraries.js'
 import { getCurrentLibrary } from '../context.js'
 import { startSync, cancelSync } from '../icloudpd/sync.js'
 import { syncState, type SyncTaskState } from '../icloudpd/state.js'
+import { isImportBusy } from '../import/state.js'
 
 /** 状态对外形态（不含 pid 等内部字段） */
 function publicState(state: SyncTaskState) {
@@ -41,6 +42,10 @@ export async function registerSyncRoutes(app: FastifyInstance): Promise<void> {
     if (current?.id !== id) {
       return reply.code(409).send({ error: '只能对当前激活库执行同步，请先切换到该库' })
     }
+
+    // P2-12：与导入互斥对称——导入进行中拒绝同步（导入侧 inFlightGuard 已挡同步，
+    // 同步侧此前漏了反向挡，两个任务会同时向激活库写文件）。
+    if (isImportBusy()) return reply.code(409).send({ error: '照片导入进行中，请等待完成或取消后再同步' })
 
     const result = startSync(lib, kind)
     if (!result.ok) return reply.code(409).send({ error: result.message })

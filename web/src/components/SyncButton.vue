@@ -31,24 +31,27 @@
     </button>
 
     <!-- 空闲：同步 ▾ 菜单 -->
-    <button
-      v-else
-      class="sync-btn"
-      :class="{ disabled }"
-      type="button"
-      :aria-expanded="menuOpen"
-      @click="menuOpen = !menuOpen"
-    >
-      <span class="ico">
-        <svg viewBox="0 0 24 24" aria-hidden="true">
-          <path d="M6.5 17a4 4 0 0 1-.8-7.9A5.5 5.5 0 0 1 17 8.6a3.5 3.5 0 0 1-.5 8.4" />
-          <path d="m9.5 13 2.5 2.5 2.5-2.5M12 15.5v-6" />
+    <template v-else>
+      <button
+        class="sync-btn"
+        :class="{ disabled }"
+        type="button"
+        :aria-expanded="menuOpen"
+        @click="menuOpen = !menuOpen"
+      >
+        <span class="ico">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M6.5 17a4 4 0 0 1-.8-7.9A5.5 5.5 0 0 1 17 8.6a3.5 3.5 0 0 1-.5 8.4" />
+            <path d="m9.5 13 2.5 2.5 2.5-2.5M12 15.5v-6" />
+          </svg>
+        </span>
+        <span>iCloud 同步</span>
+        <svg class="chev" :class="{ open: menuOpen }" viewBox="0 0 12 12" aria-hidden="true">
+          <path d="m3 4.5 3 3 3-3" />
         </svg>
-      </span>
-      <span>iCloud 同步</span>
-      <svg class="chev" :class="{ open: menuOpen }" viewBox="0 0 12 12" aria-hidden="true">
-        <path d="m3 4.5 3 3 3-3" />
-      </svg>
+      </button>
+      <!-- P2-13：菜单移出主按钮，避免 <button> 嵌套 <button>（HTML 会做 DOM 修正，
+           点击菜单项冒泡回主按钮的 @click 会把菜单又翻回打开） -->
       <div v-if="menuOpen" class="sync-menu" role="menu">
         <button type="button" role="menuitem" @click="choose('full')">
           <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -66,7 +69,7 @@
           增量同步
         </button>
       </div>
-    </button>
+    </template>
   </div>
 </template>
 

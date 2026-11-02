@@ -20,6 +20,7 @@ import sharp from 'sharp'
 import type { Sharp } from 'sharp'
 import { config } from '../config.js'
 import { getDb } from '../db/index.js'
+import { resolveInsideRoot } from '../utils/path.js'
 import { ffprobeJson, runFfmpeg } from '../ffmpeg.js'
 
 sharp.concurrency(2)
@@ -191,7 +192,8 @@ async function generate(
     | undefined
   if (!row) return null
 
-  const abs = path.join(config.libraryRoot, row.file_path)
+  const abs = resolveInsideRoot(config.libraryRoot, row.file_path)
+  if (!abs) return null
 
   const target = config.thumbSizes[size]
   const quality = config.thumbQuality[size]
@@ -384,8 +386,8 @@ export async function ensureSize(assetId: number): Promise<{ width: number; heig
   if (!row) return null
   if (row.width && row.height) return { width: row.width, height: row.height }
 
-  const abs = path.join(config.libraryRoot, row.file_path)
-  if (!fs.existsSync(abs)) return null
+  const abs = resolveInsideRoot(config.libraryRoot, row.file_path)
+  if (!abs || !fs.existsSync(abs)) return null
 
   // ① sharp 直接读（支持 JPG/PNG/GIF/WebP 等）
   try {

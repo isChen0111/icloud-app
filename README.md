@@ -7,13 +7,19 @@
 ```
 icloud-app/
 ├── docs/
-│   ├── 架构设计文档.html
-│   ├── iCloudPD照片库同步-架构功能设计.html   # P0 照片库拉取/认证/多库：架构与 API 规格
-│   ├── 产品设计稿-照片库拉取同步.html          # P0 UI 设计基准（含 _shots/ 截图）
-│   ├── CONTEXT-项目上下文快照.md
-│   ├── 整体审查报告-2026-10-06.md   # 全项目代码审查：F-01~F-07 问题与修复进度
-│   └── 整体审查报告-2026-10-27.md   # 全项目代码审查：R-01~R-30 问题与修复进度（30 项已全部落地）
-├── iCloudPhoto/            # 照片库根（多库：iCloudPhoto/lib<id>/，icloudpd 输出，只读）
+│   ├── 架构设计文档.html               # 系统全景：接口/扫描/媒体处理/架构
+│   ├── CONTEXT-项目上下文快照.md        # 现状 + 决策 + 踩坑（活文档）
+│   ├── 整体审查报告-2026-11-02.md       # 全项目代码审查：P0/P1/P2 + 文档处置进度表
+│   ├── README.md                        # docs 索引
+│   └── archive/                         # 历史快照（归档后不再修改）
+│       ├── 整体审查报告-2026-10-06.md   # F-01~F-07（已完结）
+│       ├── 整体审查报告-2026-10-27.md   # R-01~R-30（30 项已全部落地）
+│       ├── 日期处理方案审查-2026-11-01.md
+│       ├── 导入功能审查与重构方案-2026-11-01.md
+│       ├── iCloudPD照片库同步-架构功能设计.html
+│       ├── 产品设计稿-照片库拉取同步.html
+│       └── CONTEXT-时间线归档-2026-11-02.md
+├── iCloudPhoto/            # 照片库根：多库 iCloudPhoto/lib<id>/，下分 icloud/（icloudpd 下载）与 import/（本地导入）
 ├── server/                 # Fastify 后端与媒体处理流水线
 │   ├── src/
 │   ├── scripts/
@@ -33,7 +39,7 @@ icloud-app/
 
 `server/` 和 `web/` 是独立项目，分别在各自目录运行 `npm ci` 安装依赖。安装后端依赖时，npm 会自动检查 FFmpeg；首次安装或文件缺失时会下载约 170MB 的套件。通常无需手动处理，下载失败时再使用后文的备用方案。
 
-**启动前准备**：应用是**多照片库**模式——照片库通过网页端创建（首页引导：命名 → 链接 iCloud → 全量拉取）。照片库根目录为项目根的 `iCloudPhoto/`（每库 `iCloudPhoto/lib<id>/`，文件夹结构固定 `YYYY/MM/DD`）；各库缓存与会话在 `server/cache/lib<id>/`，库注册表 `server/cache/meta.db`。这些路径在建库时按项目根派生并写入注册表，**不支持用环境变量改到别处**（多库下 cookie、照片目录、数据库三者绑定，单独挪其中一项会造成半迁移状态）。
+**启动前准备**：应用是**多照片库**模式——照片库通过网页端创建（首页引导：命名 → 添加照片，iCloud 拉取或导入本地目录二选一即可）。照片库根目录为项目根的 `iCloudPhoto/`（每库 `iCloudPhoto/lib<id>/`，下分 `icloud/`（icloudpd 下载，文件夹结构固定 `YYYY/MM/DD`）与 `import/`（本地目录导入，统一按 `YYYY/MM/DD` 归置）两个子目录）；各库缓存与会话在 `server/cache/lib<id>/`，库注册表 `server/cache/meta.db`。这些路径在建库时按项目根派生并写入注册表，**不支持用环境变量改到别处**（多库下 cookie、照片目录、数据库三者绑定，单独挪其中一项会造成半迁移状态）。
 
 ```powershell
 # 终端一：安装并启动后端
@@ -113,7 +119,7 @@ npm run start
 | `npm run scan` | `server/` | 手动触发一次扫描同步 |
 | `npm run dev` | `web/` | 启动前端开发服务 |
 | `npm run build` | `web/` | 构建前端生产版本 |
-| `npm test` | `server/` | 单元测试（node:test，78 用例：缩略图调度器、任务队列、扫描对账与端到端扫描、数据库迁移、接口、工具函数、视频 Range 解析、watcher 会话代数）。新增测试文件需手动加进 `package.json` 的 test 列表——该脚本是显式文件清单，不是 glob |
+| `npm test` | `server/` | 单元测试（node:test，162 用例：缩略图调度器、任务队列、扫描对账与端到端扫描、数据库迁移、接口、工具函数、视频 Range 解析、watcher 会话代数、导入流水线）。新增测试文件需手动加进 `package.json` 的 test 列表——该脚本是显式文件清单，不是 glob |
 | `npm run postinstall` | `server/` | 安装/解压 BtbN ffmpeg full（含 libheif）+ icloudpd exe |
 
 ## API（开发参考）
@@ -138,7 +144,12 @@ npm run start
 | GET | /api/libraries | 照片库列表（含激活标记/链接状态/账号/目录/照片视频计数） |
 | POST | /api/libraries | 创建照片库（body: `{ name }`；已有激活库时不自动切换） |
 | PATCH | /api/libraries/:id/active | 切换激活库（同步执行中或扫描进行中 409） |
+| PATCH | /api/libraries/:id/config | 更新单库同步参数（body: `{ untilFound, recentLimit }`） |
 | DELETE | /api/libraries/:id | 删除照片库（body: `{ removePhotos }`；必删注册+缓存，勾选才删本地照片；同步执行中或扫描进行中 409） |
+| POST | /api/libraries/:id/import/scan | 从本机目录导入照片（body: `{ path, mode: copy\|move }`；仅激活库，目录守卫拒绝库根/缓存等危险路径） |
+| POST | /api/libraries/:id/import/upload | 上传文件导入（multipart，流式写临时目录，逐文件容错） |
+| GET | /api/libraries/:id/import | 导入任务状态轮询 |
+| DELETE | /api/libraries/:id/import | 取消导入（入库阶段不受理，返回 409） |
 | POST | /api/auth | 开始 iCloud 链接（spawn icloudpd webui auth-only） |
 | POST | /api/auth/input | 输入密码/验证码（桥接 webui；防重锁） |
 | GET | /api/auth | 认证状态轮询（starting/密码/校验/验证码/完成/失败） |
@@ -151,6 +162,7 @@ npm run start
 
 - 按日期浏览照片、实况照片和视频，支持搜索、日期跳转和详情浏览。
 - **多照片库（P0）**：网页端创建/切换/删除照片库（右上角库切换下拉 + 设置中心）；链接 iCloud 账号（邮箱/密码/双重验证码，cookie 会话保存，过期可重新链接）；全量拉取 / 增量同步（单按钮四态，全局单任务，多库「等待执行」排队）；库名只是别名，目录按 `lib<id>` 稳定隔离。
+- **导入本地照片目录**：从本机目录（复制或移动）或浏览器上传导入照片/视频，统一按拍摄日期归置到 `import/YYYY/MM/DD`，与 iCloud 下载的照片同库浏览；冲突自动改名、无 EXIF 时补写拍摄日期、进度实时可见。
 - 照片墙采用虚拟滚动和图片懒加载；慢速滚动与滚轮操作持续加载，网格图并发上限以后端配置为准（默认 8，经 `/api/stats.thumbConcurrency` 同步）；拖动滚动条时每 250ms 检查一次位移，快速跨屏时跳过中途区域，缓慢移动（每次检查不超过约 1/5 屏）或停住时渐进加载当前视口，松开后优先加载最终视口，再补邻近图片。源文件被覆盖后，扫描比对签名（size+mtime）使旧缩略图失效重建，URL 的 rev（= 文件 mtime）自动变化，浏览器绕过 1 年强缓存强制拉新图（F-03 缓存失效闭环）。
 - 顶栏资源状态提供照片库扫描数量和预览图后台处理进度；扫描文件数与照片/视频资产数分别按文件和入库资产统计。后台补图与用户请求共享最多 8 个并发槽位：后台任务始终入队但优先级最低，照片墙、搜索与详情触发的交互请求插队先执行，交互任务不足时后台填满剩余槽位——不需要等待时间窗口，浏览过程中也会持续消化后台任务；已开始运行的任务不会被抢占。失败项可点击查看原因、单项/批量重试或忽略提醒；忽略不会删除原文件，且可随时恢复提醒。
 - 实况照片可按住播放；视频支持封面预览和流式播放。

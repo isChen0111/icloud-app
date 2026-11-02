@@ -511,7 +511,6 @@ onMounted(() => {
   font-size: 13px;
   word-break: break-all;
 }
-.auth-fixed-note { margin: 0; color: var(--text-3); font-size: 10.5px; line-height: 1.5; }
 .auth-stage {
   display: flex;
   align-items: center;

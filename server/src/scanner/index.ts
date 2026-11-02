@@ -577,7 +577,12 @@ async function doRunScan(
   if (changedIds.length > 0) {
     for (const id of changedIds) {
       for (const size of ['grid', 'detail'] as const) {
-        fs.rmSync(thumbCachePath(size, id), { force: true })
+        // P2-2：单个缓存文件被占用（EPERM）不应中断整轮扫描——失败跳过，下次扫描/对账再清理
+        try {
+          fs.rmSync(thumbCachePath(size, id), { force: true })
+        } catch (err) {
+          console.warn(`[scan] 删除签名变化的缩略图缓存失败（跳过）: ${id}/${size}`, (err as Error).message)
+        }
       }
     }
     console.log(`[scan] 源文件签名变化：${changedIds.length} 个资产的缩略图缓存已失效并重新入队`)
@@ -707,8 +712,13 @@ function cleanOrphanThumbs(validIds: Set<number>): void {
       if (!name.endsWith('.webp')) continue
       const id = Number(name.slice(0, -'.webp'.length))
       if (!Number.isInteger(id) || !validIds.has(id)) {
-        fs.rmSync(path.join(dir, name), { force: true })
-        console.log(`[scan] 清理孤儿缩略图: ${size}/${name}`)
+        // P2-2：单个孤儿缓存被占用（EPERM）不应中断整轮扫描——失败跳过，下次对账再清理
+        try {
+          fs.rmSync(path.join(dir, name), { force: true })
+          console.log(`[scan] 清理孤儿缩略图: ${size}/${name}`)
+        } catch (err) {
+          console.warn(`[scan] 清理孤儿缩略图失败（跳过）: ${size}/${name}`, (err as Error).message)
+        }
       }
     }
   }

@@ -80,7 +80,14 @@ function resolveToolPaths(): { ffmpegPath: string; ffprobePath: string } {
   )
 }
 
-const tools = resolveToolPaths()
+// P2-11：模块加载期不解析工具路径——找不到 ffmpeg 时抛错会发生在 import 阶段，
+// 那时 main().catch 还没接管，进程直接崩且无任何日志。改为惰性解析：
+// 首次真正调用 runFfmpeg/ffprobeJson 时才 throw，错误进入调用方 catch（可提示/降级）。
+let tools: { ffmpegPath: string; ffprobePath: string } | null = null
+function getTools(): { ffmpegPath: string; ffprobePath: string } {
+  if (!tools) tools = resolveToolPaths()
+  return tools
+}
 
 export interface RunProcessOptions {
   /** 是否收集 stdout（ffprobe -of json 需要；ffmpeg 输出不收集） */
@@ -158,13 +165,13 @@ export function runProcess(binaryPath: string, args: string[], options: RunProce
 
 /** 执行 FFmpeg 命令；args 不应包含可执行文件本身。超时由 config.ffmpegTimeoutMs 控制（F-07）。 */
 export async function runFfmpeg(args: string[]): Promise<void> {
-  await runProcess(tools.ffmpegPath, args, { timeoutMs: config.ffmpegTimeoutMs })
+  await runProcess(getTools().ffmpegPath, args, { timeoutMs: config.ffmpegTimeoutMs })
 }
 
 /** 读取 FFprobe JSON 元数据。超时由 config.ffprobeTimeoutMs 控制（F-07）。 */
 export async function ffprobeJson(filePath: string): Promise<FfprobeResult> {
   const output = await runProcess(
-    tools.ffprobePath,
+    getTools().ffprobePath,
     ['-v', 'error', '-show_format', '-show_streams', '-of', 'json', filePath],
     { collectStdout: true, timeoutMs: config.ffprobeTimeoutMs },
   )
