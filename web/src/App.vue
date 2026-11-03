@@ -16,10 +16,12 @@ import {
   switchLibrary,
 } from './api/client'
 import { useAssetStore } from './stores/assets'
+import { useSearchStore } from './stores/search'
+import { useSelectionStore } from './stores/selection'
 import { useTaskStore } from './stores/tasks'
 import { useThemeStore } from './stores/theme'
 import type { ThumbnailFailure, LibraryInfo } from './types'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import OnboardingView from './components/OnboardingView.vue'
 import AuthDialog from './components/AuthDialog.vue'
 import SettingsView from './components/SettingsView.vue'
@@ -29,7 +31,10 @@ import SyncButton from './components/SyncButton.vue'
 const tasks = useTaskStore()
 const stats = computed(() => tasks.stats)
 const route = useRoute()
+const router = useRouter()
 const assetStore = useAssetStore()
+const searchStore = useSearchStore()
+const selectionStore = useSelectionStore()
 
 /** P0：照片库引导 / 认证 / 同步按钮 */
 const onboardingOpen = ref(false)
@@ -92,16 +97,53 @@ function toggleLibMenu(): void {
   if (libMenuOpen.value) void refreshLibraries()
 }
 
-/** 切换激活库：成功后整页刷新（切库 = 整页初始化，设计稿 §3） */
+/**
+ * 视图重建纪元：+1 等价于「把整棵视图树重新挂一遍」。
+ *
+ * 后端切库是热切换（停旧 watcher → 清缩略图队列 → 关旧 DB → 重开新库 → 扫新库 → 启 watcher），
+ * 原先前端靠 location.reload() 对齐——但整页刷新会把设置页一起关掉，用户切完库就"被弹出"，
+ * 想接着改另一张卡的配置还得重新点进来。现在改为就地重建，刷新能重置的状态逐一手动重置
+ * （见 applyLibrarySwitch），挂到 KeepAlive 的 key 上是为了**连 KeepAlive 缓存一起丢弃**：
+ * 只给 <component> 加 key 会把旧 GridView 实例留在缓存里，反复切库会累积 N 份已加载数据。
+ */
+const libraryEpoch = ref(0)
+
+/**
+ * 切库后的前端重建（替代 location.reload）。
+ *
+ * 刷新页面能重置的东西分四类，缺任何一类都会出现「后端已换库、页面还是旧库」的错位：
+ *  ① 路由——详情页 /photo/:id 的 id 属于旧库，切库后大概率不存在 → 先回照片墙
+ *  ② 全局 store——assets（月份骨架 + 页缓存）、search（结果集与词）、selection（选中集）
+ *  ③ 组件内部状态——GridView 的搜索词/hasSearched、GridScroller 的滚动位置与日期面板，靠 epoch 重建
+ *  ④ 顶层快照——顶栏库列表、tasks 的 stats
+ *
+ * 顺序不能反：先回路由（否则被重建的是详情页），再清 store（否则重建后的 init 会命中旧缓存，
+ * 照片墙继续显示旧库），最后 epoch++。
+ */
+async function applyLibrarySwitch(): Promise<void> {
+  if (route.name === 'detail') {
+    await router.replace({ name: 'grid' }).catch(() => {
+      // 已在该路由 / 导航被打断：忽略，后续重建照常进行
+    })
+  }
+  assetStore.reset()
+  searchStore.setQuery('')
+  selectionStore.clearSelection()
+  libraryEpoch.value += 1
+  await Promise.all([refreshLibraries(), tasks.refresh({ force: true })])
+}
+
+/** 切换激活库（顶栏下拉）：成功后就地重建，不再整页刷新 */
 async function pickLibrary(id: number): Promise<void> {
   libMenuOpen.value = false
   try {
     await switchLibrary(id)
-    location.reload()
   } catch (err) {
     syncError.value = err instanceof Error ? err.message : String(err)
     void tasks.refresh({ force: true })
+    return
   }
+  await applyLibrarySwitch()
 }
 
 function openSettings(): void {
@@ -1011,7 +1053,7 @@ onBeforeUnmount(() => {
 
       <span class="spacer" />
 
-      <!-- P0 设计稿 §3：右上角库切换下拉（当前库名 ▾；切库 = 整页初始化） -->
+      <!-- P0 设计稿 §3：右上角库切换下拉（当前库名 ▾；切库 = 就地重建视图，不刷新整页） -->
       <div class="lib-menu-wrap">
         <button class="lib-trigger" type="button" :aria-expanded="libMenuOpen" @click="toggleLibMenu">
           <span class="lib-trigger-name">{{ stats?.library?.name ?? '照片库' }}</span>
@@ -1087,7 +1129,7 @@ onBeforeUnmount(() => {
          详情页不缓存（大图 DOM 无需常驻） -->
     <main class="view-host">
       <RouterView v-slot="{ Component }">
-        <KeepAlive :include="['GridView']">
+        <KeepAlive :include="['GridView']" :key="libraryEpoch">
           <component :is="Component" @deleted="onAssetsDeleted" />
         </KeepAlive>
       </RouterView>
@@ -1218,6 +1260,7 @@ onBeforeUnmount(() => {
       @open-auth="openAuth"
       @new-library="closeSettings(); onboardingOpen = true"
       @library-deleted="onLibraryDeleted"
+      @library-switched="applyLibrarySwitch"
     />
   </div>
 </template>

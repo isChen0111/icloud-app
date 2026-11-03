@@ -266,7 +266,7 @@ CREATE VIRTUAL TABLE assets_fts USING fts5(
 <ul>
   <li><b>注册表</b>：应用级 <code>server/cache/meta.db</code>（所有库共享，不随激活库切换；随 cache 清理重建 = 重新注册库，可接受）。表 <code>libraries</code>：name（唯一别名）/ library_root / cache_dir / cookie_dir / account / auth_status（none|authed|expired）/ last_sync_at / active（单活跃标记）。</li>
   <li><b>目录分离（库名只是别名，不参与路径）</b>：照片根 <code>&lt;项目根&gt;/iCloudPhoto/lib&lt;id&gt;</code>（icloudpd 下载目标，文件夹结构 <code>%Y/%m/%d</code> 锁定不可改）；缓存 <code>server/cache/lib&lt;id&gt;</code>（library.db / thumbs / cookies）；cookie <code>server/cache/lib&lt;id&gt;/cookies</code>。</li>
-  <li><b>单活跃库模型</b>：同一时间仅一个库 <code>active=1</code>；切库（<code>PATCH /api/libraries/:id/active</code>）= 停旧库任务 → 清队列 → 关旧库 DB → 覆写全局 config 指向新库 → 重扫，前端整页刷新。<b>新建库不自动激活</b>（已有激活库时仅注册，主页面/下拉/设置中心保持原库；首次建库才激活）。</li>
+  <li><b>单活跃库模型</b>：同一时间仅一个库 <code>active=1</code>；切库（<code>PATCH /api/libraries/:id/active</code>）= 停旧库任务 → 清队列 → 关旧库 DB → 覆写全局 config 指向新库 → 重扫，前端<b>就地重建</b>：回照片墙路由（详情页 <code>:id</code> 属于旧库）→ 清 assets/search/selection 三 store → KeepAlive 换 <code>key</code> 重建视图树 → 重拉库列表与 <code>stats</code>。旧实现是 <code>location.reload()</code>，会把设置页一起关掉（用户切完库被弹回照片墙），现仅<b>删除激活库</b>还整页刷新。<b>新建库不自动激活</b>（已有激活库时仅注册，主页面/下拉/设置中心保持原库；首次建库才激活）。</li>
   <li><b>同步全局单任务</b>：全量/增量任务一次只有一个（内存态 <code>icloudpd/state.ts</code>，不建任务表）；只能对当前激活库发起（其他库 409 → 前端「等待执行…」）。删除库 = 必删注册 + <code>cache/lib&lt;id&gt;</code>，勾选 <code>removePhotos</code> 才删 <code>iCloudPhoto/lib&lt;id&gt;</code>；删激活库自动切剩余最小 id 库/删最后一个回默认路径；删除/切库后重置全局同步状态（防旧库「同步完成」残留）。</li>
 </ul>
 
@@ -525,7 +525,7 @@ F:\iPhone\icloud-app\
 ├─ web/
 │  ├─ src/
 │  │  ├─ views/GridView.vue / DetailView.vue   <span class="c"># 照片墙（与搜索共用 GridScroller 虚拟滚动）+ 详情</span>
-│  │  ├─ components/GridScroller.vue / GridItem.vue / DateNavPanel.vue / DeleteConfirm.vue / SettingsView.vue / AuthDialog.vue  <span class="c"># 虚拟滚动主体 + 设置中心（库管理/照片库配置锁死只读）+ 认证分步状态机面板（步骤条/三态输入/结果动画/校验禁点/autoStart）</span>
+│  │  ├─ components/GridScroller.vue / GridItem.vue / DateNavPanel.vue / DeleteConfirm.vue / SettingsView.vue / AuthDialog.vue  <span class="c"># 虚拟滚动主体 + 设置中心（库管理·当前库置顶高亮/照片库配置锁死只读）+ 认证分步状态机面板（步骤条/三态输入/结果动画/校验禁点/autoStart）</span>
 │  │  ├─ components/OnboardingView.vue / ImportDialog.vue / ConfirmDialog.vue / SyncButton.vue  <span class="c"># 首次引导（双卡片：iCloud 同步 / 导入本地目录）+ 导入弹窗（本机迁移·上传）+ 通用确认框 + 同步按钮（主界面与设置中心共用同一状态机）</span>
 │  │  ├─ components/detail/LivePhoto.vue / VideoStage.vue
 │  │  ├─ composables/useLazyImage.ts / gridThumbnailScheduler.ts   <span class="c"># 懒加载（300px 预热）+ 前端缩略图调度器（并发上限跟随后端 config.thumbConcurrency，可见优先 + rAF + 拖条按速度拆开）</span>
