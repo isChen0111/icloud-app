@@ -315,12 +315,21 @@ export async function registerLibraryRoutes(app: FastifyInstance): Promise<void>
     // 期间整个服务无响应（审查 P2）。
     // 删除失败也要把新库正常启动起来（否则服务处于「已切库但没监听」的半瘫状态），
     // 因此这里先捕获错误，收尾之后再决定返回码。
+    //
+    // maxRetries（2026-11-03）：Windows 上目录里有文件正被别的线程持有句柄时会 EPERM，
+    // 而 fsp.rm 的默认 maxRetries 是 0 —— 一次失败直接抛，用户看到「删除库目录失败」
+    // 却不知道重试一下就好。最现实的持有者就是仍在收尾的缩略图任务：删激活库时
+    // prepareLibrarySwitch() 只把队列换代（clearThumbnailQueue），已经跑起来的
+    // ≤8 个任务不会中断，sharp 写盘的毫秒级窗口可能正好和 rm 撞上。
+    // 3 次线性退避（200 / 400 / 600ms，最坏多等 1.2 秒）足以吃掉这种瞬时占用。
+    // 注意：只有 recursive:true 时这个选项才生效。
+    const RM_RETRY = { maxRetries: 3, retryDelay: 200 } as const
     let deleteError: Error | null = null
     try {
-      await fsp.rm(lib.cache_dir, { recursive: true, force: true })
+      await fsp.rm(lib.cache_dir, { recursive: true, force: true, ...RM_RETRY })
       // 本地照片副本：仅勾选时删（云端原片不动）
       if (removePhotos) {
-        await fsp.rm(lib.library_root, { recursive: true, force: true })
+        await fsp.rm(lib.library_root, { recursive: true, force: true, ...RM_RETRY })
       } else {
         // 未勾选时：照片根若是建库预建的空目录（2026-10-28 起建库会预建），顺手清掉避免留空壳。
         // 用 rmdir（非递归）而不是 rm：目录里还有照片时必然抛 ENOTEMPTY，
