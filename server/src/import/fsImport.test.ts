@@ -90,6 +90,63 @@ test('importDirectory：copy 模式按日期归置 + 实况同目录 + 保留源
   }
 })
 
+test('importDirectory：onFileSettled 只在文件真正落位后回调，判重跳过不回调', async () => {
+  const dir = tempDir('import-fs-')
+  try {
+    const src = path.join(dir, 'src')
+    const target = path.join(dir, 'import')
+    for (const name of ['A.jpg', 'B.jpg', 'C.jpg']) await writeJpeg(path.join(src, name), 4)
+
+    resetImportState()
+    importState.status = 'running'
+    const calls: number[] = []
+    /** 回调发生时目标目录里的文件数——必须正好等于已处理数（说明文件已落位且是最终形态） */
+    const landedAtCall: number[] = []
+    await importDirectory(
+      { libraryId: 1, sourceDir: src, targetRoot: target, mode: 'copy', source: 'local' },
+      undefined,
+      {
+        onFileSettled: (processed) => {
+          calls.push(processed)
+          landedAtCall.push(countMediaFiles(target))
+        },
+      },
+    )
+
+    assert.deepEqual(calls, [1, 2, 3], '每个落位成功的文件回调一次，序号单调')
+    assert.deepEqual(landedAtCall, [1, 2, 3], '回调时必须已经落位（它据此决定要不要派发扫描）')
+
+    // 第二次导入整个目录：全部判重跳过，没有产生新文件 → 一次都不该回调
+    calls.length = 0
+    resetImportState()
+    importState.status = 'running'
+    await importDirectory(
+      { libraryId: 1, sourceDir: src, targetRoot: target, mode: 'copy', source: 'local' },
+      undefined,
+      { onFileSettled: (processed) => calls.push(processed) },
+    )
+    assert.equal(importState.skipped, 3)
+    assert.deepEqual(calls, [], '跳过的不产生新文件，不应触发扫描')
+  } finally {
+    resetImportState()
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+/** 目标目录下已落位的媒体文件数（递归） */
+function countMediaFiles(root: string): number {
+  let count = 0
+  const walk = (dir: string): void => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name)
+      if (entry.isDirectory()) walk(full)
+      else if (/\.(jpe?g|heic|mov|mp4)$/i.test(entry.name)) count++
+    }
+  }
+  if (fs.existsSync(root)) walk(root)
+  return count
+}
+
 test('importDirectory：move 模式导入后删除源文件', async () => {
   const dir = tempDir('import-fs-')
   try {

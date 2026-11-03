@@ -105,6 +105,22 @@ export const config = {
   scanMinIntervalMs: Number(process.env.SCAN_MIN_INTERVAL_MS ?? 5000),
 
   /**
+   * 导入归置期间派发周期扫描的最小「新增文件数」（0 = 关闭周期扫描）。
+   *
+   * 两个阈值是「且」的关系：时间控节奏，文件数只防「一两个文件也扫一轮全库」。
+   * 单看文件数会被快盘绕过（几秒触发一次，照片墙反复重建）；单看时间又会做无用扫描。
+   */
+  importScanEveryFiles: Number(process.env.IMPORT_SCAN_EVERY_FILES ?? 100),
+
+  /**
+   * 导入归置期间两次周期扫描的最小间隔（毫秒）。
+   *
+   * 20 秒是「首图尽快出现」与「别和拷贝抢 IO」之间的折中：60 秒意味着用户对着空墙
+   * 等一分钟，边导边看的意义就没了；太密则每轮全库遍历会和 fs.cp 争盘。
+   */
+  importScanMinIntervalMs: Number(process.env.IMPORT_SCAN_MIN_INTERVAL_MS ?? 20_000),
+
+  /**
    * 单文件上传大小上限（字节），供「导入本地目录」的远程上传使用。
    * 0 = 不限（默认）；可用 MAX_UPLOAD_BYTES 覆盖，防止误传超大文件。
    * ⚠️ 「不限」在 index.ts 里必须显式转成 Infinity（不能传 undefined，否则

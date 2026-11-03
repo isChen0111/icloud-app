@@ -6,7 +6,9 @@
  * 但反向不互斥——同步可以在导入进行中启动（审查 C-05/P2-12，尚未修）。
  *
  * 导入期间停 watcher（决策 #9）：归置文件会向 import/ 目录大量写入，若 watcher 开着，
- * 每次写入都会触发防抖扫描，与导入结束后的统一 runScan 互相踩。停掉后统一扫一次即可。
+ * `awaitWriteFinish` 会为每个待确认文件每 100ms 轮询一次、连查 2s（每秒落几百个文件时
+ * 就是上万次 stat），而且事件不停把它压成一串重复的全库扫描。停掉后由下面的
+ * **周期扫描触发器**按固定节奏扫（每 N 个文件 + 至少 M 秒，见 importScanEveryFiles）。
  *
  * 运行令牌（审查 C-01）：每次启动分配一个令牌，流水线内部的进度/终态写回都以它为准。
  * 本文件的收尾动作（runScan / 恢复 watcher）同样校验令牌——若已被新任务接管，
@@ -22,7 +24,8 @@ import {
   requestImportCancel,
 } from './state.js'
 import { stopWatcher, startWatcher } from '../scanner/watcher.js'
-import { runScan } from '../scanner/index.js'
+import { runScan, scanProgress } from '../scanner/index.js'
+import { config } from '../config.js'
 import { libraryImportDir, type LibraryRow } from '../db/libraries.js'
 import type { ImportFailure, ImportMode, ImportOptions } from './types.js'
 import { cleanImportTempDir } from './upload.js'
@@ -44,12 +47,57 @@ function targetRootOf(lib: LibraryRow): string {
 }
 
 /**
- * 核心流水线：停 watcher → 归置文件 → runScan 落库 → 恢复 watcher。
- * 无论归置成功/失败/取消，都做一次 runScan（把已归置的文件入库），最后恢复 watcher。
+ * 归置期间的周期扫描触发器（2026-11-03，为「边导边看」而加）。
  *
- * 终态归属（审查 C-06）：`status`/`finishedAt` 一律在这里、**在 runScan 之后**才写。
- * 归置结束就报「导入完成」是假完成——照片盘上有了、库里还没有，前端一刷新就是空墙。
+ * 目标：导入几万张时不必等归置全部结束才在照片墙看到第一张。
+ *
+ * 做法：每落位 N 个文件、且距上次派发超过 M 秒，派发一次 `runScan('import')`。
+ * 为什么是「且」而不是「或」：只看文件数，快盘上会几秒触发一次、把照片墙反复重建；
+ * 只看时间又会被「几个文件也要扫一轮全库」浪费。时间控节奏、文件数只防抖。
+ *
+ * 为什么 fire-and-forget 而不是 await：await 会让归置在每次触发点停顿一整轮全库扫描
+ * （2 万库约 1~2 秒 × 几十次），导入总时长明显变长。扫描之间的互斥由 `runScan` 内部的
+ * `scanChain` 保证，这里只需要一个单飞标记，避免把请求堆进链里。
+ *
+ * 丢轮不影响正确性：归置结束时还会 `await runScan()` 做最终对账，周期扫描只负责「早点看到」。
+ * 失败也只记日志——周期扫描失败不该让整个导入变成 error。
+ */
+function createPeriodicScanTrigger(): { onFileSettled: (processed: number) => void } {
+  let running = false
+  let lastDispatchAt = 0
+  let lastProcessed = 0
+  return {
+    onFileSettled(processed: number): void {
+      if (config.importScanEveryFiles <= 0) return // 0 = 关闭（也可用来在测试里关掉）
+      if (running) return
+      if (processed - lastProcessed < config.importScanEveryFiles) return
+      if (Date.now() - lastDispatchAt < config.importScanMinIntervalMs) return
+      // 已有扫描在跑（比如切库后的首扫）：跳过这轮，等下一次触发或结尾的全量扫描
+      if (scanProgress.status === 'scanning') return
+      running = true
+      lastDispatchAt = Date.now()
+      lastProcessed = processed
+      void runScan('import')
+        .catch((err: unknown) => {
+          console.warn('[import] 周期扫描失败（不影响导入）:', (err as Error).message)
+        })
+        .finally(() => {
+          running = false
+        })
+    },
+  }
+}
+
+/**
+ * 核心流水线：停 watcher → 归置文件（期间按阈值周期扫描）→ 最终 runScan 落库 → 恢复 watcher。
+ * 无论归置成功/失败/取消，都做一次最终 runScan（把已归置的文件全部入库），最后恢复 watcher。
+ *
+ * 终态归属（审查 C-06）：`status`/`finishedAt` 一律在这里、**在最终 runScan 之后**才写。
+ * 归置结束就报「导入完成」是假完成——周期扫描最多只入库了一部分，前端一刷新可能还是空墙。
  * 中间这段用 `phase='scanning'` + 文案说明，前端据此继续轮询、隐藏取消按钮。
+ *
+ * 注意：周期扫描**不改** `importState.phase`，全程保持 `copying`。`phase === 'scanning'`
+ * 在前端与 `requestImportCancel` 里都是「不可取消」的语义，归置期间必须仍可取消。
  */
 async function runImportPipeline(opts: ImportOptions, token: number): Promise<void> {
   /** 是否仍持有令牌（被新任务接管后，收尾动作一律交给新任务） */
@@ -64,7 +112,9 @@ async function runImportPipeline(opts: ImportOptions, token: number): Promise<vo
     try {
       // 清理上次中断残留的 .part（C-09 的原子写会留下残体）
       await cleanupPartFiles(opts.targetRoot)
-      const result = await importDirectory(opts, token)
+      // 触发器建在本次流水线闭包内：单飞标记随任务销毁，不会跨任务残留
+      const periodicScan = createPeriodicScanTrigger()
+      const result = await importDirectory(opts, token, periodicScan)
       if (!owns()) return
       // 阶段推进交给下方统一处理
       pendingResult = result
@@ -89,8 +139,9 @@ async function runImportPipeline(opts: ImportOptions, token: number): Promise<vo
         : '正在入库…'
     let scanError: Error | null = null
     try {
-      // runScan 与其他扫描源串行（C-05），这里排队等前一轮结束即可
-      await runScan('manual')
+      // runScan 与其他扫描源串行（C-05），这里排队等前一轮结束即可。
+      // source 用 'import'：日志与时序排查要能分清「归置期间补扫」与「人为点扫描」。
+      await runScan('import')
     } catch (err) {
       scanError = err as Error
       console.error('[import] 落库扫描失败:', err)
