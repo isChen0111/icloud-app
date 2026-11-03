@@ -170,11 +170,14 @@ const visibleFailures = computed(() =>
   failureItems.value.filter((item) => (failureFilter.value === 'ignored' ? item.ignored === 1 : item.ignored === 0)),
 )
 /** 预览图行图标配色：跟随 thumbPhase（不是 scan.status）——同步期间批次照常在跑时
- *  要亮成活跃蓝，否则「正在生成」配一个静默灰点，正是本次要修的错位感 */
+ *  要亮成活跃蓝，否则「正在生成」配一个静默灰点，正是本次要修的错位感。
+ *  ready 走 done（绿底）：完成态若还是灰点，右侧却是绿色对勾，两个信号自相矛盾 */
 const thumbnailIconTone = computed(() => {
   switch (thumbPhase.value) {
     case 'preparing': return 'active'
     case 'failed': return 'warning'
+    case 'ready': return 'done'
+    // scanning（批次还没建立）/ empty（没有要生成的项目）都不是「完成」，保持中性
     default: return 'neutral'
   }
 })
@@ -212,7 +215,9 @@ const importCancelling = computed(() => importState.value?.cancelRequested === t
 const importPhaseText = computed(() => {
   const i = importState.value
   if (!i) return '正在导入新照片'
-  if (i.phase === 'scanning') return '正在写入照片库'
+  // 落库阶段只报「归置的结果」，过程交给扫描行——此前这里写「正在写入照片库 /
+  // 正在建立索引」，与扫描行的「照片库扫描中 / 更新图库」是同一个 runScan 的两套措辞
+  if (i.phase === 'scanning') return '照片已归置完成'
   if (i.cancelRequested) return '正在取消导入'
   if (importPercent.value === null) return '正在准备导入'
   return '正在导入新照片'
@@ -229,9 +234,8 @@ const importSummary = computed(() => {
 const importCountText = computed(() => {
   const i = importState.value
   if (!i) return ''
-  if (i.phase === 'scanning') {
-    return `文件已归置完成，正在建立索引（${numberFormat.format(i.processedFiles)} 个）`
-  }
+  // 落库阶段只给结果（共导入多少），进度看扫描行，避免同一件事两处各说一遍
+  if (i.phase === 'scanning') return `共 ${numberFormat.format(i.processedFiles)} 个文件`
   if (i.totalFiles <= 0) return '正在遍历源目录，统计待导入的文件'
   const parts = [
     `${numberFormat.format(i.processedFiles)} / ${numberFormat.format(i.totalFiles)}`,
@@ -258,6 +262,19 @@ async function cancelImportRun(): Promise<void> {
   }
 }
 
+/**
+ * 落库中的一句话——顶栏摘要与浮层大标题的**唯一来源**。
+ *
+ * 之前「正在下载新照片」在 statusSummary 与 headingTitle 里各硬编码一次，靠人工
+ * 保持一致；导入那边又是第三套（importPhaseText / importSummary）。这里收成一处：
+ * 带百分比的给紧凑的顶栏，不带百分比的给大标题（大标题下还有同步按钮与状态行，
+ * 再塞百分比会挤）。
+ */
+function landingSentence(withPercent: boolean): string {
+  if (!tasks.importBusy) return '正在下载新照片'
+  return withPercent ? importSummary.value : importPhaseText.value
+}
+
 const statusSummary = computed(() => {
   if (!stats.value) return tasks.online ? '资源状态暂不可用' : '正在连接照片库…'
 
@@ -268,9 +285,7 @@ const statusSummary = computed(() => {
   if (scan.status === 'error') return '照片库扫描失败'
   // 落库优先于「已同步」：搬运文件时图库在变，不能显示成静止的已完成状态。
   // 导入要说清进度（关掉导入弹窗后，这行是唯一的常驻可见位置）
-  if (landingBusy.value) {
-    return tasks.importBusy ? importSummary.value : '正在下载新照片'
-  }
+  if (landingBusy.value) return landingSentence(true)
   if (scan.status === 'idle') return '等待照片库检查'
   if (scan.status === 'done' && thumbnails.status === 'preparing') {
     const percent = thumbnails.total > 0
@@ -337,20 +352,29 @@ const scanHint = computed(() => {
     case 'scanning':
       return '检查本机文件变化并更新图库'
     case 'waiting':
+      // 落库期间扫描行不再只说「待开始」：右侧值直接给「现在能看多少」，
+      // 说明文字写清下一步会做什么
       return tasks.importBusy ? '导入的照片归置完成后会自动扫描' : '同步下载完成后会自动扫描'
     case 'error':
       return '本次扫描中断，资源计数可能尚未完整'
     case 'idle':
       return '后端启动后会自动检查照片库'
-    default:
-      return `最近一次扫描共检查 ${numberFormat.format(stats.value?.scan.totalFiles ?? 0)} 个媒体文件`
+    default: {
+      // 只有总量不够：用户刚导完一大批，最想知道的是「这次进去了多少」
+      const scan = stats.value?.scan
+      const added = scan?.assetsAdded ?? 0
+      const base = `最近一次扫描共检查 ${numberFormat.format(scan?.totalFiles ?? 0)} 个媒体文件`
+      return added > 0 ? `${base} · 新增 ${numberFormat.format(added)} 项` : base
+    }
   }
 })
 
 const scanIconTone = computed(() => {
   if (scanPhase.value === 'scanning' || scanPhase.value === 'waiting') return 'active'
   if (scanPhase.value === 'error') return 'error'
-  return 'neutral'
+  // 完成态用绿底：右侧本来就是绿色对勾，灰底 + 绿勾是两个互相矛盾的信号
+  if (scanPhase.value === 'done') return 'done'
+  return 'neutral' // idle：还没开始，保持中性
 })
 
 /* ---------- 预览图行：自己的生命期，不挂在 scanPhase 上（2026-11-03 修） ----------
@@ -371,7 +395,9 @@ type ThumbPhase = 'scanning' | 'preparing' | 'failed' | 'ready' | 'empty'
 const thumbPhase = computed<ThumbPhase>(() => {
   const t = stats.value?.thumbnails
   if (!t) return 'scanning'
-  if (scanPhase.value === 'scanning') return 'scanning' // 批次尚未建立
+  // 直接看 scan.status，不绕 scanPhase：这一行只关心「批次建立了没有」，
+  // 而 scanPhase 还夹着 landingBusy（落库中→waiting）这种与本行无关的语义
+  if (stats.value?.scan.status === 'scanning') return 'scanning'
   if (t.status === 'preparing') return 'preparing'
   if (t.failed > 0) return 'failed'
   if (t.total > 0) return 'ready'
@@ -406,15 +432,13 @@ const thumbHint = computed(() => {
   }
 })
 
-/** 浮层大标题（与顶栏 statusSummary 同口径：落库中要照实说在忙什么） */
+/** 浮层大标题（与顶栏 statusSummary 同口径：落库中要照实说在忙什么，见 landingSentence） */
 const headingTitle = computed(() => {
   const scan = stats.value?.scan
   if (!scan) return '正在连接照片库'
   if (scan.status === 'scanning') return '正在扫描照片库'
   if (scan.status === 'error') return '照片库扫描失败'
-  if (landingBusy.value) {
-    return tasks.importBusy ? importPhaseText.value : '正在下载新照片'
-  }
+  if (landingBusy.value) return landingSentence(false)
   if (scan.status === 'idle') return '等待扫描启动'
   if (thumbPhase.value === 'preparing') return '正在生成预览图'
   return '照片库已同步'
@@ -422,6 +446,15 @@ const headingTitle = computed(() => {
 
 /* ---------- P0 同步按钮（视觉/状态机统一在共享组件 SyncButton.vue） ---------- */
 const syncRunning = computed(() => tasks.syncBusy)
+
+/**
+ * 同步行标题。与导入行同构的一行——此前同步只有按钮下方那句 `sync-meta` 文字，
+ * 而 `sync.downloaded` 这个一直在涨的计数根本没人展示（「到底下了多少」只能靠猜）。
+ * 不画进度条：icloudpd 不报总数，硬算百分比是假的。
+ */
+const syncRowTitle = computed(() =>
+  stats.value?.sync.status === 'waiting_retry' ? '同步等待重试' : '正在同步 iCloud 照片',
+)
 
 /**
  * 同步按钮锁定态：当前库未链接 iCloud / 会话过期时不放行。
@@ -764,8 +797,9 @@ onBeforeUnmount(() => {
                   @cancel="cancelSyncRun"
                 />
               </div>
-                <!-- 状态/提示行：按钮下方独立一行。颜色信号走前置小圆点，文字保持中性灰 -->
-                <div class="sync-meta">
+                <!-- 状态/提示行：按钮下方独立一行。颜色信号走前置小圆点，文字保持中性灰。
+                     同步进行中隐藏这里——进度与计数由下面新增的同步行承担，否则同一句话出现两遍 -->
+                <div v-if="!syncRunning || authNeedsLink" class="sync-meta">
                   <span v-if="syncDisplayText" class="sync-note" :class="syncStatusClass">
                     <i class="sync-dot" aria-hidden="true" />
                     {{ syncDisplayText }}
@@ -840,6 +874,26 @@ onBeforeUnmount(() => {
             </div>
           </template>
 
+          <!-- 同步行：与导入行同构。不画进度条 —— icloudpd 不报总数，硬算百分比是假的；
+               这里只回答「还在进」+「进了多少」。`downloaded` 后端一直在更新，
+               以前却没有任何地方展示它 -->
+          <div v-if="syncRunning" class="status-row sync-row">
+            <span class="row-icon tone-active" aria-hidden="true">
+              <svg viewBox="0 0 16 16">
+                <path d="M4.6 11.4a2.7 2.7 0 0 1-.5-5.3A3.7 3.7 0 0 1 11.4 5.7a2.3 2.3 0 0 1-.3 5.7" />
+                <path d="M8 6.6v4.8M6.2 9.8 8 11.6l1.8-1.8" />
+              </svg>
+            </span>
+            <span class="row-copy">
+              <strong>{{ syncRowTitle }}</strong>
+              <small>{{ syncDisplayText }}</small>
+            </span>
+            <span class="row-value">
+              <span class="spinner" />
+              已下载 {{ numberFormat.format(stats?.sync.downloaded ?? 0) }} 项
+            </span>
+          </div>
+
           <div class="status-row">
             <span class="row-icon" :class="`tone-${scanIconTone}`" aria-hidden="true">
               <svg viewBox="0 0 16 16">
@@ -858,9 +912,12 @@ onBeforeUnmount(() => {
                 <span class="spinner" />
                 {{ numberFormat.format(stats?.scan.scannedFiles ?? 0) }} 个文件
               </template>
+              <!-- 落库中：这一格回答用户真正关心的问题——「现在能看多少张」。
+                   不新增元素，就用原本写「待开始」的位置。口径是 assets 表行数
+                   （照片+视频+实况），所以用「项」而不是「张」，否则含视频时会低报 -->
               <template v-else-if="scanPhase === 'waiting'">
                 <span class="spinner" />
-                待开始
+                已入库 {{ numberFormat.format(stats?.assets ?? 0) }} 项
               </template>
               <template v-else-if="scanPhase === 'error'">未完成</template>
               <template v-else-if="scanPhase === 'idle'">等待启动</template>

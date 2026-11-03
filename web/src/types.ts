@@ -120,10 +120,13 @@ export interface Stats {
   scan: {
     status: 'idle' | 'scanning' | 'done' | 'error'
     runId: number
-    source: 'idle' | 'manual' | 'watcher' | 'startup' | 'switch'
+    source: 'idle' | 'manual' | 'watcher' | 'startup' | 'switch' | 'import'
     totalFiles: number
     scannedFiles: number
+    /** 本轮处理过的资产数（含签名未变直接跳过的老资产） */
     assetsFound: number
+    /** 本轮**新增**入库的资产数；与 assetsFound 口径不同，别混用 */
+    assetsAdded: number
     message: string
   }
   /** P0：当前激活库（status 组件展示库名/认证状态） */
