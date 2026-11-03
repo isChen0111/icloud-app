@@ -20,7 +20,7 @@ import path from 'node:path'
 import sharp from 'sharp'
 import { config } from '../config.js'
 import { closeDb, getDb } from '../db/index.js'
-import { runScan } from './index.js'
+import { runScan, scanProgress } from './index.js'
 import { toLocalIso } from '../utils/date.js'
 
 /** 用例期间会临时改写三个路径配置，结束后恢复成进程启动时的值 */
@@ -120,6 +120,16 @@ function readAssets(): AssetRow[] {
     .all() as AssetRow[]
 }
 
+/**
+ * 本连接建立以来的累计写入次数（INSERT/UPDATE/DELETE 都算，含 FTS 影子表）。
+ *
+ * 稳态跳过写库要证明的就是「这一轮什么都没写」，直接读这个计数器比逐列比对可靠：
+ * 逐列比对只能证明「值没变」，而值没变也可能来自「用同样的值又写了一遍」。
+ */
+function totalChanges(): number {
+  return (getDb().prepare('SELECT total_changes() AS c').get() as { c: number }).c
+}
+
 test('runScan：首次入库 + 目录日期兜底 + 实况配对，二次扫描幂等', async () => {
   const env = setup()
   try {
@@ -147,6 +157,114 @@ test('runScan：首次入库 + 目录日期兜底 + 实况配对，二次扫描�
     // 幂等：再扫一次不应新增、不应改 id、不应改内容
     await runScan('manual', { enqueueThumbnails: false })
     assert.deepEqual(readAssets(), first, '二次扫描必须完全幂等')
+  } finally {
+    teardown(env)
+  }
+})
+
+/**
+ * 稳态跳过写库（2026-11-03）：签名与配对都没变时，本轮不执行 UPSERT、也不重写 FTS。
+ *
+ * 三条断言分三层，缺一条都可能漏掉错误实现：
+ *   · total_changes 差为 0 —— 证明「真的没写」，而不是「写了同样的值」
+ *   · filename 哨兵值不被覆盖 —— 证明写库路径确实没走到
+ *   · assetsAdded —— 稳态下必须是 0，否则「新增 N 项」会越扫越大
+ */
+test('runScan：稳态（签名与配对都没变）不产生任何写库', async () => {
+  const env = setup()
+  try {
+    await writeJpeg(path.join(env.root, 'icloud', '2024', '09', '13', 'A.jpg'), 4)
+    await writeJpeg(path.join(env.root, 'icloud', '2024', '09', '13', 'B.jpg'), 5)
+
+    await runScan('manual', { enqueueThumbnails: false })
+    assert.equal(readAssets().length, 2)
+    assert.equal(scanProgress.assetsAdded, 2, '首轮两个都是新增')
+    assert.equal(scanProgress.assetsFound, 2)
+
+    // 哨兵：只有真的执行了 UPSERT，filename 才会被覆盖回磁盘上的名字
+    getDb().prepare(`UPDATE assets SET filename='SENTINEL' WHERE file_path LIKE '%A.jpg'`).run()
+
+    const before = totalChanges()
+    await runScan('manual', { enqueueThumbnails: false })
+    const written = totalChanges() - before
+
+    assert.equal(written, 0, `稳态扫描不得产生任何写库（含 FTS），实际写了 ${written} 次`)
+    const sentinel = getDb()
+      .prepare(`SELECT filename FROM assets WHERE file_path LIKE '%A.jpg'`)
+      .get() as { filename: string }
+    assert.equal(sentinel.filename, 'SENTINEL', '稳态下不应重写已有行')
+    assert.equal(scanProgress.assetsAdded, 0, '稳态没有新增')
+    assert.equal(scanProgress.assetsFound, 2, 'assetsFound 语义不变：本轮处理过的资产数（含跳过）')
+  } finally {
+    teardown(env)
+  }
+})
+
+/**
+ * 跳过写库的边界：13 列里只有 type / live_video 有「修正语义」，它们与磁盘不一致时
+ * 必须仍然写库。漏掉这条 = 配对修正永久失效（跨目录同名、MOV 增删都改不回来），
+ * 而且是静默的、不会自愈。
+ */
+test('runScan：库里配对结果与磁盘不一致时必须修正（稳态跳过的边界）', async () => {
+  const env = setup()
+  try {
+    await writeJpeg(path.join(env.root, 'icloud', '2024', '09', '13', 'LIVE.jpg'), 6)
+    fs.writeFileSync(path.join(env.root, 'icloud', '2024', '09', '13', 'LIVE.mov'), 'fake-mov')
+    await writeJpeg(path.join(env.root, 'icloud', '2024', '09', '13', 'PLAIN.jpg'), 4)
+
+    await runScan('manual', { enqueueThumbnails: false })
+
+    // 投毒：实况照片被写成普通视频且挂了一个不存在的配对视频；普通照片被写成视频
+    getDb()
+      .prepare(`UPDATE assets SET type='video', live_video='bogus.mov' WHERE file_path LIKE '%LIVE.jpg'`)
+      .run()
+    getDb().prepare(`UPDATE assets SET type='video' WHERE file_path LIKE '%PLAIN.jpg'`).run()
+
+    await runScan('manual', { enqueueThumbnails: false })
+
+    const rows = readAssets()
+    const live = rows.find((r) => r.file_path.endsWith('LIVE.jpg'))!
+    const plain = rows.find((r) => r.file_path.endsWith('PLAIN.jpg'))!
+    assert.equal(live.type, 'live', '配对结果与库里不一致时必须写库修正')
+    assert.ok(live.live_video?.endsWith('LIVE.mov'), `live_video 应指回真实配对视频，实际 ${live.live_video}`)
+    assert.equal(plain.type, 'photo', '只有视频少了配对时要能改回 photo')
+    assert.equal(scanProgress.assetsAdded, 0, '修正已有行不算新增')
+  } finally {
+    teardown(env)
+  }
+})
+
+/**
+ * 回归保护（跳过写库最容易踩的坑）：旧库的 file_size/file_mtime 是 NULL，这类行
+ * `changed` 恒为 false（签名比较要求非空），**只能靠复用分支的 UPSERT 补写签名**。
+ * 若把它们也跳过，签名永远补不上 → 之后文件内容变化永远检测不到。
+ */
+test('runScan：file_size 为 NULL 的历史行仍要补写签名，补完后进入稳态', async () => {
+  const env = setup()
+  try {
+    const file = path.join(env.root, 'icloud', '2024', '09', '13', 'OLD.jpg')
+    await writeJpeg(file, 4)
+    const mtime = new Date(2024, 8, 13, 13, 0, 0)
+    fs.utimesSync(file, mtime, mtime)
+    await runScan('manual', { enqueueThumbnails: false })
+
+    // 模拟历史库：签名列为空（这批行 changed 恒为 false，只能靠复用分支写库补签名）
+    getDb().prepare(`UPDATE assets SET file_size=NULL, file_mtime=NULL`).run()
+    await runScan('manual', { enqueueThumbnails: false })
+
+    const row = getDb().prepare(`SELECT file_size, file_mtime, date_taken FROM assets`).get() as {
+      file_size: number | null
+      file_mtime: number | null
+      date_taken: string
+    }
+    assert.ok((row.file_size ?? 0) > 0, '必须补写 file_size，否则永久失去变化检测')
+    assert.ok((row.file_mtime ?? 0) > 0, '必须补写 file_mtime')
+    assert.equal(row.date_taken, toLocalIso(mtime))
+
+    // 补完之后必须真的进入稳态：若签名没写进去，下一轮仍会判定「无签名」而继续写库
+    const before = totalChanges()
+    await runScan('manual', { enqueueThumbnails: false })
+    assert.equal(totalChanges() - before, 0, '签名补写后应进入稳态（证明签名真的可用了）')
   } finally {
     teardown(env)
   }

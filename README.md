@@ -119,7 +119,7 @@ npm run start
 | `npm run scan` | `server/` | 手动触发一次扫描同步 |
 | `npm run dev` | `web/` | 启动前端开发服务 |
 | `npm run build` | `web/` | 构建前端生产版本 |
-| `npm test` | `server/` | 单元测试（node:test，162 用例：缩略图调度器、任务队列、扫描对账与端到端扫描、数据库迁移、接口、工具函数、视频 Range 解析、watcher 会话代数、导入流水线）。新增测试文件需手动加进 `package.json` 的 test 列表——该脚本是显式文件清单，不是 glob |
+| `npm test` | `server/` | 单元测试（node:test，176 用例：缩略图调度器、任务队列、扫描对账与端到端扫描、数据库迁移、接口、工具函数、视频 Range 解析、watcher 会话代数与触发闸门、导入流水线）。新增测试文件需手动加进 `package.json` 的 test 列表——该脚本是显式文件清单，不是 glob |
 | `npm run postinstall` | `server/` | 安装/解压 BtbN ffmpeg full（含 libheif）+ icloudpd exe |
 
 ## API（开发参考）

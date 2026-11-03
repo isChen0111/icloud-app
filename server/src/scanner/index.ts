@@ -25,15 +25,26 @@ import { toDateCompact, toLocalIso } from '../utils/date.js'
 const IMAGE_EXTS = new Set(['.heic', '.heif', '.jpg', '.jpeg', '.png', '.gif', '.tiff'])
 const VIDEO_EXTS = new Set(['.mov', '.mp4', '.m4v', '.avi'])
 
+/** 扫描触发来源 */
+export type ScanSource = 'idle' | 'manual' | 'watcher' | 'startup' | 'switch' | 'import'
+
 /** 扫描进度（内存态，简单够用） */
 export const scanProgress = {
   status: 'idle' as 'idle' | 'scanning' | 'done' | 'error',
-  /** 本次扫描触发来源：手动 / 热监听 / 启动 / 切库 */
-  source: 'idle' as 'idle' | 'manual' | 'watcher' | 'startup' | 'switch',
+  /** 本次扫描触发来源：手动 / 热监听 / 启动 / 切库 / 导入 */
+  source: 'idle' as ScanSource,
   runId: 0,
   totalFiles: 0,
   scannedFiles: 0,
   assetsFound: 0,
+  /**
+   * 本轮**新增**入库的资产数（DB 里原本没有这个 file_path）。
+   * 用来回答「这次扫描进去了多少」——`assetsFound` 是「本轮处理了多少」（含签名未变
+   * 直接跳过的老资产），两者口径不同，别混用。
+   * 已知小瑕疵：Windows 下纯大小写改名会让同一物理文件被算 1 个新增（旧行随后被
+   * 删除对账清掉，净数量正确）。
+   */
+  assetsAdded: 0,
   livePairs: 0,
   message: '',
 }
@@ -171,10 +182,10 @@ let scanChain: Promise<void> = Promise.resolve()
  *
  * 注意：返回的 Promise 拒绝语义与串行位置一致——排队中的一轮失败不影响后面排队的。
  *
- * @param source 触发来源：manual（手动/API）/ watcher（热监听）/ startup（启动对账）/ switch（切库）
+ * @param source 触发来源：manual（手动/API）/ watcher（热监听）/ startup（启动对账）/ switch（切库）/ import（导入归置期间的周期扫描）
  */
 export function runScan(
-  source: 'manual' | 'watcher' | 'startup' | 'switch' = 'manual',
+  source: Exclude<ScanSource, 'idle'> = 'manual',
   options: RunScanOptions = {},
 ): Promise<void> {
   const next = scanChain.then(
@@ -202,7 +213,7 @@ export function runScan(
  *    只读快照，文件内容不变），中断后重跑只补新文件，无需全量重来。
  */
 async function doRunScan(
-  source: 'manual' | 'watcher' | 'startup' | 'switch' = 'manual',
+  source: Exclude<ScanSource, 'idle'> = 'manual',
   options: RunScanOptions = {},
 ): Promise<void> {
   scanProgress.source = source
@@ -213,6 +224,7 @@ async function doRunScan(
   scanProgress.totalFiles = 0
   scanProgress.scannedFiles = 0
   scanProgress.assetsFound = 0
+  scanProgress.assetsAdded = 0
   resetThumbnailProgress()
 
   try {
@@ -294,6 +306,13 @@ async function doRunScan(
     orientation: number | null
     gpsLat: number | null
     gpsLon: number | null
+    /**
+     * 配对结果（2026-11-03 稳态跳过写库）：这两列是 13 列里唯一有「修正语义」的
+     * —— 其余元数据在复用分支里原样写回，是幂等空操作。必须读出来参与比较，
+     * 否则跳过写库会让配对修正永久失效（重扫不再纠正 type/live_video）。
+     */
+    type: string
+    liveVideo: string | null
     /** F-03 修复：上次扫描记录的源文件签名（新库为 null） */
     size: number | null
     mtimeMs: number | null
@@ -301,7 +320,7 @@ async function doRunScan(
   const existingMeta = new Map<string, ExistingMeta>()
   for (const r of db
     .prepare(
-      `SELECT file_path, date_taken, width, height, duration, orientation, gps_lat, gps_lon, file_size, file_mtime FROM assets`,
+      `SELECT file_path, date_taken, width, height, duration, orientation, gps_lat, gps_lon, type, live_video, file_size, file_mtime FROM assets`,
     )
     .all() as {
     file_path: string
@@ -312,6 +331,8 @@ async function doRunScan(
     orientation: number | null
     gps_lat: number | null
     gps_lon: number | null
+    type: string
+    live_video: string | null
     file_size: number | null
     file_mtime: number | null
   }[]) {
@@ -323,6 +344,8 @@ async function doRunScan(
       orientation: r.orientation,
       gpsLat: r.gps_lat,
       gpsLon: r.gps_lon,
+      type: r.type,
+      liveVideo: r.live_video,
       size: r.file_size,
       mtimeMs: r.file_mtime,
     })
@@ -442,7 +465,32 @@ async function doRunScan(
       exist != null &&
       exist.size !== null &&
       (exist.size !== a.image.size || exist.mtimeMs !== a.image.mtimeMs)
+    const liveVideoRel = a.liveVideo ? a.liveVideo.relPath : null
     if (exist && !changed) {
+      /**
+       * 稳态跳过写库（2026-11-03）：签名与磁盘一致、配对结果也和库里一致时，
+       * 下面那 13 列写回去全是幂等空操作（元数据取自 exist 本身，size/mtime 相同），
+       * 连带着 FTS 的 INSERT OR REPLACE 也是白写。大库稳态下每轮因此从
+       * 「N 次 UPSERT + N 次 FTS 重写」降到「纯遍历 + stat」。
+       *
+       * 三个必须同时成立的条件，缺一不可：
+       *  1. size / mtime 都非 NULL —— 老库（file_size 为 NULL 的历史行）的 changed 恒为
+       *     false，它们**只能靠这条写库路径补写签名**。跳过就永远补不上，之后文件内容
+       *     变化也永远检测不到（changed 恒 false）。
+       *  2. type 一致 —— 配对结果按「目录+基名」每轮重算，跨目录同名、MOV 增删都会变。
+       *  3. live_video 一致 —— 同上。
+       * 后两条是 13 列里唯一有「修正语义」的，漏掉就是静默且不可自愈的错误。
+       */
+      const skipWrite =
+        exist.size !== null &&
+        exist.mtimeMs !== null &&
+        exist.type === type &&
+        (exist.liveVideo ?? null) === liveVideoRel
+      if (skipWrite) {
+        scanProgress.scannedFiles += fileCount
+        scanProgress.assetsFound++
+        continue
+      }
       batch.push([
         a.image.relPath,
         type,
@@ -454,7 +502,7 @@ async function doRunScan(
         exist.orientation,
         exist.gpsLat,
         exist.gpsLon,
-        a.liveVideo ? a.liveVideo.relPath : null,
+        liveVideoRel,
         a.image.size,
         a.image.mtimeMs,
       ])
@@ -563,6 +611,9 @@ async function doRunScan(
     ])
     scanProgress.scannedFiles += fileCount
     scanProgress.assetsFound++
+    // 只有走到这里才是真正的「新增一行」。不能在最前面用 !exist 计数：
+    // 上面的时间兜底链里还有一条 stat 失败 → continue，那里并没有写库。
+    if (!exist) scanProgress.assetsAdded++
 
     // 每 200 条批量提交一次（事务提升性能）
     if (batch.length >= 200) {
@@ -659,9 +710,11 @@ async function doRunScan(
   }
 
   scanProgress.status = 'done'
+  const added = scanProgress.assetsAdded
+  const addedText = added > 0 ? `，新增 ${added} 个` : ''
   scanProgress.message = traversalComplete
-    ? `扫描完成：共 ${scanProgress.assetsFound} 个媒体资产，${livePairs} 个实况照片`
-    : `扫描完成但目录遍历不完整：共 ${scanProgress.assetsFound} 个媒体资产，${livePairs} 个实况照片；已跳过删除对账`
+    ? `扫描完成：共 ${scanProgress.assetsFound} 个媒体资产${addedText}，${livePairs} 个实况照片`
+    : `扫描完成但目录遍历不完整：共 ${scanProgress.assetsFound} 个媒体资产${addedText}，${livePairs} 个实况照片；已跳过删除对账`
   console.log(scanProgress.message)
   } catch (err) {
     // 容错：任何异常都收敛为可查询的 error 状态并上抛（/api/scan 的 catch 会接到）
