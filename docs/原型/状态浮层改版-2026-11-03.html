@@ -1,0 +1,464 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>照片库状态浮层 · 改版原型</title>
+<style>
+  :root {
+    --bg-page: #f5f5f7;
+    --panel: #ffffff;
+    --field: rgba(0, 0, 0, 0.04);
+    --line: rgba(0, 0, 0, 0.09);
+    --line-soft: rgba(0, 0, 0, 0.05);
+    --text-1: #1d1d1f;
+    --text-2: rgba(0, 0, 0, 0.55);
+    --text-3: rgba(0, 0, 0, 0.42);
+    --accent: #0a84ff;
+    --green: #2f9e5f;
+    --red: #d05245;
+    --amber: #a87515;
+    --shadow: 0 14px 36px rgba(0, 0, 0, 0.13), 0 0 0 0.5px rgba(0, 0, 0, 0.05);
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    padding: 40px 28px 72px;
+    background: var(--bg-page);
+    color: var(--text-1);
+    font: 13px/1.55 -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Microsoft YaHei", sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 1060px; margin: 0 auto; }
+
+  /* ---------- 页头 ---------- */
+  .page-head { margin-bottom: 32px; }
+  .page-head h1 { margin: 0 0 6px; font-size: 21px; font-weight: 650; letter-spacing: -0.2px; }
+  .page-head p { margin: 0; color: var(--text-2); font-size: 12.5px; }
+
+  .section-title {
+    display: flex; align-items: center; gap: 9px;
+    margin: 34px 0 16px; font-size: 12px; font-weight: 650;
+    color: var(--text-2); letter-spacing: 0.06em; text-transform: uppercase;
+  }
+  .section-title::after { content: ""; flex: 1; height: 1px; background: var(--line); }
+  .section-title .badge {
+    padding: 1px 7px; border-radius: 5px; font-size: 10.5px; letter-spacing: 0;
+    text-transform: none; font-weight: 600;
+  }
+  .badge.old { background: rgba(208, 82, 69, 0.1); color: var(--red); }
+  .badge.new { background: rgba(10, 132, 255, 0.1); color: var(--accent); }
+
+  /* ---------- 浮层卡片 ---------- */
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(384px, 1fr)); gap: 26px; align-items: start; }
+  .demo { display: flex; flex-direction: column; gap: 11px; }
+  .demo-label { font-size: 11.5px; font-weight: 600; color: var(--text-2); padding-left: 2px; }
+  .demo-label span { font-weight: 400; color: var(--text-3); }
+
+  .popover {
+    background: var(--panel);
+    border-radius: 14px;
+    box-shadow: var(--shadow);
+    padding: 15px 16px 14px;
+    width: 100%;
+  }
+
+  /* 头部 */
+  .po-head { display: flex; align-items: flex-start; gap: 10px; }
+  .po-icon {
+    flex: none; width: 26px; height: 26px; border-radius: 7px;
+    display: grid; place-items: center; margin-top: 1px;
+    background: var(--field); color: var(--text-2);
+  }
+  .po-icon.active { background: rgba(10, 132, 255, 0.12); color: var(--accent); }
+  .po-icon.warn { background: rgba(208, 82, 69, 0.1); color: var(--red); }
+  .po-icon.ok { background: rgba(47, 158, 95, 0.1); color: var(--green); }
+  .po-icon svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+
+  .po-copy { min-width: 0; flex: 1; }
+  .po-title { font-size: 13.5px; font-weight: 620; letter-spacing: -0.1px; }
+  .po-concl { margin-top: 3px; font-size: 11.5px; color: var(--text-2); line-height: 1.5; }
+  .po-concl em { font-style: normal; color: var(--text-1); font-weight: 600; }
+
+  /* 同步按钮 */
+  .sync-btn {
+    display: inline-flex; align-items: center; gap: 6px; margin-top: 11px;
+    padding: 5px 10px 5px 8px; border-radius: 8px;
+    background: var(--field); border: 1px solid var(--line-soft);
+    font-size: 11.5px; font-weight: 550; color: var(--text-1);
+  }
+  .sync-btn svg { width: 13px; height: 13px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+  .sync-btn.danger { color: var(--red); background: rgba(208, 82, 69, 0.08); border-color: rgba(208, 82, 69, 0.16); }
+  .sync-meta { display: flex; align-items: center; gap: 6px; margin-top: 7px; font-size: 11px; color: var(--text-2); }
+  .dot { width: 5px; height: 5px; border-radius: 50%; background: var(--accent); flex: none; }
+  .dot.green { background: var(--green); }
+  .dot.red { background: var(--red); }
+  .dot.amber { background: var(--amber); }
+
+  hr.sep { border: 0; height: 1px; background: var(--line-soft); margin: 14px 0 0; }
+
+  /* ---------- 主进度（核心改动） ---------- */
+  .pipeline { padding-top: 13px; }
+  .pipe-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+  .pipe-name { font-size: 12.5px; font-weight: 600; }
+  .pipe-stage { font-size: 11px; color: var(--text-2); font-variant-numeric: tabular-nums; }
+  .bar { margin: 9px 0 8px; height: 5px; border-radius: 99px; background: var(--field); overflow: hidden; }
+  .bar i { display: block; height: 100%; border-radius: 99px; background: var(--accent); }
+  .bar.green i { background: var(--green); }
+  .pipe-meta { display: flex; justify-content: space-between; font-size: 11px; color: var(--text-2); font-variant-numeric: tabular-nums; }
+  .pipe-meta b { color: var(--text-1); font-weight: 600; }
+
+  .stages { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 11px; }
+  .stage {
+    display: inline-flex; align-items: center; gap: 5px;
+    padding: 3px 8px; border-radius: 6px; font-size: 10.5px; font-weight: 550;
+    background: var(--field); color: var(--text-3);
+  }
+  .stage.done { background: rgba(47, 158, 95, 0.1); color: var(--green); }
+  .stage.now { background: rgba(10, 132, 255, 0.11); color: var(--accent); }
+  .stage svg { width: 10px; height: 10px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+  .pulse { width: 5px; height: 5px; border-radius: 50%; background: currentColor; animation: pulse 1.4s ease-in-out infinite; }
+  @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+
+  /* ---------- 次级信息（降级的缩略图行） ---------- */
+  .quiet-row {
+    display: flex; align-items: center; gap: 7px;
+    padding: 9px 0 0; font-size: 11.5px; color: var(--text-2);
+  }
+  .quiet-row .label { color: var(--text-3); }
+  .quiet-row b { color: var(--text-1); font-weight: 600; font-variant-numeric: tabular-nums; }
+  .quiet-row .spacer { flex: 1; }
+  .link-btn {
+    border: 0; background: transparent; padding: 0; cursor: pointer;
+    font: inherit; font-size: 11.5px; color: var(--accent); font-weight: 550;
+  }
+
+  /* 失败横幅 */
+  .alert-row {
+    display: flex; align-items: center; gap: 8px; margin-top: 12px;
+    padding: 9px 11px; border-radius: 9px;
+    background: rgba(208, 82, 69, 0.07);
+    border: 1px solid rgba(208, 82, 69, 0.15);
+    font-size: 11.5px; color: var(--text-1);
+  }
+  .alert-row .spacer { flex: 1; }
+  .btn-sm {
+    border: 0; cursor: pointer; font: inherit; font-size: 11px; font-weight: 600;
+    padding: 3.5px 9px; border-radius: 6px;
+    background: var(--red); color: #fff;
+  }
+  .btn-sm.ghost { background: transparent; color: var(--red); }
+
+  /* 摘要三行（就绪态） */
+  .summary { margin-top: 13px; display: flex; flex-direction: column; }
+  .sum-row {
+    display: flex; align-items: center; gap: 8px;
+    padding: 7px 0; font-size: 11.5px;
+    border-top: 1px solid var(--line-soft);
+  }
+  .sum-row:first-child { border-top: 0; }
+  .sum-row .k { color: var(--text-2); }
+  .sum-row .spacer { flex: 1; }
+  .sum-row .v { color: var(--text-2); font-variant-numeric: tabular-nums; }
+  .sum-row .v.ok { color: var(--green); font-weight: 550; }
+  .tick { width: 11px; height: 11px; fill: none; stroke: var(--green); stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+
+  /* ---------- 改前：问题标注 ---------- */
+  .popover.old { background: #fcfcfd; }
+  .problem { position: relative; padding: 7px 9px; margin: 0 -9px; border-radius: 7px; }
+  .problem + .problem { margin-top: 2px; }
+  .problem::before {
+    content: ""; position: absolute; inset: 0; border-radius: 7px;
+    background: rgba(208, 82, 69, 0.055);
+    box-shadow: inset 0 0 0 1px rgba(208, 82, 69, 0.16);
+  }
+  .problem > * { position: relative; }
+  .prob-tag {
+    display: inline-block; margin-top: 5px;
+    font-size: 10px; font-weight: 600; color: var(--red);
+    letter-spacing: 0.02em;
+  }
+  .row { display: flex; align-items: center; gap: 9px; padding: 7px 0; }
+  .row .ic { width: 15px; height: 15px; flex: none; color: var(--text-3); }
+  .row .ic svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 1.4; stroke-linecap: round; stroke-linejoin: round; }
+  .row .body { flex: 1; min-width: 0; }
+  .row .t { font-size: 12px; font-weight: 550; }
+  .row .s { font-size: 10.5px; color: var(--text-3); margin-top: 1px; }
+  .row .val { font-size: 11px; color: var(--text-2); font-variant-numeric: tabular-nums; }
+  .row .val.ok { color: var(--green); }
+  .mini-bar { height: 4px; border-radius: 99px; background: var(--field); overflow: hidden; margin: 4px 0 6px; }
+  .mini-bar i { display: block; height: 100%; background: var(--accent); }
+  .mini-stats { display: flex; gap: 12px; font-size: 10.5px; color: var(--text-3); font-variant-numeric: tabular-nums; }
+  .dev-metrics { display: flex; gap: 12px; font-size: 10px; color: var(--text-3); font-variant-numeric: tabular-nums; }
+
+  /* 注释清单 */
+  .notes { margin: 26px 0 0; padding: 0; list-style: none; display: grid; gap: 9px; }
+  .notes li {
+    display: grid; grid-template-columns: 18px 1fr; gap: 8px;
+    font-size: 12px; color: var(--text-2); line-height: 1.6;
+  }
+  .notes li b { color: var(--text-1); font-weight: 600; }
+  .notes .n {
+    width: 18px; height: 18px; border-radius: 50%; display: grid; place-items: center;
+    background: rgba(10, 132, 255, 0.11); color: var(--accent);
+    font-size: 10px; font-weight: 700; margin-top: 1px;
+  }
+  .foot { margin-top: 30px; padding-top: 16px; border-top: 1px solid var(--line); font-size: 11.5px; color: var(--text-3); }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="page-head">
+    <h1>照片库状态浮层 · 改版原型</h1>
+    <p>点顶栏「照片库已同步」后展开的那块面板。左为当前实现，右为建议改法。配色沿用项目现有 CSS 变量。</p>
+  </div>
+
+  <!-- ============ 改前 ============ -->
+  <div class="section-title">
+    <span class="badge old">改前</span> 当前实现 · 四个后端任务各说各话
+  </div>
+
+  <div class="grid">
+    <div class="demo">
+      <div class="popover old">
+        <div class="po-head">
+          <span class="po-icon"><svg viewBox="0 0 16 16"><rect x="2" y="2.5" width="12" height="9" rx="1.6"/><path d="M5 13.5h6M8 11.5v2"/></svg></span>
+          <div class="po-copy">
+            <div class="po-title">照片库已同步</div>
+          </div>
+        </div>
+        <div class="sync-btn">
+          <svg viewBox="0 0 16 16"><path d="M4.5 11.5a2.7 2.7 0 0 1-.5-5.3A3.7 3.7 0 0 1 11.3 5.8a2.3 2.3 0 0 1-.3 5.6"/><path d="m6.5 8.8 1.7 1.7 1.7-1.7M8.2 10.5V6.5"/></svg>
+          iCloud 同步
+        </div>
+        <div class="sync-meta"><span class="dot"></span>正在下载 · 已下载 1,284 项</div>
+
+        <div class="problem">
+          <div class="row">
+            <span class="ic"><svg viewBox="0 0 16 16"><rect x="2" y="3" width="9" height="7" rx="1.3"/><path d="M5 12.5h8.5a.5.5 0 0 0 .5-.5V6.5"/><circle cx="5" cy="5.7" r=".8"/></svg></span>
+            <span class="body">
+              <span class="t">照片库扫描完成</span>
+              <span class="s">最近一次扫描共检查 650 个媒体文件</span>
+            </span>
+            <span class="val ok">完成</span>
+          </div>
+          <span class="prob-tag">① 完成的是「上一轮」，此刻文件还在下载</span>
+        </div>
+
+        <div class="problem">
+          <div class="row">
+            <span class="ic"><svg viewBox="0 0 16 16"><rect x="2.5" y="2.5" width="11" height="11" rx="1.8"/><circle cx="6" cy="6" r="1.15"/><path d="m3.5 11 3-3 2.1 2 1.5-1.5 2.4 2.5"/></svg></span>
+            <span class="body">
+              <span class="t">等待扫描完成</span>
+              <span class="s">落库结束、扫描完成后统计需要准备的项目</span>
+            </span>
+            <span class="val">扫描后统计</span>
+          </div>
+          <div class="mini-bar"><i style="width:73%"></i></div>
+          <div class="mini-stats"><span>已处理 8 / 11</span><span>已生成 8</span><span>待处理 3</span></div>
+          <span class="prob-tag">② 行文案说「等扫描」，下面是同一条的进度条正在跑</span>
+        </div>
+
+        <div class="problem" style="padding-bottom:9px">
+          <div class="dev-metrics"><span>运行 6</span><span>交互运行 3</span><span>交互等待 0</span><span>已跳过 1</span></div>
+          <span class="prob-tag">③ 开发者诊断指标直接暴露给用户</span>
+        </div>
+      </div>
+      <div class="demo-label">当前：<span>同一块区域三套口径，用户无法判断「到底在干什么」</span></div>
+    </div>
+  </div>
+
+  <!-- ============ 改后 ============ -->
+  <div class="section-title">
+    <span class="badge new">改后</span> 一条主进度 + 当前阶段，次级任务降噪
+  </div>
+
+  <div class="grid">
+
+    <!-- 状态 1：同步中 -->
+    <div class="demo">
+      <div class="popover">
+        <div class="po-head">
+          <span class="po-icon active"><svg viewBox="0 0 16 16"><path d="M4.5 11.5a2.7 2.7 0 0 1-.5-5.3A3.7 3.7 0 0 1 11.3 5.8a2.3 2.3 0 0 1-.3 5.6"/><path d="m6.5 8.8 1.7 1.7 1.7-1.7M8.2 10.5V6.5"/></svg></span>
+          <div class="po-copy">
+            <div class="po-title">正在同步照片</div>
+            <div class="po-concl">已入库的 <em>1,284</em> 张现在就能看，剩下的边下边入库</div>
+          </div>
+        </div>
+
+        <div class="sync-btn danger">
+          <svg viewBox="0 0 16 16"><path d="m5 5 6 6M11 5l-6 6"/></svg>
+          取消同步
+        </div>
+        <div class="sync-meta"><span class="dot"></span>本次同步 · 已下载 1,284 项</div>
+
+        <hr class="sep">
+
+        <div class="pipeline">
+          <div class="pipe-head">
+            <span class="pipe-name">照片入库</span>
+            <span class="pipe-stage">阶段 2 / 3 · 入库</span>
+          </div>
+          <div class="bar"><i style="width:40%"></i></div>
+          <div class="pipe-meta">
+            <span>已入库 <b>1,284</b> / 3,201</span>
+            <span>下载与入库同时进行</span>
+          </div>
+          <div class="stages">
+            <span class="stage done"><svg viewBox="0 0 12 12"><path d="m2.5 6.2 2.3 2.3 4.7-4.7"/></svg>下载</span>
+            <span class="stage now"><span class="pulse"></span>入库</span>
+            <span class="stage">预览图</span>
+          </div>
+
+          <div class="quiet-row">
+            <span class="label">预览图</span>
+            <span>后台生成中，浏览不受影响</span>
+            <span class="spacer"></span>
+            <span>还剩 <b>217</b> 项</span>
+          </div>
+        </div>
+      </div>
+      <div class="demo-label">① 同步中<span>：一件事一个进度，三个阶段一眼看懂</span></div>
+    </div>
+
+    <!-- 状态 2：导入中 -->
+    <div class="demo">
+      <div class="popover">
+        <div class="po-head">
+          <span class="po-icon active"><svg viewBox="0 0 16 16"><path d="M8 2.5v7"/><path d="m5 6.8 3 3 3-3"/><path d="M3 11.5v1a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1v-1"/></svg></span>
+          <div class="po-copy">
+            <div class="po-title">正在导入本地照片</div>
+            <div class="po-concl">归置完成后自动入库，关掉这个面板也会继续</div>
+          </div>
+        </div>
+
+        <div class="sync-btn danger">
+          <svg viewBox="0 0 16 16"><path d="m5 5 6 6M11 5l-6 6"/></svg>
+          取消导入
+        </div>
+
+        <hr class="sep">
+
+        <div class="pipeline">
+          <div class="pipe-head">
+            <span class="pipe-name">导入照片</span>
+            <span class="pipe-stage">阶段 1 / 3 · 归置文件</span>
+          </div>
+          <div class="bar"><i style="width:24%"></i></div>
+          <div class="pipe-meta">
+            <span>已归置 <b>2,841</b> / 12,000</span>
+            <span>源目录：我的照片 2019-2024</span>
+          </div>
+          <div class="stages">
+            <span class="stage now"><span class="pulse"></span>归置文件</span>
+            <span class="stage">入库</span>
+            <span class="stage">预览图</span>
+          </div>
+
+          <div class="quiet-row">
+            <span class="label">提示</span>
+            <span>入库未完成前，这批照片还不会出现在照片墙</span>
+          </div>
+        </div>
+      </div>
+      <div class="demo-label">② 导入中<span>：原来关掉弹窗就彻底失联，现在浮层可见</span></div>
+    </div>
+
+    <!-- 状态 3：全部就绪 -->
+    <div class="demo">
+      <div class="popover">
+        <div class="po-head">
+          <span class="po-icon ok"><svg viewBox="0 0 16 16"><path d="m3.1 8.1 3.1 3.1 6.7-6.7"/></svg></span>
+          <div class="po-copy">
+            <div class="po-title">照片都在，可以浏览</div>
+            <div class="po-concl">12:34 完成对账 · 本轮新增 <em>217</em> 张</div>
+          </div>
+        </div>
+
+        <div class="sync-btn">
+          <svg viewBox="0 0 16 16"><path d="M4.5 11.5a2.7 2.7 0 0 1-.5-5.3A3.7 3.7 0 0 1 11.3 5.8a2.3 2.3 0 0 1-.3 5.6"/><path d="m6.5 8.8 1.7 1.7 1.7-1.7M8.2 10.5V6.5"/></svg>
+          iCloud 同步
+        </div>
+        <div class="sync-meta"><span class="dot green"></span>上次同步 今天 12:20 · 下载 217 项</div>
+
+        <div class="summary">
+          <div class="sum-row">
+            <svg class="tick" viewBox="0 0 12 12"><path d="m2.5 6.2 2.3 2.3 4.7-4.7"/></svg>
+            <span class="k">照片入库</span><span class="spacer"></span>
+            <span class="v">12:34 · 新增 217 张，共 12,480 项</span>
+          </div>
+          <div class="sum-row">
+            <svg class="tick" viewBox="0 0 12 12"><path d="m2.5 6.2 2.3 2.3 4.7-4.7"/></svg>
+            <span class="k">预览图</span><span class="spacer"></span>
+            <span class="v ok">已全部就绪</span>
+          </div>
+          <div class="sum-row">
+            <span class="dot green" style="margin-left:2px"></span>
+            <span class="k">磁盘占用</span><span class="spacer"></span>
+            <span class="v">86.4 GB · 没有可清理的孤儿文件</span>
+          </div>
+        </div>
+
+        <div class="quiet-row" style="padding-top:11px">
+          <span class="spacer"></span>
+          <button class="link-btn">查看详细指标 ›</button>
+        </div>
+      </div>
+      <div class="demo-label">③ 全部就绪<span>：一句话先答「能不能看」，细节收进折叠</span></div>
+    </div>
+
+    <!-- 状态 4：有失败 -->
+    <div class="demo">
+      <div class="popover">
+        <div class="po-head">
+          <span class="po-icon warn"><svg viewBox="0 0 16 16"><path d="M8 4.5v4.2"/><circle cx="8" cy="11.6" r=".8" fill="currentColor" stroke="none"/><path d="M8 1.8 14.5 13H1.5z"/></svg></span>
+          <div class="po-copy">
+            <div class="po-title">3 项预览图没生成</div>
+            <div class="po-concl">照片本身没问题，仍可正常浏览与导出</div>
+          </div>
+        </div>
+
+        <div class="alert-row">
+          <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="var(--red)" stroke-width="1.6" stroke-linecap="round"><path d="M8 4.5v4.2"/><circle cx="8" cy="11.6" r=".8" fill="var(--red)" stroke="none"/></svg>
+          <span>3 个视频抽帧失败</span>
+          <span class="spacer"></span>
+          <button class="btn-sm">重试全部</button>
+          <button class="btn-sm ghost">查看</button>
+        </div>
+
+        <div class="summary">
+          <div class="sum-row">
+            <svg class="tick" viewBox="0 0 12 12"><path d="m2.5 6.2 2.3 2.3 4.7-4.7"/></svg>
+            <span class="k">照片入库</span><span class="spacer"></span>
+            <span class="v">12:34 · 新增 217 张</span>
+          </div>
+          <div class="sum-row">
+            <span class="dot amber" style="margin-left:2px"></span>
+            <span class="k">预览图</span><span class="spacer"></span>
+            <span class="v">12,477 就绪 / 3 失败</span>
+          </div>
+        </div>
+      </div>
+      <div class="demo-label">④ 有失败<span>：失败态直接给「重试」出口，不止给清单入口</span></div>
+    </div>
+
+  </div>
+
+  <!-- ============ 设计说明 ============ -->
+  <div class="section-title">三条改动对应的设计取舍</div>
+  <ul class="notes">
+    <li><span class="n">1</span><span><b>一个意图一条进度。</b>同步、导入都映射成「归置 → 入库 → 预览图」三阶段，主进度条只画整条链，阶段用 chip 标。四条后端流水线在前端聚合，不改后端协议。</span></li>
+    <li><span class="n">2</span><span><b>「完成」必须归属到某一轮。</b>就绪态写「12:34 完成对账 · 本轮新增 217 张」，而不是「共检查 650 个媒体文件」——后者是总量，用户会读成本次。</span></li>
+    <li><span class="n">3</span><span><b>预览图降级为次级信息。</b>没生成完不等于不能用（浏览时按需生成兜底），所以不再占一条带百分比的主状态行，只在有失败时提级。</span></li>
+    <li><span class="n">4</span><span><b>诊断指标退出界面。</b>「运行 / 交互运行 / 交互等待 / 已跳过」移到设置中心的高级诊断，用户不需要知道「交互等待」是什么。</span></li>
+    <li><span class="n">5</span><span><b>每屏先答一个问题。</b>顶部那句结论永远回答「现在能不能看」：同步中是「已入库的现在就能看」，就绪是「照片都在」，失败是「照片没问题，只是预览图缺 3 张」。</span></li>
+  </ul>
+
+  <div class="foot">
+    原型说明：几何与配色取自 web/index.html 的 CSS 变量（--bg-panel / --text-1/2/3 / --border / --accent #0a84ff）；进度与数量为示意值，取自你截图里的真实规模（650 媒体文件 / 393 资产 / 11 项待生成）。左图「改前」严格按当前 App.vue 的模板还原。
+  </div>
+
+</div>
+</body>
+</html>
