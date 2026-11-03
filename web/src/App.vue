@@ -317,6 +317,22 @@ const headingTitle = computed(() => {
 /* ---------- P0 同步按钮（视觉/状态机统一在共享组件 SyncButton.vue） ---------- */
 const syncRunning = computed(() => tasks.syncBusy)
 
+/**
+ * 同步按钮锁定态：当前库未链接 iCloud / 会话过期时不放行。
+ * 旧版只按「其他库任务占用」灰显，未登录的库也能点开菜单选「全量拉取」，
+ * 而后端当时只校验 account（提交邮箱就写了），于是一个从未认证成功的库真的会去跑
+ * icloudpd —— 拿着半截 cookie 直接要验证码。后端已改为校验 auth_status，
+ * 这里再堵住入口，用户不用先收到一条 409 才知道。
+ */
+const syncLocked = computed(() => stats.value?.library?.authStatus !== 'authed')
+const syncLockHint = computed(() => {
+  const lib = stats.value?.library
+  if (!lib) return '还没有可同步的照片库'
+  return lib.authStatus === 'expired'
+    ? 'iCloud 会话已过期，请重新登录后再同步'
+    : '尚未链接 iCloud，请先登录后再同步'
+})
+
 /** 等待重试倒计时（后端 60 秒后自动重试，前端倒数让用户知道还要等多久） */
 const retryCountdown = ref(0)
 let syncRetryTimer: number | undefined
@@ -445,9 +461,26 @@ function onOnboardingClose(): void {
   void tasks.refresh({ force: true })
 }
 
+/**
+ * 认证纪元：认证面板每次结束（成功或关闭）都 +1，设置页 watch 它重拉库列表。
+ *
+ * 存在的理由：设置页原先只按 /api/stats 的签名刷新，而 stats.library 只含
+ * **当前激活库**。在非激活库上完成认证时后端早就改了 auth_status，签名却不变，
+ * 卡片会一直显示「未链接」，切库后才恢复（2026-11-03 修复的 bug 就是这条）。
+ */
+const authEpoch = ref(0)
+
 /** 认证成功：关闭面板并刷新统计（认证状态/库信息） */
 function onAuthDone(): void {
   authDialogOpen.value = false
+  authEpoch.value++
+  void tasks.refresh({ force: true })
+}
+
+/** 关闭认证面板：同样要刷新——用户可能在 done 被轮询到之前就关掉了 */
+function onAuthClose(): void {
+  authDialogOpen.value = false
+  authEpoch.value++
   void tasks.refresh({ force: true })
 }
 
@@ -618,6 +651,8 @@ onBeforeUnmount(() => {
                 <SyncButton
                   :busy="syncRunning"
                   :picked="syncPick"
+                  :locked="syncLocked"
+                  :locked-hint="syncLockHint"
                   @pick="pickSync"
                   @run="runSync"
                   @cancel="cancelSyncRun"
@@ -629,13 +664,15 @@ onBeforeUnmount(() => {
                     <i class="sync-dot" aria-hidden="true" />
                     {{ syncDisplayText }}
                   </span>
+                  <!-- 同步按钮被锁时，这里就是出口：未链接 → 「登录 iCloud」，过期 → 「需要重新链接」。
+                       以前统一写「需要重新链接」，对从未登录过的库是错的措辞 -->
                   <button
                     v-if="authNeedsLink && stats?.library"
                     class="relink-btn"
                     type="button"
                     @click="openAuth({ id: stats.library.id, name: stats.library.name, account: stats.library.account })"
                   >
-                    需要重新链接
+                    {{ stats.library.authStatus === 'expired' ? '需要重新链接' : '登录 iCloud' }}
                   </button>
                 </div>
               </div>
@@ -964,12 +1001,13 @@ onBeforeUnmount(() => {
       :account="authTarget.account"
       :auto-start="authTarget.autoStart"
       @done="onAuthDone"
-      @close="authDialogOpen = false"
+      @close="onAuthClose"
     />
 
     <!-- P0：设置中心（照片库管理 / 下载与同步 / 关于） -->
     <SettingsView
       v-if="settingsOpen"
+      :auth-epoch="authEpoch"
       @close="settingsOpen = false"
       @open-auth="openAuth"
       @new-library="settingsOpen = false; onboardingOpen = true"

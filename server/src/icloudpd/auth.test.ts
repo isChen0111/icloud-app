@@ -16,6 +16,7 @@ import {
   stopAuth,
   extractError,
   applyAuthExit,
+  cleanStaleSessionFiles,
 } from './auth.js'
 
 const COOKIE_DIR = 'C:\\tmp\\nonexistent-cookie-dir'
@@ -184,4 +185,75 @@ test('C-14 ①：error 阶段被超时回调兜底 → 保留准确原因，不�
   assert.match(after.message, /code=1/, '准确的失败原因不能被一句「认证超时」盖掉')
   assert.doesNotMatch(after.message, /认证超时/)
   assert.equal(after.stage, 'error')
+})
+
+/* ============ 2026-11-03：认证成功立即落库 + 半成品 session 清理 ============ */
+
+test('认证成功 → 立刻调用 onSuccess（不再依赖前端轮询写库）', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'auth-onok-'))
+  try {
+    stopAuth()
+    fs.writeFileSync(path.join(dir, 'user@example.com'), 'cookie')
+    newSession(dir, 'waiting_code', '')
+    let called = 0
+    applyAuthExit(0, () => { called++ })
+    assert.equal(authStatus()?.stage, 'done')
+    assert.equal(called, 1, 'code=0 且 cookie 落盘时必须回调（否则关面板就永久显示未链接）')
+  } finally {
+    stopAuth()
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('认证失败（非零退出/无 cookie）→ 不调用 onSuccess，避免把失败记成已链接', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'auth-onfail-'))
+  try {
+    stopAuth()
+    let called = 0
+    const spy = (): void => { called++ }
+
+    // ① 非零退出
+    newSession(dir, 'waiting_password', '')
+    applyAuthExit(1, spy)
+    assert.equal(called, 0)
+
+    // ② 退出 0 但没落 cookie（用户中途在设备上取消）
+    newSession(dir, 'waiting_code', '')
+    applyAuthExit(0, spy)
+    assert.equal(authStatus()?.stage, 'error')
+    assert.equal(called, 0, '没 cookie 就不是成功，不能落 authed')
+  } finally {
+    stopAuth()
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('cleanStaleSessionFiles：只剩 .session → 删除（否则 icloudpd 直接跳验证码）', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'auth-stale-'))
+  try {
+    fs.writeFileSync(path.join(dir, 'user@example.com.session'), 'half-done')
+    const removed = cleanStaleSessionFiles(dir)
+    assert.deepEqual(removed, ['user@example.com.session'])
+    assert.equal(fs.existsSync(path.join(dir, 'user@example.com.session')), false)
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('cleanStaleSessionFiles：主 cookie 完整 → .session 是正常续期凭据，不得删除', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'auth-good-'))
+  try {
+    fs.writeFileSync(path.join(dir, 'user@example.com'), 'cookie')
+    fs.writeFileSync(path.join(dir, 'user@example.com.session'), 'session')
+    const removed = cleanStaleSessionFiles(dir)
+    assert.deepEqual(removed, [], '主 cookie 在的时候删 .session 会逼用户重新走完整登录')
+    assert.equal(fs.existsSync(path.join(dir, 'user@example.com.session')), true)
+    assert.equal(fs.existsSync(path.join(dir, 'user@example.com')), true)
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('cleanStaleSessionFiles：目录不存在 → 安全返回空（不抛错）', () => {
+  assert.deepEqual(cleanStaleSessionFiles(path.join(os.tmpdir(), 'no-such-cookie-dir-xyz')), [])
 })

@@ -26,7 +26,11 @@ export async function registerAuthRoutes(app: FastifyInstance): Promise<void> {
     const lib = getLibraryById(libraryId)
     if (!lib) return reply.code(404).send({ error: '库不存在' })
 
-    const session = startAuth(username, lib.cookie_dir)
+    // 认证成功 → 进程退出那一刻就把库状态落为已认证（onSuccess 回调）。
+    // 旧实现把这个写入放在 GET /api/auth 里靠前端轮询触发，用户提前关面板就永久丢失。
+    const session = startAuth(username, lib.cookie_dir, {
+      onSuccess: () => updateLibraryAuth(lib.id, { auth_status: 'authed' }),
+    })
     if (session.stage === 'error') {
       return reply.code(500).send({ error: session.message })
     }
@@ -49,9 +53,13 @@ export async function registerAuthRoutes(app: FastifyInstance): Promise<void> {
 
   app.get('/api/auth', async () => {
     const session = authStatus()
-    // 认证完成（cookie 落盘、进程退出）→ 把库状态落为已认证
+    // 兜底：正常情况下 applyAuthExit 的 onSuccess 已在进程退出时写过库，
+    // 这里只补「回调异常/进程被外部结束」的漏，且仅当状态还没落成 authed 才写。
     if (session?.stage === 'done' && authLibraryId !== null) {
-      updateLibraryAuth(authLibraryId, { auth_status: 'authed' })
+      const lib = getLibraryById(authLibraryId)
+      if (lib && lib.auth_status !== 'authed') {
+        updateLibraryAuth(authLibraryId, { auth_status: 'authed' })
+      }
       authLibraryId = null
     }
     return { auth: session }

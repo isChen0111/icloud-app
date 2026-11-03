@@ -179,7 +179,7 @@ function stopPolling(): void {
 }
 
 /** cookie 是否已落盘（存在非 .session 的 cookie 文件） */
-function cookieExists(cookieDir: string): boolean {
+export function cookieExists(cookieDir: string): boolean {
   try {
     return fs
       .readdirSync(cookieDir)
@@ -187,6 +187,43 @@ function cookieExists(cookieDir: string): boolean {
   } catch {
     return false
   }
+}
+
+/**
+ * 清理「半成品」cookie 残留：目录里只剩 <账号>.session、没有主 cookie 文件。
+ *
+ * 失效链路（2026-11-03 排查「未登录却能同步、日志直接从验证码开始」）：
+ *   认证中途失败/取消 → icloudpd 已经写下 .session、但主 cookie 没写成 →
+ *   目录里留下孤零零的 .session。而 icloudpd 启动时只要看到 .session 就会拿它
+ *   恢复会话（这一步不需要密码），于是下一次认证/同步直接从「输入验证码」开始。
+ *   cookieExists() 的判据（必须有主 cookie）本身是对的，所以库状态仍显示未链接——
+ *   状态与行为就此分裂：界面说没登录，icloudpd 却在续一个半截会话。
+ *
+ * 只删「没有主 cookie 陪跑」的 .session：主 cookie 完整时 .session 是正常续期凭据，
+ * 删掉会逼 icloudpd 重新走完整登录，属于帮倒忙。
+ */
+export function cleanStaleSessionFiles(cookieDir: string): string[] {
+  let names: string[]
+  try {
+    names = fs.readdirSync(cookieDir)
+  } catch {
+    return [] // 目录不存在 = 没有可清理的东西
+  }
+  if (names.some((f) => !f.endsWith('.session') && !f.startsWith('.'))) return []
+  const stale = names.filter((f) => f.endsWith('.session'))
+  const removed: string[] = []
+  for (const name of stale) {
+    try {
+      fs.rmSync(path.join(cookieDir, name), { force: true })
+      removed.push(name)
+    } catch (err) {
+      console.warn(`[auth] 清理残留 session 失败 ${name}：${(err as Error).message}`)
+    }
+  }
+  if (removed.length > 0) {
+    console.warn(`[auth] 已清理 ${removed.length} 个半成品 session 文件（无主 cookie，避免 icloudpd 直接跳验证码）`)
+  }
+  return removed
 }
 
 /**
@@ -213,8 +250,25 @@ function killResidualIcloudpd(): void {
   }
 }
 
+/** 认证会话的可选钩子 */
+export interface StartAuthOptions {
+  /**
+   * 认证成功（进程 exit 0 且 cookie 落盘）时**立即**回调，用于把库状态落为已认证。
+   *
+   * 为什么放在这里而不是靠前端轮询（2026-11-03 修复「认证成功仍显示未链接」）：
+   * 旧实现把写 auth_status 的动作放在 GET /api/auth 里，由前端轮询触发；
+   * 而 POST /api/auth/cancel 会清掉库 id 记录 —— 用户在 done 被轮询到之前关掉面板，
+   * 这次认证就永远不会被标记为已链接（cookie 完整，界面却一直「未链接」）。
+   * 进程退出是认证结果的唯一权威时刻，写库必须挂在这里。
+   */
+  onSuccess?: () => void
+}
+
+/** 当前会话的成功回调（进程 exit 事件里取用） */
+let successHandler: (() => void) | null = null
+
 /** 开始认证（auth-only，仅换 cookie 不下载） */
-export function startAuth(username: string, cookieDir: string): AuthSession {
+export function startAuth(username: string, cookieDir: string, options: StartAuthOptions = {}): AuthSession {
   // 已存在会话则先清理
   stopAuth()
   submitPending = false
@@ -223,6 +277,9 @@ export function startAuth(username: string, cookieDir: string): AuthSession {
   killResidualIcloudpd()
 
   fs.mkdirSync(cookieDir, { recursive: true })
+  // 清掉上一次中断留下的半成品 .session：否则 icloudpd 会拿它续会话，直接跳到验证码
+  cleanStaleSessionFiles(cookieDir)
+  successHandler = options.onSuccess ?? null
   // starting = 内嵌认证服务尚未就绪：前端只展示「正在启动」，不出现密码/验证码输入框
   const s = newSession(cookieDir, 'starting', '正在启动认证服务…')
   session = s
@@ -258,7 +315,7 @@ export function startAuth(username: string, cookieDir: string): AuthSession {
   })
   child.on('exit', (code) => {
     if (proc !== child) return // R-09：旧进程迟到的事件不得影响新会话（见上方注释）
-    applyAuthExit(code)
+    applyAuthExit(code, successHandler)
   })
 
   // 等内嵌服务起来后开始轮询状态
@@ -303,17 +360,30 @@ export function onAuthTimeout(): void {
  * 无论哪条都先无条件清掉 10 分钟超时定时器：进程已经没了，超时监管没有意义，
  * 留着只会在 10 分钟后把准确的失败原因改写成「认证超时」（C-14 ①）。
  */
-export function applyAuthExit(code: number | null): void {
+export function applyAuthExit(code: number | null, onSuccess?: (() => void) | null): void {
   stopPolling()
   if (authTimer) {
     clearTimeout(authTimer)
     authTimer = null
   }
   proc = null
-  if (!session) return
+  if (!session) {
+    successHandler = null
+    return
+  }
   if (code === 0 && cookieExists(session.cookieDir)) {
     session.stage = 'done'
     session.message = '认证成功，cookie 已保存'
+    // F1：认证成功立即落库（写 auth_status='authed'），不等前端轮询。
+    // 回调异常不能影响状态收敛——cookie 已经落盘，认证本身是成功的，
+    // 兜底还有 GET /api/auth 那层，这里只记日志。
+    if (onSuccess) {
+      try {
+        onSuccess()
+      } catch (err) {
+        console.warn(`[auth] 认证成功回调执行失败：${(err as Error).message}`)
+      }
+    }
   } else if (code === 0) {
     session.stage = 'error'
     session.message =
@@ -322,6 +392,8 @@ export function applyAuthExit(code: number | null): void {
     session.stage = 'error'
     session.message = `icloudpd 认证退出（code=${code}）。常见原因：密码错误 / Apple 临时限流 / 认证服务端口被占用`
   }
+  // 一次性钩子：无论成功失败，这一轮都结束了
+  successHandler = null
 }
 
 /** 提交防重锁：同一时刻只处理一次提交，避免并发/连点造成重复发验证请求（用户手机重复收到验证码） */let inputLock = false
@@ -416,6 +488,9 @@ function teardownAuthProcess(): void {
   }
   stopPolling()
   submitPending = false
+  // 取消/超时/重启会话都属于「这一轮不再有结果」：成功回调一并作废，
+  // 否则下一次会话的 exit 事件可能拿到上一轮残留的钩子（写错库的状态）
+  successHandler = null
   if (proc && !proc.killed) {
     const pid = proc.pid
     // 同步等待 taskkill 完成：确保旧进程彻底退出后再 spawn 新的，

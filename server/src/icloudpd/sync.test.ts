@@ -20,7 +20,8 @@ import type { LibraryRow } from '../db/libraries.js'
 const { config } = await import('../config.js')
 config.metaDbPath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'icloud-sync-test-')), 'meta.db')
 
-const { handleSyncExit, handleLine, clearTimers, resetRetries } = await import('./sync.js')
+const { handleSyncExit, handleLine, clearTimers, resetRetries, startSync, isSyncBusy } = await import('./sync.js')
+const { getMetaDb, getLibraryById } = await import('../db/libraries.js')
 const { syncState, resetSyncState } = await import('./state.js')
 
 // 重试路径会挂 60s retryTimer、retries 为模块级计数：每个用例后清理，
@@ -169,4 +170,98 @@ test('handleLine：会话失效输出 → error + 过期文案', () => {
   handleLine('ERROR: Authentication required. Please log in again.')
   assert.equal(syncState.status, 'error')
   assert.match(syncState.message, /会话已过期/)
+})
+
+/* ============ 2026-11-03：同步前置守卫（auth_status + cookie 实体） ============ */
+
+/**
+ * 在临时 meta.db 里造一条真实库记录。
+ *
+ * 为什么不直接用手写的 `lib` 常量：cookie 缺失时守卫会把库状态改成 expired，
+ * 「改没改」必须回库读，只有真行才能验证（UPDATE 打在不存在的 id 上是静默 0 行，
+ * 只断言返回值会漏掉这条副作用）。
+ */
+function seedLibrary(id: number, patch: Partial<LibraryRow>): LibraryRow {
+  const row: LibraryRow = { ...lib, id, name: `lib-${id}`, ...patch }
+  getMetaDb()
+    .prepare(
+      `INSERT OR REPLACE INTO libraries
+         (id, name, library_root, cache_dir, cookie_dir, account, auth_status, last_sync_at, created_at, active, until_found, recent_limit)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    )
+    .run(
+      row.id, row.name, row.library_root, row.cache_dir, row.cookie_dir,
+      row.account, row.auth_status, row.last_sync_at, row.created_at,
+      row.active, row.until_found, row.recent_limit,
+    )
+  return row
+}
+
+/** 造一个「主 cookie 已落盘」的 cookie 目录 */
+function cookieDirWithCookie(): string {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sync-cookie-'))
+  fs.writeFileSync(path.join(dir, 'user@example.com'), 'cookie')
+  return dir
+}
+
+test('startSync：有 account 但 auth_status=none（提交邮箱后从未认证成功）→ 拒绝', () => {
+  resetSyncState()
+  const dir = cookieDirWithCookie()
+  try {
+    // 这正是 bug 的现场：点过「登录」、只填了邮箱，account 已写库，但从未完成验证
+    seedLibrary(991, { account: 'user@example.com', auth_status: 'none', cookie_dir: dir })
+    // 变异验证：把守卫改回 `if (!lib.account)` 时，这一行会真的 spawn 进程并返回 ok:true
+    const r = startSync(getLibraryById(991)!, 'full')
+    assert.equal(r.ok, false, 'account 有值不等于已认证，不能放行')
+    assert.match(r.message, /尚未完成 iCloud 链接/)
+    assert.equal(isSyncBusy(), false, '被拒的任务不得留下 running 状态')
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('startSync：auth_status=expired → 拒绝并提示重新登录', () => {
+  resetSyncState()
+  const dir = cookieDirWithCookie()
+  try {
+    seedLibrary(992, { account: 'user@example.com', auth_status: 'expired', cookie_dir: dir })
+    const r = startSync(getLibraryById(992)!, 'inc')
+    assert.equal(r.ok, false)
+    assert.match(r.message, /已过期/)
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('startSync：状态说已链接但 cookie 不在盘 → 拒绝，并把库状态修正为 expired', () => {
+  resetSyncState()
+  const emptyDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sync-nocookie-'))
+  try {
+    seedLibrary(993, { account: 'user@example.com', auth_status: 'authed', cookie_dir: emptyDir })
+    const r = startSync(getLibraryById(993)!, 'full')
+    assert.equal(r.ok, false)
+    assert.match(r.message, /cookie 文件缺失/)
+    assert.equal(getLibraryById(993)!.auth_status, 'expired', '状态与磁盘不符时要自愈成 expired，提示用户重登')
+  } finally {
+    fs.rmSync(emptyDir, { recursive: true, force: true })
+  }
+})
+
+test('startSync：authed 且 cookie 在盘 → 放行（守卫不得过度拦截）', async () => {
+  resetSyncState()
+  const dir = cookieDirWithCookie()
+  const prevExe = config.icloudpdExe
+  try {
+    seedLibrary(994, { account: 'user@example.com', auth_status: 'authed', cookie_dir: dir })
+    // 指向不存在的可执行文件：只为证明守卫放过，进程起不来（spawn error 落 error 状态）
+    config.icloudpdExe = path.join(dir, 'no-such-icloudpd.exe')
+    const r = startSync(getLibraryById(994)!, 'full')
+    assert.equal(r.ok, true, '正常库必须能启动，否则守卫就是过度拦截')
+    // 等 spawn 的 error 事件落定，避免异步状态写进后续用例
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    assert.equal(syncState.status, 'error')
+  } finally {
+    config.icloudpdExe = prevExe
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
 })

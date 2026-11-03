@@ -18,6 +18,7 @@ import { config } from '../config.js'
 import type { LibraryRow } from '../db/libraries.js'
 import { touchLibrarySync, updateLibraryAuth, libraryIcloudDir } from '../db/libraries.js'
 import { syncState, resetSyncState } from './state.js'
+import { cookieExists } from './auth.js'
 
 /** 索引未完成重试：等待 60s，最多 5 次（含首次后的 4 次） */
 const RETRY_WAIT_MS = 60_000
@@ -78,8 +79,25 @@ export function startSync(lib: LibraryRow, kind: 'full' | 'inc'): SyncTaskStateL
       message: `已有任务在执行中（${syncState.libraryId === lib.id ? '本库' : '其他库'}），请等待或取消`,
     }
   }
-  if (!lib.account) {
-    return { ok: false, message: '该库尚未链接 iCloud，请先认证' }
+  // F2（2026-11-03）：判据必须是「链接完成」，不能只看 account。
+  // account 在 POST /api/auth 提交邮箱那一刻就写库了（用户刚提交完邮箱、还没过验证码），
+  // 所以「account 有值 + auth_status='none'」= 点过登录但从未成功。
+  // 旧实现只查 account，未登录的库也能启动全量拉取，而 icloudpd 拿着半成品 cookie
+  // 会直接要验证码，日志看起来像是「cookie 没清干净」。
+  if (!lib.account || lib.auth_status !== 'authed') {
+    return {
+      ok: false,
+      message:
+        lib.auth_status === 'expired'
+          ? '该库的 iCloud 链接已过期，请重新登录后再同步'
+          : '该库尚未完成 iCloud 链接，请先在设置中心登录后再同步',
+    }
+  }
+  // F4：状态可能因历史数据/手工改动而不准，再确认一次主 cookie 真的在磁盘上。
+  // 缺 cookie 却放行，只会白跑一个必然卡在登录的进程。
+  if (!cookieExists(lib.cookie_dir)) {
+    updateLibraryAuth(lib.id, { auth_status: 'expired' })
+    return { ok: false, message: 'cookie 文件缺失（可能被清理或迁移过），请重新登录 iCloud 后再同步' }
   }
   currentLibRef = lib
   // R-10 修复（2026-10-28）：这里原先会再 spawn 一个 icloudpd 跑 checkAuthValid 做「同步前预检」，

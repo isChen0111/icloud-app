@@ -26,6 +26,21 @@ import ImportDialog from './ImportDialog.vue'
  */
 const tasks = useTaskStore()
 const stats = computed(() => tasks.stats)
+
+const props = withDefaults(defineProps<{
+  /**
+   * 认证纪元：App 在「认证成功 / 认证面板关闭」时 +1。
+   *
+   * 为什么需要它：本页的库列表刷新依赖 taskSignature，而 stats.library 只返回
+   * **当前激活库**。在非激活库上完成认证时，后端已经把 auth_status 改成 authed，
+   * 但签名不变 → 列表不重拉 → 卡片继续显示「未链接」，要切库才恢复
+   * （2026-11-03 修复的「认证成功仍显示未链接」就是这条）。
+   */
+  authEpoch?: number
+}>(), {
+  authEpoch: 0,
+})
+
 const emit = defineEmits<{
   close: []
   'open-auth': [lib: { id: number; name: string; account: string | null }]
@@ -150,6 +165,15 @@ function thisLibBusy(id: number): boolean {
 function otherBusy(id: number): boolean {
   return globalBusy() && stats.value?.sync.libraryId !== id
 }
+/** 本库能否发起同步：未链接 / 会话过期一律前端锁死（后端也会 409，但没必要让用户白点） */
+function authLocked(lib: LibraryInfo): boolean {
+  return lib.authStatus !== 'authed'
+}
+function authLockHint(lib: LibraryInfo): string {
+  return lib.authStatus === 'expired'
+    ? 'iCloud 会话已过期，请重新登录后再同步'
+    : '尚未链接 iCloud，请先登录后再同步'
+}
 /** 状态行颜色：蓝=进行中 黄=等待 绿=完成 红=失败 */
 function syncStatusClass(status?: string): string {
   if (status === 'running') return 'info'
@@ -200,6 +224,13 @@ watch(taskSignature, (next, prev) => {
   window.clearTimeout(reloadTimer)
   reloadTimer = window.setTimeout(() => void loadLibraries(), 300)
 })
+
+/**
+ * 认证纪元变化 → 直接重拉库列表（不防抖）。
+ * 认证成功/关闭面板是低频且明确的「列表一定变了」事件，等下一次 stats 签名变化
+ * 在非激活库场景下根本等不到（见 props.authEpoch 注释）。
+ */
+watch(() => props.authEpoch, () => void loadLibraries())
 
 function pickSync(libId: number, kind: 'full' | 'inc'): void {
   pick.value = { ...pick.value, [libId]: kind }
@@ -399,16 +430,16 @@ onBeforeUnmount(() => {
                   </span>
                 </div>
                 <div class="lib-card-actions">
-                  <!-- 只在「从未链接」时把登录按钮放出来：这是新建库的第一个动作。
-                       已链接后低频重登收进「更多」，标题行只留一个入口 -->
+                  <!-- 从未链接 / 会话过期都把入口放在标题行：这两种状态下同步按钮是锁死的，
+                       必须有一个就近的出口。已链接后的低频重登才收进「更多」 -->
                   <button
-                    v-if="lib.authStatus === 'none'"
+                    v-if="lib.authStatus !== 'authed'"
                     class="btn-ghost accent"
                     type="button"
-                    title="登录 Apple ID，之后才能从 iCloud 同步照片"
+                    :title="lib.authStatus === 'expired' ? 'iCloud 会话已过期，重新登录后才能继续同步' : '登录 Apple ID，之后才能从 iCloud 同步照片'"
                     @click="emit('open-auth', { id: lib.id, name: lib.name, account: lib.account })"
                   >
-                    登录 iCloud
+                    {{ lib.authStatus === 'expired' ? '重新登录' : '登录 iCloud' }}
                   </button>
                   <div class="more-wrap">
                     <button
@@ -426,8 +457,9 @@ onBeforeUnmount(() => {
                       </svg>
                     </button>
                     <div v-if="menuLibId === lib.id" class="more-menu" role="menu">
+                      <!-- 未链接/过期已经在标题行放了按钮，这里只留「已链接库的重登」入口 -->
                       <button
-                        v-if="lib.authStatus !== 'none'"
+                        v-if="lib.authStatus === 'authed'"
                         type="button"
                         role="menuitem"
                         @click.stop="emit('open-auth', { id: lib.id, name: lib.name, account: lib.account }); closeMenu()"
@@ -515,6 +547,8 @@ onBeforeUnmount(() => {
                   :busy="thisLibBusy(lib.id)"
                   :picked="pick[lib.id] ?? null"
                   :disabled="otherBusy(lib.id)"
+                  :locked="authLocked(lib)"
+                  :locked-hint="authLockHint(lib)"
                   @pick="(k) => pickSync(lib.id, k)"
                   @run="runSync(lib.id)"
                   @cancel="cancelSyncRun(lib.id)"
@@ -526,6 +560,10 @@ onBeforeUnmount(() => {
                 </span>
                 <span v-else-if="otherBusy(lib.id) && pick[lib.id]" class="sync-note warn">
                   <i class="sync-dot" aria-hidden="true" />其他库同步中，请等待完成后再执行
+                </span>
+                <!-- 未链接/过期：按钮已锁死，旁边把「为什么点不动、下一步做什么」写清楚 -->
+                <span v-else-if="authLocked(lib)" class="sync-note warn">
+                  <i class="sync-dot" aria-hidden="true" />{{ authLockHint(lib) }}
                 </span>
               </div>
 

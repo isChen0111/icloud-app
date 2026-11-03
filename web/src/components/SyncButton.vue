@@ -6,6 +6,9 @@
   - picked：已选全量/增量待执行，点击 emit run
   - idle：「iCloud 同步」主按钮 + 全量/增量菜单，选择 emit pick(kind)
   - disabled：仅视觉灰显（其他库任务占用），菜单仍可点开，点执行由后端 409 提示
+  - locked：硬锁（本库未链接 iCloud / 会话过期），菜单不展开、点执行无反应，
+    title 说明原因。与 disabled 的区别：disabled 是「后端会拦，先让用户看到」，
+    locked 是「这一步根本不该发起」，由前端就地阻断。
 
   曾经还有一个 starting「启动中…」占位态，用于「点了执行、但 5 秒轮询还没确认 running」
   的窗口期。现在 startSync 的响应本身就带回 status='running' 并直接写进快照，
@@ -34,10 +37,12 @@
     <template v-else>
       <button
         class="sync-btn"
-        :class="{ disabled }"
+        :class="{ disabled: disabled || locked }"
         type="button"
         :aria-expanded="menuOpen"
-        @click="menuOpen = !menuOpen"
+        :aria-disabled="locked || undefined"
+        :title="locked ? lockedHint : undefined"
+        @click="onMainClick"
       >
         <span class="ico">
           <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -74,7 +79,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 
 const props = withDefaults(defineProps<{
   /** 本库任务执行中（含 waiting_retry） */
@@ -83,9 +88,15 @@ const props = withDefaults(defineProps<{
   picked?: 'full' | 'inc' | null
   /** 仅视觉灰显（其他库任务占用），不禁用菜单点击 */
   disabled?: boolean
+  /** 硬锁：未链接/会话过期，点击不展开菜单（前端就地阻断） */
+  locked?: boolean
+  /** locked 时的原因说明（按钮 title） */
+  lockedHint?: string
 }>(), {
   picked: null,
   disabled: false,
+  locked: false,
+  lockedHint: '请先登录 iCloud',
 })
 
 const emit = defineEmits<{
@@ -96,10 +107,23 @@ const emit = defineEmits<{
 
 const menuOpen = ref(false)
 
+/** locked 时按钮不响应：连菜单都不给展开，避免「点了没反应也不知为什么」 */
+function onMainClick(): void {
+  if (props.locked) return
+  menuOpen.value = !menuOpen.value
+}
+
 function choose(kind: 'full' | 'inc'): void {
   menuOpen.value = false
+  if (props.locked) return
   emit('pick', kind)
 }
+
+// 链接状态可能在本组件展开菜单期间变化（例如另一个库刚完成认证）：
+// 一旦锁上就立刻收起菜单，避免留下一个能点但会被后端 409 的入口。
+watch(() => props.locked, (v) => {
+  if (v) menuOpen.value = false
+})
 </script>
 
 <style scoped>
