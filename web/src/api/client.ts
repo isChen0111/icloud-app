@@ -174,19 +174,45 @@ function revParam(mtime: number): string {
   return `${THUMB_REV}-${mtime}`
 }
 
-/** 缩略图 URL（网格/详情/占位）；mtime = 资产 file_mtime（未知时传 0） */
-export function thumbUrl(id: number, size: ThumbSize = 'grid', mtime: number = 0): string {
-  return `${BASE}/thumb/${id}?size=${size}&rev=${revParam(mtime)}`
+/**
+ * 缩略图 / 视频封面的**库作用域**（URL 上的 `lib` 参数）。
+ *
+ * 为什么必须有：`/api/thumb/:id` 只按资产 id 查库，而 id 是**库内自增**——
+ * 不同库里同一个 id 指向完全不同的照片，响应却按同一个 URL 进浏览器缓存。
+ * 只要两个库在同一个 id 上撞了同一个 rev，就会拿库 A 的缩略图显示库 B 的照片。
+ * 这不是理论风险：同批数据导进多个库时 mtime 被 `preserveTimestamps` 原样保留、
+ * 扫描顺序又一致 → id 与 rev 成片命中。
+ *
+ * 由 tasks store 在每次 `/api/stats` 落地时写入；`null`（还没拿到库信息）时**不带**该参数，
+ * 后端据此跳过校验——宁可退回旧的共享缓存，也不能因为拿不到库 id 让整面墙 404。
+ */
+let thumbLibraryId: number | null = null
+
+/** 写入当前激活库 id（null = 未知，退回不带库作用域的旧行为） */
+export function setThumbLibrary(id: number | null): void {
+  thumbLibraryId = id
 }
 
-/** 视频流 URL（Range 由浏览器自动带） */
+/** lib 片段：已知库才拼 */
+function libParam(): string {
+  return thumbLibraryId === null ? '' : `&lib=${thumbLibraryId}`
+}
+
+/** 缩略图 URL（网格/详情/占位）；mtime = 资产 file_mtime（未知时传 0） */
+export function thumbUrl(id: number, size: ThumbSize = 'grid', mtime: number = 0): string {
+  return `${BASE}/thumb/${id}?size=${size}&rev=${revParam(mtime)}${libParam()}`
+}
+
+/** 视频流 URL（Range 由浏览器自动带）。
+ *  不带 lib：流式播放不进 http 缓存，且切库时中断播放是预期行为，多一个参数只会
+ *  让「库 id 未知」的边界情况把正在播的视频打成 404。 */
 export function videoStreamUrl(id: number): string {
   return `${BASE}/video/${id}/stream`
 }
 
 /** 视频封面 URL（size=detail 用于详情页播放前的大封面；mtime 同缩略图机制：源视频覆盖后强制刷新长缓存） */
 export function videoPosterUrl(id: number, size: ThumbSize = 'grid', mtime: number = 0): string {
-  return `${BASE}/video/${id}/poster?size=${size}&rev=${revParam(mtime)}`
+  return `${BASE}/video/${id}/poster?size=${size}&rev=${revParam(mtime)}${libParam()}`
 }
 
 /** 批量删除资产（客户端删除：DB 行 + 缓存 + 磁盘源文件，不可逆）

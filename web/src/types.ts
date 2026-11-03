@@ -17,7 +17,6 @@ export interface AssetDto {
   orientation: number | null
   gpsLat: number | null
   gpsLon: number | null
-  thumbUrl: string
   /** 缓存版本号（F-03 修复）：源文件 mtimeMs。文件覆盖后 rev 变化 → 缩略图 URL 变化 → 浏览器强制拉新图 */
   rev: number
 }
