@@ -55,12 +55,29 @@ const emit = defineEmits<{
   'open-auth': [lib: { id: number; name: string; account: string | null }]
   'new-library': []
   'library-deleted': [payload: { id: number; wasActive: boolean }]
+  /**
+   * 已切到另一个库：由 App 完成视图重建（photos 墙/搜索/选中/任务快照），本页不自己刷新。
+   * 设置页只是「发起点」，重建责任必须留在 App——设置页卸载/重挂时不该影响照片墙。
+   */
+  'library-switched': [payload: { id: number; name: string }]
 }>()
 
 type Tab = 'libs' | 'about'
 const tab = ref<Tab>('libs')
 const libraries = ref<LibraryInfo[]>([])
 const loading = ref(false)
+/**
+ * 渲染顺序：当前库恒排第一。
+ *
+ * 高亮只解决「看到之后好不好认」，没解决「还得先滚到它」。库一多（3 个以上）当前库
+ * 就落到折叠线以外，用户仍然要先滚一遍再找——这正是「每次都得找那个当前标签」的根因。
+ * 置顶的副作用是切库瞬间卡片会跳到顶部：这里当成正向反馈，「它跑上来了 = 切成功了」。
+ */
+const orderedLibraries = computed(() => {
+  const active = libraries.value.filter((l) => l.active)
+  if (active.length === 0) return libraries.value
+  return [...active, ...libraries.value.filter((l) => !l.active)]
+})
 /** 每库已选待执行：{ [libId]: 'full'|'inc' } */
 const pick = ref<Record<number, 'full' | 'inc' | null>>({})
 /** 展开「iCloud 同步设置」的库 id（点击库卡片的配置下拉展开/收起） */
@@ -78,8 +95,7 @@ const removePhotos = ref(false)
 const photoConfirmArmed = ref(false)
 const deleting = ref(false)
 const deleteError = ref('')
-/** 正在切换的库 id（「切换照片库」按钮的 loading 态，兼防连点） */
-const switchingId = ref<number | null>(null)
+/** 正在切换的库 id（「切换照片库」按钮的 loading 态，兼防连点） */const switchingId = ref<number | null>(null)
 /** 最近一次切换失败的库 id（把 409 文案挂到该库卡片下） */
 const switchFailId = ref<number | null>(null)
 /** 待导入的照片库（打开 ImportDialog；null=关闭） */
@@ -264,8 +280,13 @@ async function runSync(libId: number): Promise<void> {
 /**
  * 切换照片库（只切换，不启动同步）。
  *
- * 与顶栏下拉的 pickLibrary 同一语义：后端热切换（停旧 watcher → 清缩略图队列 → 关旧 DB →
- * 覆写 config → 重开 DB → 扫新库 → 启 watcher），前端随后整页刷新做完整初始化。
+ * 与顶栏下拉的 pickLibrary 同一语义：后端热切换（停旧 watcher → 清缩略图队列 → 关旧 DB → 覆写 config
+ * → 重开 DB → 扫新库 → 启 watcher）。
+ *
+ * 成功后**不再 location.reload()**：以前刷新会把设置页一起关掉，用户切完库就被弹回照片墙，
+ * 想接着调另一张卡的配置得重新点进来。现在只通知 App 做视图重建（见 applyLibrarySwitch），
+ * 本页自己把库列表重拉一遍——卡片立刻互换「当前 / 未激活」，切库结果不用别的提示就看得见。
+ *
  * 之所以单独给一个按钮：有时用户只想切过去看看，并不想拉取；同步中/扫描中后端会 409，
  * 文案挂在对应卡片下。
  */
@@ -283,7 +304,11 @@ async function switchTo(lib: LibraryInfo): Promise<void> {
     switchingId.value = null
     return
   }
-  location.reload()
+  // 先通知 App（它会重建照片墙并重新拉 stats），再重拉本页列表。
+  // 不 await 通知里的刷新：那是 App 的活，本页只要自己这份数据是新的
+  emit('library-switched', { id: lib.id, name: lib.name })
+  await loadLibraries()
+  switchingId.value = null
 }
 
 /**
@@ -473,7 +498,7 @@ onBeforeUnmount(() => {
               <button class="settings-link" type="button" @click="emit('new-library')">新建照片库</button>
             </p>
 
-            <article v-for="lib in libraries" :key="lib.id" class="lib-card">
+            <article v-for="lib in orderedLibraries" :key="lib.id" class="lib-card" :class="{ current: lib.active }">
               <div class="lib-card-head">
                 <div class="lib-card-title-wrap">
                   <strong class="lib-card-name">{{ lib.name }}</strong>
@@ -879,11 +904,30 @@ onBeforeUnmount(() => {
 .settings-link { border: 0; background: transparent; color: #4384ee; font: inherit; font-size: 12px; cursor: pointer; }
 
 .lib-card {
+  position: relative;
   margin-bottom: 10px;
   padding: 13px 15px;
   border: 1px solid var(--border);
   border-radius: 11px;
   background: var(--bg-panel);
+  transition: border-color 0.18s ease, box-shadow 0.18s ease;
+}
+/* 当前库：一层描边 + 一层淡底，扫视时不用读文字就能定位。
+ *
+ * 曾用「左侧 3px 蓝色竖条」做纵向扫视锚点，但它必然歪：
+ *   ① absolute 条的宽度只有 3px，而它声明的水平圆角是 10px —— CSS 规定相邻两个圆角
+ *      半径之和超过边的长度时按比例等比缩小所有半径，3px 宽的条最终被压成 <2px 的
+ *      圆角，渲染出来近乎直角，与卡片的 11px 圆角错位（左上/左下冒出方角）；
+ *   ② 竖条贴在 border 内侧，于是左边 = 1px 边框 + 3px 条 = 4px，其余三边 1px，
+ *      四边粗细不匀，整圈描边看起来是「歪」的。
+ * 现在改成 box-shadow 同心环：外扩 1px 且完全跟随 border-radius，四边绝对等宽，
+ * 视觉上把 1px 边框加厚到 2px，既有存在感又不会出现任何对齐问题。 */
+.lib-card.current {
+  border-color: rgb(67 132 238 / 55%);
+  box-shadow: 0 0 0 1px rgb(67 132 238 / 28%);
+  background:
+    linear-gradient(90deg, rgb(67 132 238 / 10%), rgb(67 132 238 / 3%) 52%, transparent 82%),
+    var(--bg-panel);
 }
 .lib-card-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: space-between; }
 .lib-card-title-wrap { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; min-width: 0; }

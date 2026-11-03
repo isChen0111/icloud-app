@@ -130,6 +130,28 @@ export const useAssetStore = defineStore('assets', () => {
     await loadFirstPage()
   }
 
+  /**
+   * 整库重置（切换激活库时调用）：骨架 + 全部页缓存清空，等同「换一个数据源」。
+   *
+   * 与 refresh() 的分工：refresh 是同一库内的增量对齐——保留当前视口对应的页起点，
+   * 清空后按同一批位置就地重拉；而切库后行数、内容整体换了，旧页起点没有任何对齐
+   * 意义，必须全清。清空后由重建的 GridScroller 走 init() 从第 0 页重新起步。
+   *
+   * 在途响应靠 dataVersion / monthsRequestSequence 两个守卫作废：旧库的分页响应
+   * 晚到也不会写进新库的缓存（monthsRequestSequence++ 同时让 init 的响应变新）。
+   */
+  function reset(): void {
+    dataVersion++
+    monthsRequestSequence++
+    activeRequests.clear()
+    pageLoading.clear()
+    failed.clear()
+    failedAt.clear()
+    pages.clear()
+    loading.value = false
+    months.value = []
+  }
+
   /** 扫描完成后刷新骨架和已缓存页，保留用户当前滚动位置。 */
   async function refresh(): Promise<void> {
     const requestId = ++monthsRequestSequence
@@ -241,5 +263,6 @@ export const useAssetStore = defineStore('assets', () => {
     loadFirstPage,
     init,
     refresh,
+    reset,
   }
 })
