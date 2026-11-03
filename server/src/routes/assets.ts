@@ -35,8 +35,9 @@ export interface AssetDto {
   orientation: number | null
   gpsLat: number | null
   gpsLon: number | null
-  /** 前端缩略图 URL 前缀（由前端拼 size 参数） */
-  thumbUrl: string
+  // 注意：这里曾经返回 thumbUrl: `/api/thumb/<id>`。它是死字段（前端一律用
+  // api/client.ts 的 thumbUrl() 现拼），而且**不带 size/rev/lib**——任何人顺手用了
+  // 它就会绕过缓存键与库作用域，切库后拿到别的库的缩略图。已删除，不要加回来。
   /** 缓存版本号（F-03 修复）：源文件 mtimeMs。文件被覆盖后 mtime 变化 → 前端 URL rev 变化 → 浏览器强制拉取新缩略图 */
   rev: number
 }
@@ -74,7 +75,6 @@ export function toDto(row: AssetRow): AssetDto {
     orientation: row.orientation,
     gpsLat: row.gps_lat,
     gpsLon: row.gps_lon,
-    thumbUrl: `/api/thumb/${row.id}`,
     rev: row.file_mtime ?? 0,
   }
 }

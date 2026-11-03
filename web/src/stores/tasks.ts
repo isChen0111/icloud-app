@@ -27,6 +27,7 @@ import {
   cancelSync as apiCancelSync,
   startLocalImport as apiStartLocalImport,
   cancelImport as apiCancelImport,
+  setThumbLibrary,
 } from '../api/client'
 import type { Stats, SyncState, ImportState } from '../types'
 import { useAssetStore } from './assets'
@@ -194,6 +195,11 @@ export const useTaskStore = defineStore('tasks', () => {
     snapshot.value = next
     online.value = true
     failures.value = 0
+
+    // 缩略图 URL 的库作用域（见 api/client.ts 的 setThumbLibrary）。
+    // 挂在这里而不是「切库成功回调」里：stats 是唯一权威来源，冷启动、热切换、
+    // 删库后接管都会经过这条路；幂等，每次写一遍即可，不必比较是否变化。
+    setThumbLibrary(next.library?.id ?? null)
 
     // 后端热切换 / 删库后接管：库变了，扫描基线作废，
     // 否则新库的第一个快照会被误判成「扫描完成」而触发一次无谓的照片墙重建

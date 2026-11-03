@@ -14,6 +14,7 @@ import {
   setThumbnailFailuresIgnored,
   fetchLibraries,
   switchLibrary,
+  setThumbLibrary,
 } from './api/client'
 import { useAssetStore } from './stores/assets'
 import { useSearchStore } from './stores/search'
@@ -120,7 +121,10 @@ const libraryEpoch = ref(0)
  * 顺序不能反：先回路由（否则被重建的是详情页），再清 store（否则重建后的 init 会命中旧缓存，
  * 照片墙继续显示旧库），最后 epoch++。
  */
-async function applyLibrarySwitch(): Promise<void> {
+async function applyLibrarySwitch(activeId?: number): Promise<void> {
+  // 缩略图 URL 的库作用域必须**先**同步：视图马上要重建并开始请求缩略图，
+  // 若等 tasks.refresh 回来才更新，这批请求会带旧库 id → 后端按 lib 校验返回 404 → 图裂。
+  if (activeId !== undefined) setThumbLibrary(activeId)
   if (route.name === 'detail') {
     await router.replace({ name: 'grid' }).catch(() => {
       // 已在该路由 / 导航被打断：忽略，后续重建照常进行
@@ -137,13 +141,12 @@ async function applyLibrarySwitch(): Promise<void> {
 async function pickLibrary(id: number): Promise<void> {
   libMenuOpen.value = false
   try {
-    await switchLibrary(id)
+    const res = await switchLibrary(id)
+    await applyLibrarySwitch(res.activeId)
   } catch (err) {
     syncError.value = err instanceof Error ? err.message : String(err)
     void tasks.refresh({ force: true })
-    return
   }
-  await applyLibrarySwitch()
 }
 
 function openSettings(): void {
@@ -1260,7 +1263,7 @@ onBeforeUnmount(() => {
       @open-auth="openAuth"
       @new-library="closeSettings(); onboardingOpen = true"
       @library-deleted="onLibraryDeleted"
-      @library-switched="applyLibrarySwitch"
+      @library-switched="applyLibrarySwitch($event.id)"
     />
   </div>
 </template>

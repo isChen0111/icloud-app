@@ -9,6 +9,7 @@
  */
 import type { FastifyInstance, FastifyRequest } from 'fastify'
 import fs from 'node:fs'
+import { getCurrentLibrary } from '../context.js'
 import { getDb } from '../db/index.js'
 import { registerThumbnailCancelled, runInteractiveThumbnail } from '../pipeline/queue.js'
 import { ensureThumbnail, ensureSize, isCacheUsable, type ThumbSize } from '../pipeline/thumbnails.js'
@@ -31,15 +32,36 @@ function etagFor(filePath: string): string {
   return `"${st.size.toString(16)}-${st.mtimeMs.toString(16)}"`
 }
 
+/**
+ * 库作用域校验（前端在 URL 上带 `lib`，见 web/src/api/client.ts 的 setThumbLibrary）。
+ *
+ * 为什么需要：资产 id 是**库内自增**，`/api/thumb/:id` 只按 id 查当前库的 DB。
+ * 切库瞬间在途的、以及详情页 `new Image()` 预加载发出的请求不带库语义，落库以后
+ * 会命中新库的同 id 资产，返回一张毫不相干的照片，还要被浏览器按这个 URL 缓存一年。
+ *
+ * `lib` 缺省时**不校验**：前端在拿到第一份 /api/stats 之前并不知道库 id，那段窗口
+ * 必须能正常出图（宁可退回旧的共享缓存，也不能让整面墙 404）。
+ *
+ * 抽成纯函数（当前库 id 由调用方传入）是为了能单测：判定逻辑不该被 meta.db 绑住。
+ */
+export function libMismatch(lib: string | undefined, currentLibraryId: number | null): boolean {
+  if (lib === undefined) return false
+  const id = Number(lib)
+  return !Number.isInteger(id) || id !== currentLibraryId
+}
+
 export async function registerThumbRoutes(app: FastifyInstance): Promise<void> {
   const db = getDb()
 
   app.get('/api/thumb/:id', async (req, reply) => {
     const { id } = req.params as { id: string }
-    const query = req.query as { size?: string }
+    const query = req.query as { size?: string; lib?: string }
     const size = (query.size ?? 'grid') as ThumbSize
     if (!VALID_SIZES.has(size)) {
       return reply.code(400).send({ error: `size must be one of: ${[...VALID_SIZES].join(',')}` })
+    }
+    if (libMismatch(query.lib, getCurrentLibrary()?.id ?? null)) {
+      return reply.code(404).send({ error: 'asset not in current library' })
     }
 
     const assetId = Number(id)
@@ -104,10 +126,13 @@ export async function registerThumbRoutes(app: FastifyInstance): Promise<void> {
   // 只有 180x320 一小块；传 size=detail 抽 1600px 帧，播放前显示清晰大封面）
   app.get('/api/video/:id/poster', async (req, reply) => {
     const { id } = req.params as { id: string }
-    const query = req.query as { size?: string }
+    const query = req.query as { size?: string; lib?: string }
     const size = (query.size ?? 'grid') as ThumbSize
     if (!VALID_SIZES.has(size)) {
       return reply.code(400).send({ error: `size must be one of: ${[...VALID_SIZES].join(',')}` })
+    }
+    if (libMismatch(query.lib, getCurrentLibrary()?.id ?? null)) {
+      return reply.code(404).send({ error: 'asset not in current library' })
     }
     const assetId = Number(id)
     if (!Number.isInteger(assetId) || assetId <= 0) return reply.code(400).send({ error: 'invalid id' })

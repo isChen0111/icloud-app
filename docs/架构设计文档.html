@@ -193,9 +193,9 @@ GET /api/assets?offset=&amp;limit=120           <span class="c"># 任意全局�
 GET /api/assets/:id                         <span class="c"># 单资产详情（含配对实况 + prevId/nextId + position/total）</span>
 GET /api/assets/:id/info                    <span class="c"># 详情信息面板：实时解析 EXIF / ffprobe（低频，不落库）</span>
 GET /api/dates                              <span class="c"># 年月分组：{ym, label, count, offset, thumbId, thumbRev}，offset=该月首资产全局位置</span>
-GET /api/thumb/:id?size=grid|detail          <span class="c"># 缩略图（懒生成 + ETag 长缓存，前端 URL 带 rev = file_mtime 动态版本）</span>
+GET /api/thumb/:id?size=grid|detail&rev=&lib= <span class="c"># 缩略图（懒生成 + ETag 长缓存；rev = file_mtime 联动失效；lib = 库作用域，见 §6 缓存）</span>
 GET /api/video/:id/stream                   <span class="c"># 视频流（HTTP Range 206）；variant=h264 转码版为规划未实现</span>
-GET /api/video/:id/poster?size=grid|detail   <span class="c"># 视频封面帧（懒生成 + ETag 长缓存，rev 同缩略图）</span>
+GET /api/video/:id/poster?size=grid|detail&rev=&lib= <span class="c"># 视频封面帧（懒生成 + ETag 长缓存，rev/lib 同缩略图）</span>
 GET /api/search?q=&amp;limit=&amp;offset=         <span class="c"># FTS5 trigram 搜索（文件名/日期子串，≥3 字符；offset 匹配流分页，返回 total/months；畸形输入返空，真异常返 500）</span>
 GET /api/stats                               <span class="c"># 库统计 + 扫描进度 + 预览图计数 + thumbQueueMetrics + thumbConcurrency（异步体积统计 + 落盘缓存）</span>
 GET /api/thumbnails/failed                   <span class="c"># 失败清单：{ items, failedCount, ignoredCount }（失败/已忽略项，含原因）</span>
@@ -391,7 +391,7 @@ iCloudPhoto/lib&lt;id&gt;/          <span class="c"># library_root（扫描递�
 
 <h3>4.3 图片加载器（对标 DerivativeImage）</h3>
 <ul>
-<li><b>缓存</b>：浏览器 HTTP 缓存（后端 ETag + 长缓存）为主；内存 LRU（上限 ~300MB，存最近浏览的 blob）<b>已决定不做</b>（2026-10-07：本地场景收益低，浏览器一年强缓存已足够，见 §6 待办）。</li>
+<li><b>缓存</b>：浏览器 HTTP 缓存（后端 ETag + 长缓存）为主；缩略图/封面 URL 带 <code>lib=&lt;库id&gt;</code>——资产 id 是<b>库内自增</b>，不带库作用域时两个库的同一 id 会命中同一 URL，切库后浏览器直接给旧图（同批数据导入多个库时 mtime 被 <code>preserveTimestamps</code> 保留、扫描顺序一致，id 与 rev 会成片撞上）。后端对 <code>lib</code> 做校验：与当前激活库不符直接 404，挡住切库瞬间在途/预加载的旧请求；<b>参数缺省不校验</b>（前端拿到第一份 stats 前不知道库 id，那段窗口必须能出图）；内存 LRU（上限 ~300MB，存最近浏览的 blob）<b>已决定不做</b>（2026-10-07：本地场景收益低，浏览器一年强缓存已足够，见 §6 待办）。</li>
 <li><b>占位策略</b>：照片墙未加载完成时显示格子底色，grid 图加载后以 <code>opacity</code> 过渡淡入；详情页可复用 grid 图并施加 CSS 模糊。</li>
 <li><b>优先级</b>：视口内 &gt; 预取窗口 &gt; 后台预热；并发上限 = 后端 <code>/api/stats.thumbConcurrency</code>（默认 8，后端 config 唯一来源防漂移；本地 IO 快可调大）。滚动触发经 rAF 合并（每帧最多一次 pump），拖滚动条<b>按速度拆开</b>——慢速拖动走 rAF 每帧派发（带预载）、快速拖动 250ms 判速跳过中间、停稳 180ms 后补位（详见 4.12）。</li>
 <li><b>错误降级</b>：失败自动重试 1 次后显示占位图标，并在后台任务列表重排生成。</li>
