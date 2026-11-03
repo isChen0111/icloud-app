@@ -2,7 +2,12 @@
  * 导入核心流水线（本机迁移与上传共用）
  *
  * 职责边界：只负责「把文件按拍摄日期归置到 import/YYYY/MM/DD/」，不写 DB、不做配对入库。
- * 落库统一交给 scanner 的 runScan()（导入结束后由编排层调用），复用缩略图预热与删除对账。
+ * 落库统一交给 scanner 的 runScan()（由编排层调用），复用缩略图预热与删除对账。
+ *
+ * 「归置期间也要边导边看」的职责分界（2026-11-03）：本文件**不 import scanner 的
+ * runScan**（否则形成 import → scanner 的反向依赖，且每次落位都直接触发全库扫描，
+ * 阈值与单飞逻辑会散落在循环里）。改为经 `hooks.onFileSettled` 通知编排层，由它决定
+ * 什么时候派发周期扫描。
  *
  * 关键正确性（见计划 §四）：
  *   复制时用 fs.cp({ preserveTimestamps: true }) 保留源文件 mtime——无 EXIF 的文件归置到
@@ -140,6 +145,24 @@ export interface ImportRunResult {
 }
 
 /**
+ * 归置过程的观察钩子（2026-11-03，为「边导边看」而加）。
+ *
+ * 本文件只负责归置、不写 DB，所以扫不扫描由**编排层**决定：编排层注入钩子，
+ * 在里面按「攒够 N 个文件 + 距上次够久」派发一次 runScan。这样既不用让 fsImport
+ * 反向依赖 scanner，也能让本机迁移与上传两条入口共用同一套触发逻辑。
+ */
+export interface ImportHooks {
+  /**
+   * 单个文件「落位 + 补写 EXIF」完成后回调，参数为累计已处理文件数。
+   *
+   * 判重跳过的（skipped）与失败的不回调——它们没有产生新文件，扫描看不到东西。
+   * 调用点在内层文件循环末尾（patchExif 之后），因此回调时该文件已是最终形态；
+   * 回调**不能阻塞归置**（编排层内部用 fire-and-forget），否则每个周期都要停顿一轮扫描。
+   */
+  onFileSettled?: (processed: number) => void
+}
+
+/**
  * 清理上次导入中断留下的 `.part`（配合 C-09 的原子写）。
  *
  * 原子写保证正式文件名上不会出现半写文件，代价是崩溃/强杀会留下 `.part` 残体。
@@ -180,6 +203,7 @@ export async function cleanupPartFiles(root: string): Promise<void> {
 export async function importDirectory(
   opts: ImportOptions,
   token: number = currentImportToken(),
+  hooks: ImportHooks = {},
 ): Promise<ImportRunResult> {
   /** 本流水线是否仍持有令牌（被新任务接管后为 false） */
   const owns = (): boolean => token === currentImportToken()
@@ -269,6 +293,8 @@ export async function importDirectory(
 
     for (const f of parts) {
       if (stopped()) break
+      /** 这个文件是否真的落位了（判重跳过或复制失败都不算） */
+      let landed = false
       try {
         // 审查 C-08：建目录放在 per-file try 里。旧实现放在循环外的资产循环顶部，
         // 目标盘满 / 目录被占用时异常会直接冲到编排层 → status='error'，
@@ -286,8 +312,10 @@ export async function importDirectory(
           if (owns()) importState.skipped++
         } else if (opts.mode === 'copy') {
           await copyAtomically(f.absPath, targetPath)
+          landed = true
         } else {
           await moveFileCrossSafe(f.absPath, targetPath)
+          landed = true
         }
         // 补写在落位之后：此时文件已归位，写失败也不会污染源文件；skipped 的不补（上次已补过）
         if (!skipped && isPatchableImage(f.fileName) && date.source !== 'exif-datetime') {
@@ -298,6 +326,8 @@ export async function importDirectory(
       }
       processed++
       if (owns()) importState.processedFiles = processed
+      // 落位后才通知编排层（判重跳过/失败的不算）：它可能据此派发一轮扫描
+      if (landed) hooks.onFileSettled?.(processed)
     }
     // 每处理若干资产让出一次事件循环，避免大目录导入期间阻塞 HTTP 轮询
     if (processed % 10 === 0) await yieldToEventLoop()

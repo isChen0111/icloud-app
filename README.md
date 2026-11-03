@@ -106,6 +106,9 @@ npm run start
 | `PORT` | `8899` | 后端端口 |
 | `HOST` | `0.0.0.0` | 后端监听地址（默认全网卡，同一局域网设备可用 `http://<服务器IP>:8899` 访问；设 `127.0.0.1` 可收回仅本机） |
 | `SCAN_LIMIT` | `0`（全量） | 调试用，>0 只扫前 N 个文件 |
+| `SCAN_MIN_INTERVAL_MS` | `5000` | 热监听两次扫描的最小间隔（0 = 关闭闸门） |
+| `IMPORT_SCAN_EVERY_FILES` | `100` | 导入归置期间每落位多少个文件允许扫一次（0 = 关闭周期扫描） |
+| `IMPORT_SCAN_MIN_INTERVAL_MS` | `20000` | 导入归置期间两次周期扫描的最小间隔 |
 | `MAX_UPLOAD_BYTES` | `0`（不限） | 导入上传的单文件大小上限 |
 
 优先级：命令行临时设置 > `.env` 文件 > 代码默认值。同一时间不要两个后端实例连同一个 `library.db`（SQLite 写锁冲突）。
@@ -119,7 +122,7 @@ npm run start
 | `npm run scan` | `server/` | 手动触发一次扫描同步 |
 | `npm run dev` | `web/` | 启动前端开发服务 |
 | `npm run build` | `web/` | 构建前端生产版本 |
-| `npm test` | `server/` | 单元测试（node:test，162 用例：缩略图调度器、任务队列、扫描对账与端到端扫描、数据库迁移、接口、工具函数、视频 Range 解析、watcher 会话代数、导入流水线）。新增测试文件需手动加进 `package.json` 的 test 列表——该脚本是显式文件清单，不是 glob |
+| `npm test` | `server/` | 单元测试（node:test，178 用例：缩略图调度器、任务队列、扫描对账与端到端扫描、数据库迁移、接口、工具函数、视频 Range 解析、watcher 会话代数与触发闸门、导入流水线与周期扫描）。新增测试文件需手动加进 `package.json` 的 test 列表——该脚本是显式文件清单，不是 glob |
 | `npm run postinstall` | `server/` | 安装/解压 BtbN ffmpeg full（含 libheif）+ icloudpd exe |
 
 ## API（开发参考）
