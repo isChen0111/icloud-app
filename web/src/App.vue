@@ -108,6 +108,34 @@ function openSettings(): void {
   settingsOpen.value = true
 }
 
+/**
+ * 打开「导入进度」：导入弹窗的唯一宿主是设置中心（那边还负责启动前切库确认），
+ * 所以这里不能自己再挂一个实例，而是把「请打开该库的导入弹窗」这个请求传给设置页。
+ *
+ * 用自增 seq 而不是只传 libId：同一个库连点两次时 id 不变，设置页的 watch 就不会再触发；
+ * 每次都是新对象则天然可靠。设置页还会处理「库列表尚未加载完」的时序（见其 pendingImportLibId）。
+ */
+const importRequest = ref<{ libId: number; seq: number } | null>(null)
+let importRequestSeq = 0
+
+function openImportProgress(): void {
+  const lib = stats.value?.library
+  if (!lib) return
+  statusDetailsOpen.value = false
+  importRequest.value = { libId: lib.id, seq: ++importRequestSeq }
+  settingsOpen.value = true
+}
+
+/**
+ * 关闭设置中心（必须顺手清掉 importRequest）。
+ * 不清的话，下次用户手动打开设置页时组件重新挂载、watch 带 immediate 会看到这条旧请求，
+ * 一进设置页就莫名其妙弹出导入窗。
+ */
+function closeSettings(): void {
+  settingsOpen.value = false
+  importRequest.value = null
+}
+
 /** 删除库后的处理：删激活库 → 整页刷新；删非激活库 → 仅从主界面库切换下拉移除 */
 function onLibraryDeleted(payload: { id: number; wasActive: boolean }): void {
   if (payload.wasActive) {
@@ -155,6 +183,81 @@ const thumbnailIconTone = computed(() => {
  *  但磁盘上的照片确实在增加——顶栏与扫描行都必须照实说「在忙什么」 */
 const landingBusy = computed(() => tasks.importBusy || tasks.syncBusy)
 
+/* ---------- 导入进度（2026-11-03） ----------
+ *
+ * 为什么必须有这块：导入弹窗是可以关掉的，而**关窗不等于取消**——后端流水线照跑，
+ * 大目录（几万张）能跑几十分钟。关窗后此前唯一能看到的只有顶栏一句「正在归置新照片」，
+ * 既没有总数也没有进度，用户以为任务已经停了（实测反馈就是「一开始我不知道」）。
+ * 现在把导入做成和同步同级的一等任务：顶栏摘要带百分比、状态浮层有独立一行 + 进度条，
+ * 并提供「查看导入详情 / 取消导入」两个出口。
+ */
+const importState = computed(() => tasks.importState)
+
+/**
+ * 导入百分比。null = 还不知道总数（归置前要先遍历源目录，大目录这一步就要几十秒），
+ * 此时显示「准备中」而不是 0%——0% 会让人以为卡住了。
+ */
+const importPercent = computed<number | null>(() => {
+  const i = importState.value
+  if (!i || i.totalFiles <= 0) return null
+  return Math.min(100, Math.floor((i.processedFiles / i.totalFiles) * 100))
+})
+
+/** 落库阶段（文件已归置完，正在 runScan 入库）：不可取消，进度也不归它管 */
+const importScanning = computed(() => importState.value?.phase === 'scanning')
+/** 已请求取消、后端流水线还在收尾（文件可能正卡在一个大文件的拷贝中） */
+const importCancelling = computed(() => importState.value?.cancelRequested === true)
+
+/** 导入阶段文案（顶栏摘要与浮层标题同源，避免两处措辞打架） */
+const importPhaseText = computed(() => {
+  const i = importState.value
+  if (!i) return '正在导入新照片'
+  if (i.phase === 'scanning') return '正在写入照片库'
+  if (i.cancelRequested) return '正在取消导入'
+  if (importPercent.value === null) return '正在准备导入'
+  return '正在导入新照片'
+})
+
+/** 顶栏摘要：写入照片库阶段没有百分比（全库遍历的进度在扫描行里） */
+const importSummary = computed(() => {
+  const pct = importPercent.value
+  if (importPhaseText.value !== '正在导入新照片' || pct === null) return importPhaseText.value
+  return `正在导入新照片 · ${pct}%`
+})
+
+/** 浮层导入行的说明文字：总数、已处理、跳过、失败一目了然 */
+const importCountText = computed(() => {
+  const i = importState.value
+  if (!i) return ''
+  if (i.phase === 'scanning') {
+    return `文件已归置完成，正在建立索引（${numberFormat.format(i.processedFiles)} 个）`
+  }
+  if (i.totalFiles <= 0) return '正在遍历源目录，统计待导入的文件'
+  const parts = [
+    `${numberFormat.format(i.processedFiles)} / ${numberFormat.format(i.totalFiles)}`,
+  ]
+  if (i.skipped > 0) parts.push(`跳过 ${numberFormat.format(i.skipped)}`)
+  if (i.failedCount > 0) parts.push(`失败 ${numberFormat.format(i.failedCount)}`)
+  return parts.join(' · ')
+})
+
+/** 可取消：落库阶段后端会 409，已请求取消时按钮也该锁住（否则用户会反复点） */
+const importCanCancel = computed(
+  () => tasks.importBusy && !importScanning.value && !importCancelling.value,
+)
+
+/** 取消导入（与导入弹窗里的取消是同一个接口，返回「已取消但未收尾」的中间态） */
+async function cancelImportRun(): Promise<void> {
+  // 优先用任务自己记录的库：接口按 /libraries/:id/import 校验激活库，用错库会 409
+  const libId = importState.value?.libraryId || stats.value?.library?.id
+  if (!libId) return
+  try {
+    await tasks.cancelImport(libId)
+  } catch (err) {
+    syncError.value = err instanceof Error ? err.message : String(err)
+  }
+}
+
 const statusSummary = computed(() => {
   if (!stats.value) return tasks.online ? '资源状态暂不可用' : '正在连接照片库…'
 
@@ -163,9 +266,10 @@ const statusSummary = computed(() => {
     return `正在扫描 · 已检查 ${numberFormat.format(scan.scannedFiles)} 个文件`
   }
   if (scan.status === 'error') return '照片库扫描失败'
-  // 落库优先于「已同步」：搬运文件时图库在变，不能显示成静止的已完成状态
+  // 落库优先于「已同步」：搬运文件时图库在变，不能显示成静止的已完成状态。
+  // 导入要说清进度（关掉导入弹窗后，这行是唯一的常驻可见位置）
   if (landingBusy.value) {
-    return tasks.importBusy ? '正在归置新照片' : '正在下载新照片'
+    return tasks.importBusy ? importSummary.value : '正在下载新照片'
   }
   if (scan.status === 'idle') return '等待照片库检查'
   if (scan.status === 'done' && thumbnails.status === 'preparing') {
@@ -308,7 +412,9 @@ const headingTitle = computed(() => {
   if (!scan) return '正在连接照片库'
   if (scan.status === 'scanning') return '正在扫描照片库'
   if (scan.status === 'error') return '照片库扫描失败'
-  if (landingBusy.value) return tasks.importBusy ? '正在归置新照片' : '正在下载新照片'
+  if (landingBusy.value) {
+    return tasks.importBusy ? importPhaseText.value : '正在下载新照片'
+  }
   if (scan.status === 'idle') return '等待扫描启动'
   if (thumbPhase.value === 'preparing') return '正在生成预览图'
   return '照片库已同步'
@@ -692,6 +798,48 @@ onBeforeUnmount(() => {
             </div>
           </div>
 
+          <!-- 导入行：只在导入进行中出现。关掉导入弹窗后，这里是进度与取消的唯一出口
+               （顶栏摘要只有一句文案，看不出共多少、还剩多少） -->
+          <template v-if="tasks.importBusy">
+            <div class="status-row import-row">
+              <span class="row-icon tone-active" aria-hidden="true">
+                <svg viewBox="0 0 16 16">
+                  <path d="M8 2.6v7" />
+                  <path d="m5.2 6.9 2.8 2.8 2.8-2.8" />
+                  <path d="M3 11.4v1.4a.8.8 0 0 0 .8.8h8.4a.8.8 0 0 0 .8-.8v-1.4" />
+                </svg>
+              </span>
+              <span class="row-copy">
+                <strong>{{ importPhaseText }}</strong>
+                <small>{{ importCountText }}</small>
+              </span>
+              <span class="row-value">
+                <span class="spinner" />
+                {{ importScanning ? '入库中' : importPercent === null ? '准备中' : `${importPercent}%` }}
+              </span>
+            </div>
+            <div
+              v-if="importPercent !== null && !importScanning"
+              class="progress-track"
+              role="progressbar"
+              :aria-valuenow="importPercent"
+              aria-valuemin="0"
+              aria-valuemax="100"
+            >
+              <span :style="{ width: `${importPercent}%` }" />
+            </div>
+            <div class="import-row-actions">
+              <button class="row-action" type="button" @click="openImportProgress">
+                查看导入详情 ›
+              </button>
+              <button v-if="importCanCancel" class="row-action danger" type="button" @click="cancelImportRun">
+                取消导入
+              </button>
+              <span v-else-if="importCancelling" class="row-action muted">正在取消…</span>
+              <span v-else-if="importScanning" class="row-action muted">入库阶段不可取消</span>
+            </div>
+          </template>
+
           <div class="status-row">
             <span class="row-icon" :class="`tone-${scanIconTone}`" aria-hidden="true">
               <svg viewBox="0 0 16 16">
@@ -1008,9 +1156,10 @@ onBeforeUnmount(() => {
     <SettingsView
       v-if="settingsOpen"
       :auth-epoch="authEpoch"
-      @close="settingsOpen = false"
+      :import-request="importRequest"
+      @close="closeSettings"
       @open-auth="openAuth"
-      @new-library="settingsOpen = false; onboardingOpen = true"
+      @new-library="closeSettings(); onboardingOpen = true"
       @library-deleted="onLibraryDeleted"
     />
   </div>
@@ -1299,6 +1448,26 @@ onBeforeUnmount(() => {
   stroke-linejoin: round;
 }
 .row-warning-dot { width: 6px; height: 6px; border-radius: 50%; background: #c78a20; }
+/* 导入行的两个出口（查看详情 / 取消）。与进度条同样左缩进 37px，对齐行图标右侧文字 */
+.import-row-actions {
+  display: flex;
+  gap: 12px;
+  margin: 8px 0 0 37px;
+  font-size: 10px;
+}
+.row-action {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #4384ee;
+  font: inherit;
+  font-size: 10px;
+  cursor: pointer;
+}
+.row-action:hover { text-decoration: underline; }
+.row-action.danger { color: #d05245; }
+.row-action.muted { color: var(--text-3); cursor: default; }
+.row-action.muted:hover { text-decoration: none; }
 .progress-track {
   height: 5px;
   margin: 11px 0 8px 37px;

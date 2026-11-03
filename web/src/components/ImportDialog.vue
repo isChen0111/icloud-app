@@ -258,6 +258,11 @@ onBeforeUnmount(() => {
         </div>
 
         <p v-if="error" class="import-error" role="alert">{{ error }}</p>
+        <!-- 关窗语义必须写清楚：后端流水线不归弹窗管，点 × 只是关掉这个视图。
+             大目录（几万张）能跑几十分钟，用户会以为点了 × 就停了（2026-11-03 实测反馈） -->
+        <p class="import-note">
+          关闭此窗口不会中断导入，任务会在后台继续；进度与取消入口在顶部「资源状态」里。
+        </p>
         <!-- 落库阶段没有取消按钮：后端不受理（409），留着只会让用户以为点了没用 -->
         <footer v-if="!scanning" class="import-actions">
           <!-- 取消只是置信号：大文件可能正卡在拷贝中，收尾要等它回到循环顶部。
@@ -571,6 +576,8 @@ onBeforeUnmount(() => {
 .import-failures-list span { font-size: 10.5px; color: var(--text-3); }
 
 .import-error { margin: 0; color: #d05245; font-size: 11px; line-height: 1.5; }
+/* 关窗语义说明：比正文弱一档，不抢「取消导入」按钮的注意力 */
+.import-note { margin: 0; color: var(--text-3); font-size: 10.5px; line-height: 1.5; }
 /* 底部操作区：加一条分隔线，让「取消/开始」从表单里独立出来 */
 .import-actions {
   display: flex;

@@ -19,7 +19,7 @@
  *   - 打开导入弹窗、打开认证弹窗都不切库；
  *   - 只有用户真正点「开始导入 / 开始上传 / 开始全量拉取」时才切，并且先弹确认说明后果。
  */
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { createLibrary, switchLibrary } from '../api/client'
 import { useTaskStore } from '../stores/tasks'
 import AuthDialog from './AuthDialog.vue'
@@ -58,6 +58,38 @@ const syncError = ref('')
 /* ===== 卡片二：本地目录 ===== */
 const importOpen = ref(false)
 const imported = ref<{ processed: number; skipped: number; failed: number } | null>(null)
+
+/**
+ * 导入任务快照（仅归属本库），与卡片一的 `sync` 同一个思路：**不依赖导入弹窗**。
+ *
+ * 弹窗随时能关，关了之后后端流水线照跑——之前这里只有弹窗的 @done 一条数据通道，
+ * 于是关窗后卡片回到「选择本地目录」的样子，用户完全不知道任务还在跑（2026-11-03 反馈）。
+ */
+const importTask = computed(() => {
+  const i = tasks.importState
+  if (!i || i.libraryId !== libraryId.value) return null
+  return i
+})
+const importBusy = computed(() => {
+  const i = importTask.value
+  if (!i) return false
+  return i.status === 'running' || (i.status === 'cancelled' && i.finishedAt == null)
+})
+/** null = 还在遍历源目录（总数未知），卡片显示「统计中」而不是 0% */
+const importPercent = computed<number | null>(() => {
+  const i = importTask.value
+  if (!i || i.totalFiles <= 0) return null
+  return Math.min(100, Math.floor((i.processedFiles / i.totalFiles) * 100))
+})
+/** 卡片上的进度文案（含落库阶段——那时没有百分比，只有已归置的文件数） */
+const importProgressText = computed(() => {
+  const i = importTask.value
+  if (!i) return ''
+  if (i.phase === 'scanning') return `文件已归置完成，正在写入照片库（${i.processedFiles} 个）`
+  if (i.cancelRequested) return '正在取消导入…'
+  if (i.totalFiles <= 0) return '正在统计待导入的文件…'
+  return `正在导入 ${importPercent.value}%（${i.processedFiles} / ${i.totalFiles}）`
+})
 
 /** 轮询订阅释放函数（引导页打开期间把任务频率提到活跃档） */
 let releaseTasks: (() => void) | null = null
@@ -149,9 +181,29 @@ function onAuthDone(): void {
   authDone.value = true
 }
 
-function onImportDone(payload: { processed: number; skipped: number; failed: number }): void {
-  imported.value = payload
+/** 已回填结果的运行标识（startedAt），防止同一轮完成被重复回填 */
+const importResultRun = ref<string | null>(null)
+
+/**
+ * 把导入结果回填到卡片。两条来源：
+ *   ① 弹窗的 @done（弹窗开着时最及时）；
+ *   ② store 的终态（弹窗被关掉、任务仍在后台跑完后才完成）。
+ * 只有第 ② 条能避免「关窗后任务才结束，卡片永远停在『选择本地目录』」。
+ */
+function recordImportResult(): void {
+  const i = importTask.value
+  if (!i || i.status !== 'done') return
+  const runKey = i.startedAt ?? `lib-${i.libraryId}`
+  if (importResultRun.value === runKey) return
+  importResultRun.value = runKey
+  imported.value = { processed: i.processedFiles, skipped: i.skipped, failed: i.failedCount }
 }
+
+function onImportDone(): void {
+  recordImportResult()
+}
+
+watch(() => importTask.value?.status, recordImportResult, { immediate: true })
 
 /** 卡片一：手动触发全量拉取（用户确认切库后再启动） */
 async function startFullSync(): Promise<void> {
@@ -191,12 +243,12 @@ const importLanded = (): number => {
 const anyAdded = computed(() => syncDone() || imported.value != null)
 /**
  * 底部按钮文案按真实状态说话：
- *   - 拉取中：「后台继续」——关闭引导不会中断服务端任务，先讲清楚再让人点
+ *   - 拉取/导入中：「后台继续」——关闭引导不会中断服务端任务，先讲清楚再让人点
  *   - 已完成过任一条：「完成」
  *   - 一条都没做：「稍后再说」——避免让「完成」暗示用户必须做点什么
  */
 const finishLabel = computed(() => {
-  if (syncRunning()) return '后台继续，进入照片库'
+  if (syncRunning() || importBusy.value) return '后台继续，进入照片库'
   return anyAdded.value ? '完成，进入照片库' : '稍后再说，进入照片库'
 })
 
@@ -343,23 +395,29 @@ onBeforeUnmount(() => {
               <strong>导入本地照片目录</strong>
               <small>把其他磁盘、旧电脑或手机导出的照片，按拍摄日期归置进来</small>
             </div>
-            <span v-if="imported != null" class="src-tag ok">已完成</span>
+            <span v-if="importBusy" class="src-tag">导入中</span>
+            <span v-else-if="imported != null" class="src-tag ok">已完成</span>
           </header>
 
           <div class="src-body">
-            <p v-if="imported != null" class="src-result">
+            <!-- 进行中也如实显示进度：弹窗可以关掉，卡片不能跟着变回「还没开始」 -->
+            <p v-if="importBusy" class="src-result">{{ importProgressText }}</p>
+            <p v-else-if="imported != null" class="src-result">
               已归置 {{ importLanded() }} 个文件
               <template v-if="imported.skipped > 0"> · 跳过 {{ imported.skipped }}</template>
               <template v-if="imported.failed > 0"> · 失败 {{ imported.failed }}</template>
             </p>
             <button class="onboard-btn" type="button" @click="importOpen = true">
-              {{ imported != null ? '再导入一次' : '选择本地目录' }}
+              {{ importBusy ? '查看导入进度' : imported != null ? '再导入一次' : '选择本地目录' }}
             </button>
           </div>
         </section>
 
         <p v-if="syncError" class="onboard-error" role="alert">{{ syncError }}</p>
-        <p v-if="syncRunning()" class="onboard-lead">拉取在后台进行，关闭引导不会中断，可在设置中心的库卡片里查看进度。</p>
+        <p v-if="syncRunning() || importBusy" class="onboard-lead">
+          {{ importBusy ? '导入' : '拉取' }}在后台进行，关闭引导不会中断；进度见上方卡片，
+          关掉引导后可在顶部「资源状态」里继续查看或取消。
+        </p>
 
         <footer class="onboard-actions">
           <button class="onboard-btn primary" type="button" @click="finish">{{ finishLabel }}</button>

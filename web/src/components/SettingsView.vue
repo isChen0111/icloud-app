@@ -37,8 +37,17 @@ const props = withDefaults(defineProps<{
    * （2026-11-03 修复的「认证成功仍显示未链接」就是这条）。
    */
   authEpoch?: number
+  /**
+   * App 发来的「打开该库的导入弹窗」请求（顶栏/浮层点「查看导入详情」）。
+   *
+   * 为什么用对象而不是 libId：同一个库连点两次时 id 不变，watch 不会触发；
+   * 每次都是新对象（带自增 seq）则天然可靠。App 关闭设置页时会把请求清空，
+   * 否则下次手动打开设置页（组件重新挂载 + watch immediate）会莫名其妙弹出导入窗。
+   */
+  importRequest?: { libId: number; seq: number } | null
 }>(), {
   authEpoch: 0,
+  importRequest: null,
 })
 
 const emit = defineEmits<{
@@ -285,6 +294,52 @@ async function switchTo(lib: LibraryInfo): Promise<void> {
 function openImport(lib: LibraryInfo): void {
   if (!lib.active) return
   importTarget.value = lib
+}
+
+/**
+ * 待打开的导入请求（顶栏点「查看导入详情」时 App 会先打开本页）。
+ * 库列表是异步拉的，这一刻 libraries 可能还是空数组——先记下来，加载完再开。
+ * 不是激活库就继续等（导入只允许对激活库执行，App 传来的库里也只有激活库）。
+ */
+const pendingImportLibId = ref<number | null>(null)
+
+function tryOpenPendingImport(): void {
+  const id = pendingImportLibId.value
+  if (id == null) return
+  const lib = libraries.value.find((l) => l.id === id)
+  if (!lib || !lib.active) return
+  pendingImportLibId.value = null
+  importTarget.value = lib
+}
+
+watch(
+  () => props.importRequest,
+  (req) => {
+    if (!req) return
+    pendingImportLibId.value = req.libId
+    tryOpenPendingImport()
+  },
+  { immediate: true },
+)
+
+watch(libraries, tryOpenPendingImport)
+
+/**
+ * 「导入照片」按钮的文案：该库正在导入时直接显示进度。
+ *
+ * 这是关掉导入弹窗后最容易被发现的落点——用户到设置页想再导入一次，看到按钮上写着
+ * 「导入中 37%」就知道任务还在跑，点一下即可回到进度视图（弹窗会自己识别进行中）。
+ */
+function importButtonText(lib: LibraryInfo): string {
+  const i = stats.value?.import
+  if (!i || i.libraryId !== lib.id) return '导入照片'
+  const busy = i.status === 'running' || (i.status === 'cancelled' && i.finishedAt == null)
+  if (!busy) return '导入照片'
+  if (i.phase === 'scanning') return '正在入库…'
+  if (i.totalFiles > 0) {
+    return `导入中 ${Math.min(100, Math.floor((i.processedFiles / i.totalFiles) * 100))}%`
+  }
+  return '导入中…'
 }
 
 /** 刚复制了哪个字段（`libId:root|cache|cookie`），用于按钮上「已复制」的短暂反馈 */
@@ -541,9 +596,8 @@ onBeforeUnmount(() => {
                     <path d="m5.2 6.9 2.8 2.8 2.8-2.8" />
                     <path d="M3 11.4v1.4a.8.8 0 0 0 .8.8h8.4a.8.8 0 0 0 .8-.8v-1.4" />
                   </svg>
-                  导入照片
-                </button>
-                <SyncButton
+                  {{ importButtonText(lib) }}
+                </button>                <SyncButton
                   :busy="thisLibBusy(lib.id)"
                   :picked="pick[lib.id] ?? null"
                   :disabled="otherBusy(lib.id)"
