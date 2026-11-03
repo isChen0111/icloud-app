@@ -141,21 +141,33 @@ const videoCount = computed(() => stats.value?.videos ?? 0)
 const visibleFailures = computed(() =>
   failureItems.value.filter((item) => (failureFilter.value === 'ignored' ? item.ignored === 1 : item.ignored === 0)),
 )
+/** 预览图行图标配色：跟随 thumbPhase（不是 scan.status）——同步期间批次照常在跑时
+ *  要亮成活跃蓝，否则「正在生成」配一个静默灰点，正是本次要修的错位感 */
 const thumbnailIconTone = computed(() => {
-  if (!stats.value || stats.value.scan.status !== 'done') return 'neutral'
-  if (stats.value.thumbnails.status === 'preparing') return 'active'
-  return stats.value.thumbnails.failed > 0 ? 'warning' : 'neutral'
+  switch (thumbPhase.value) {
+    case 'preparing': return 'active'
+    case 'failed': return 'warning'
+    default: return 'neutral'
+  }
 })
+
+/** 落库中：导入归置（本地导入/上传）或 iCloud 下载。这两段都没有扫描在跑，
+ *  但磁盘上的照片确实在增加——顶栏与扫描行都必须照实说「在忙什么」 */
+const landingBusy = computed(() => tasks.importBusy || tasks.syncBusy)
 
 const statusSummary = computed(() => {
   if (!stats.value) return tasks.online ? '资源状态暂不可用' : '正在连接照片库…'
 
   const { scan, thumbnails } = stats.value
-  if (scan.status === 'idle') return '等待照片库检查'
   if (scan.status === 'scanning') {
     return `正在扫描 · 已检查 ${numberFormat.format(scan.scannedFiles)} 个文件`
   }
   if (scan.status === 'error') return '照片库扫描失败'
+  // 落库优先于「已同步」：搬运文件时图库在变，不能显示成静止的已完成状态
+  if (landingBusy.value) {
+    return tasks.importBusy ? '正在归置新照片' : '正在下载新照片'
+  }
+  if (scan.status === 'idle') return '等待照片库检查'
   if (scan.status === 'done' && thumbnails.status === 'preparing') {
     const percent = thumbnails.total > 0
       ? Math.floor((thumbnails.processed / thumbnails.total) * 100)
@@ -171,19 +183,135 @@ const statusSummary = computed(() => {
 
 const statusTone = computed(() => {
   if (!stats.value) return 'idle'
-  if (stats.value?.scan.status === 'idle') return 'idle'
-  if (stats.value?.scan.status === 'error') return 'error'
-  if (stats.value?.scan.status === 'scanning' || stats.value?.thumbnails.status === 'preparing') {
+  const { scan, thumbnails } = stats.value
+  if (scan.status === 'error') return 'error'
+  // 落库中（导入归置 / 同步下载）也算「有活儿在跑」，顶栏圆点要跟着亮，
+  // 否则照片正在往库里拷、顶栏却是个静止的「已完成」勾
+  if (scan.status === 'scanning' || landingBusy.value || thumbnails.status === 'preparing') {
     return 'active'
   }
-  if (stats.value?.thumbnails.status === 'done' && stats.value.thumbnails.failed > 0) return 'warning'
+  if (scan.status === 'idle') return 'idle'
+  if (thumbnails.status === 'done' && thumbnails.failed > 0) return 'warning'
   return 'done'
+})
+
+/* ---------- 扫描行：四态 + 落库等待（2026-11-03 修） ----------
+ *
+ * ⚠️ 单独看 stats.scan.status 不足以描述「现在在干什么」：
+ * 导入/同步都分两段——① 搬运文件（复制/下载）② 落库扫描。第①段根本没有扫描在跑，
+ * 而 scanProgress 是模块级单例，会保留上一轮的 status='done' 与旧计数（「共检查 650 个」）。
+ * 于是文件正往库里拷，界面却显示「照片库扫描完成 / 完成」，与实际状态相反。
+ *
+ * 现在把「落库中但还没开始扫描」单列成 waiting 态，并让完成态的数字明确标注是
+ * 「最近一次扫描」——顺带消掉「650 个文件」与「367 张照片」看起来对不上的困惑
+ * （实况照片由图片+视频两个文件组成，650 = 393 资产 + 257 个实况片段）。
+ */
+type ScanPhase = 'idle' | 'scanning' | 'waiting' | 'error' | 'done'
+
+const scanPhase = computed<ScanPhase>(() => {
+  const s = stats.value?.scan
+  if (!s) return 'idle'
+  if (s.status === 'scanning') return 'scanning'
+  // 上一轮扫描出错比「正在落库」更值得提示：先让用户看到异常
+  if (s.status === 'error') return 'error'
+  if (landingBusy.value) return 'waiting'
+  return s.status === 'idle' ? 'idle' : 'done'
+})
+
+const scanTitle = computed(() => {
+  switch (scanPhase.value) {
+    case 'scanning': return '照片库扫描中'
+    case 'waiting': return '等待落库完成后扫描'
+    case 'error': return '扫描未完成'
+    case 'idle': return '等待扫描启动'
+    default: return '照片库扫描完成'
+  }
+})
+
+const scanHint = computed(() => {
+  switch (scanPhase.value) {
+    case 'scanning':
+      return '检查本机文件变化并更新图库'
+    case 'waiting':
+      return tasks.importBusy ? '导入的照片归置完成后会自动扫描' : '同步下载完成后会自动扫描'
+    case 'error':
+      return '本次扫描中断，资源计数可能尚未完整'
+    case 'idle':
+      return '后端启动后会自动检查照片库'
+    default:
+      return `最近一次扫描共检查 ${numberFormat.format(stats.value?.scan.totalFiles ?? 0)} 个媒体文件`
+  }
+})
+
+const scanIconTone = computed(() => {
+  if (scanPhase.value === 'scanning' || scanPhase.value === 'waiting') return 'active'
+  if (scanPhase.value === 'error') return 'error'
+  return 'neutral'
+})
+
+/* ---------- 预览图行：自己的生命期，不挂在 scanPhase 上（2026-11-03 修） ----------
+ *
+ * ⚠️ 上一版把这一行直接绑到 scanPhase，结果同步期间出现自相矛盾的界面：
+ * 行文案写「等待扫描完成 / 扫描后统计」，而下面进度条正显示 11 项在生成。
+ *
+ * 根因是两者本就不同源：
+ *   - 缩略图预热批次是每轮扫描**末尾**入队的（enqueueThumbnails），扫描一结束 batch 就在跑；
+ *   - 而同步期间 watcher 是边下边扫，常见的稳态是「上一轮扫完、批次在跑、下一轮还没开始」，
+ *     此时 landingBusy=true → scanPhase='waiting'，于是行文案被强行改写成「等待扫描完成」。
+ * 用户滚动照片墙时还有按需生成的交互式缩略图同时在工作，进一步坐实「明明在生成」。
+ *
+ * 唯一真正相关的是 scanning：批次在扫描末尾才入队，扫描中统计不完整/不存在。
+ */
+type ThumbPhase = 'scanning' | 'preparing' | 'failed' | 'ready' | 'empty'
+
+const thumbPhase = computed<ThumbPhase>(() => {
+  const t = stats.value?.thumbnails
+  if (!t) return 'scanning'
+  if (scanPhase.value === 'scanning') return 'scanning' // 批次尚未建立
+  if (t.status === 'preparing') return 'preparing'
+  if (t.failed > 0) return 'failed'
+  if (t.total > 0) return 'ready'
+  return 'empty'
 })
 
 const thumbnailPercent = computed(() => {
   const thumbnails = stats.value?.thumbnails
   if (!thumbnails || thumbnails.total === 0) return 100
   return Math.min(100, Math.floor((thumbnails.processed / thumbnails.total) * 100))
+})
+
+const thumbTitle = computed(() => {
+  switch (thumbPhase.value) {
+    case 'scanning': return '预览图'
+    case 'preparing': return '正在生成预览图'
+    case 'failed': return '部分预览图未生成'
+    case 'ready': return '预览图已就绪'
+    // empty：库里确实没有待生成项。落库中说明新照片还没入库，
+    // 说「已就绪」会像在敷衍，如实说「等待新照片入库」
+    default: return landingBusy.value ? '等待新照片入库' : '暂无预览图任务'
+  }
+})
+
+const thumbHint = computed(() => {
+  switch (thumbPhase.value) {
+    case 'scanning': return '浏览中的照片按需准备；其余项目在扫描结束后进入后台队列'
+    case 'preparing': return '用于照片墙浏览，不会修改原始照片'
+    case 'failed': return '下方失败数量可查看文件、重试或忽略提醒'
+    case 'ready': return '无需生成的项目会直接跳过'
+    default: return landingBusy.value ? '落库完成后会自动准备预览图' : '库里还没有需要生成预览图的项目'
+  }
+})
+
+/** 浮层大标题（与顶栏 statusSummary 同口径：落库中要照实说在忙什么） */
+const headingTitle = computed(() => {
+  const scan = stats.value?.scan
+  if (!scan) return '正在连接照片库'
+  if (scan.status === 'scanning') return '正在扫描照片库'
+  if (scan.status === 'error') return '照片库扫描失败'
+  if (landingBusy.value) return tasks.importBusy ? '正在归置新照片' : '正在下载新照片'
+  if (scan.status === 'idle') return '等待扫描启动'
+  if (thumbPhase.value === 'preparing') return '正在生成预览图'
+  return '照片库已同步'
 })
 
 /* ---------- P0 同步按钮（视觉/状态机统一在共享组件 SyncButton.vue） ---------- */
@@ -484,21 +612,7 @@ onBeforeUnmount(() => {
               </svg>
             </span>
             <div class="heading-copy">
-              <strong>
-                {{
-                  stats?.scan.status === 'scanning'
-                    ? '正在扫描照片库'
-                    : stats?.scan.status === 'error'
-                      ? '照片库扫描失败'
-                      : stats?.scan.status === 'idle'
-                        ? '等待扫描启动'
-                      : stats?.scan.status === 'done'
-                        ? stats.thumbnails.status === 'preparing'
-                          ? '正在生成预览图'
-                          : '照片库已同步'
-                        : '正在连接照片库'
-                }}
-              </strong>
+              <strong>{{ headingTitle }}</strong>
               <!-- P0 同步按钮区（共享组件 SyncButton：主界面/设置中心视觉与状态机完全一致） -->
               <div style="position: relative; margin-top: 7px">
                 <SyncButton
@@ -542,7 +656,7 @@ onBeforeUnmount(() => {
           </div>
 
           <div class="status-row">
-            <span class="row-icon tone-neutral" aria-hidden="true">
+            <span class="row-icon" :class="`tone-${scanIconTone}`" aria-hidden="true">
               <svg viewBox="0 0 16 16">
                 <rect x="2" y="3" width="9" height="7" rx="1.3" />
                 <path d="M5 12.5h8.5a.5.5 0 0 0 .5-.5V6.5" />
@@ -551,26 +665,20 @@ onBeforeUnmount(() => {
               </svg>
             </span>
             <span class="row-copy">
-              <strong>{{ stats?.scan.status === 'scanning' ? '照片库扫描中' : stats?.scan.status === 'error' ? '扫描未完成' : stats?.scan.status === 'idle' ? '等待扫描启动' : '照片库扫描完成' }}</strong>
-              <small>
-                {{
-                  stats?.scan.status === 'scanning'
-                    ? '检查本机文件变化并更新图库'
-                    : stats?.scan.status === 'error'
-                      ? '本次扫描中断，资源计数可能尚未完整'
-                      : stats?.scan.status === 'idle'
-                        ? '后端启动后会自动检查照片库'
-                      : `共检查 ${numberFormat.format(stats?.scan.totalFiles ?? 0)} 个媒体文件`
-                }}
-              </small>
+              <strong>{{ scanTitle }}</strong>
+              <small>{{ scanHint }}</small>
             </span>
             <span class="row-value">
-              <template v-if="stats?.scan.status === 'scanning'">
+              <template v-if="scanPhase === 'scanning'">
                 <span class="spinner" />
-                {{ numberFormat.format(stats.scan.scannedFiles) }} 个文件
+                {{ numberFormat.format(stats?.scan.scannedFiles ?? 0) }} 个文件
               </template>
-              <template v-else-if="stats?.scan.status === 'error'">未完成</template>
-              <template v-else-if="stats?.scan.status === 'idle'">等待启动</template>
+              <template v-else-if="scanPhase === 'waiting'">
+                <span class="spinner" />
+                待开始
+              </template>
+              <template v-else-if="scanPhase === 'error'">未完成</template>
+              <template v-else-if="scanPhase === 'idle'">等待启动</template>
               <template v-else>
                 <svg class="row-check" viewBox="0 0 16 16" aria-hidden="true"><path d="m3.1 8.1 3.1 3.1 6.7-6.7" /></svg>
                 完成
@@ -587,57 +695,29 @@ onBeforeUnmount(() => {
               </svg>
             </span>
             <span class="row-copy">
-              <strong>
-                {{
-                  stats?.scan.status === 'scanning'
-                    ? '预览图'
-                    : stats?.scan.status === 'error'
-                      ? '预览图准备状态未知'
-                      : stats?.scan.status === 'idle'
-                        ? '等待照片库检查'
-                      : stats?.thumbnails.status === 'preparing'
-                        ? '正在准备预览图'
-                        : stats?.thumbnails.failed
-                          ? '部分预览图未生成'
-                          : '预览图已就绪'
-                }}
-              </strong>
-              <small>
-                {{
-                  stats?.scan.status === 'scanning'
-                    ? '浏览中的照片按需准备；其余项目在扫描结束后进入后台队列'
-                    : stats?.scan.status === 'error'
-                      ? '扫描未完成，暂不能统计本轮预览图任务'
-                      : stats?.scan.status === 'idle'
-                        ? '照片库检查后再统计需要准备的项目'
-                      : stats?.thumbnails.status === 'preparing'
-                        ? '用于照片墙浏览，不会修改原始照片'
-                        : stats?.thumbnails.failed
-                          ? '下方失败数量可查看文件、重试或忽略提醒'
-                          : '无需生成的项目会直接跳过'
-                }}
-              </small>
+              <strong>{{ thumbTitle }}</strong>
+              <small>{{ thumbHint }}</small>
             </span>
             <span class="row-value">
-              <template v-if="stats?.scan.status === 'scanning' || stats?.scan.status === 'error' || stats?.scan.status === 'idle'">
+              <template v-if="thumbPhase === 'scanning'">
                 扫描后统计
               </template>
-              <template v-else-if="stats?.thumbnails.status === 'preparing'">
+              <template v-else-if="thumbPhase === 'preparing'">
                 <span class="spinner" />
                 {{ thumbnailPercent }}%
               </template>
-              <template v-else-if="stats?.thumbnails.failed">
+              <template v-else-if="thumbPhase === 'failed'">
                 <span class="row-warning-dot" />
                 需处理
               </template>
-              <template v-else-if="stats?.thumbnails.total">
+              <template v-else-if="thumbPhase === 'ready'">
                 <svg class="row-check" viewBox="0 0 16 16" aria-hidden="true"><path d="m3.1 8.1 3.1 3.1 6.7-6.7" /></svg>
                 完成
               </template>
-              <template v-else>无需处理</template>
+              <template v-else>{{ landingBusy ? '等待入库' : '无需处理' }}</template>
             </span>
           </div>
-          <template v-if="stats?.scan.status === 'done' && stats.thumbnails.total > 0">
+          <template v-if="thumbPhase !== 'scanning' && stats && stats.thumbnails.total > 0">
             <div class="progress-track" role="progressbar" :aria-valuenow="thumbnailPercent" aria-valuemin="0" aria-valuemax="100">
               <span :style="{ width: `${thumbnailPercent}%` }" />
             </div>
