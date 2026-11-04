@@ -57,13 +57,13 @@ iCloud 空间按月收费，拉回本地又只剩一堆没索引的文件；硬�
 
 ## 技术栈
 
-| 层 | 选型 |
-|---|---|
-| 前端 | Vue 3.5 + Vite 6 + TypeScript + Pinia + `@tanstack/vue-virtual`；自研懒加载与缩略图调度器 |
-| 后端 | Node.js 22+ + TypeScript + Fastify 5 + better-sqlite3（SQLite） |
-| 媒体处理 | sharp（缩略图，WebP）、FFmpeg full（HEIC 解码、视频抽帧与探测）、exiftool（补写 EXIF） |
-| 检索 | SQLite FTS5，`trigram` 分词器 |
-| 取图 | [icloudpd](https://github.com/icloud-photos-downloader/icloud_photos_downloader) 1.32.3，黑盒 spawn，版本锁定 |
+| 层       | 选型                                                                                                         |
+| -------- | ------------------------------------------------------------------------------------------------------------ |
+| 前端     | Vue 3.5 + Vite 6 + TypeScript + Pinia + `@tanstack/vue-virtual`；自研懒加载与缩略图调度器                  |
+| 后端     | Node.js 22+ + TypeScript + Fastify 5 + better-sqlite3（SQLite）                                              |
+| 媒体处理 | sharp（缩略图，WebP）、FFmpeg full（HEIC 解码、视频抽帧与探测）、exiftool（补写 EXIF）                       |
+| 检索     | SQLite FTS5，`trigram` 分词器                                                                              |
+| 取图     | [icloudpd](https://github.com/icloud-photos-downloader/icloud_photos_downloader) 1.32.3，黑盒 spawn，版本锁定 |
 
 几个值得一提的实现选择：
 
@@ -93,6 +93,14 @@ Set-Location ..\web
 npm ci
 ```
 
+> **⚠️ server下必须用 `npm ci`，不要用 `npm install`**
+>
+> `server/package-lock.json` 中 better-sqlite3 的条目手动补了 `"gypfile": false`（该包 npm 包内自带 Windows 预编译二进制，正常安装无需编译）。这个标记会被 `npm install` 重写 lock 文件时洗掉，导致 node-gyp 触发现场编译；机器上没装 Visual Studio C++ 工具链时就会报
+> `gyp ERR! find VS Could not find any Visual Studio installation to use`。
+>
+> - 日常安装、换新环境、CI 一律用 `npm ci`；
+> - 如果不小心跑了 `npm install` 且编译报错，把 `"gypfile": false,` 补回 `package-lock.json` 里 better-sqlite3 条目的 `"license": "MIT"` 之后，再 `npm ci` 即可（历史参考提交 `17d7104`）。
+
 ### 启动
 
 **开发模式**（前后端分离，热更新）—— 两个终端，分别运行：
@@ -107,7 +115,7 @@ Set-Location .\web
 npm run dev
 ```
 
-打开 <http://localhost:5173>。
+打开 [http://localhost:5173](http://localhost:5173)。
 
 **生产模式**（单端口，日常用这个）—— 前端构建一次，之后由后端直接托管页面：
 
@@ -119,7 +127,7 @@ Set-Location ..\server
 npm start
 ```
 
-访问 <http://127.0.0.1:8899>。
+访问 [http://127.0.0.1:8899](http://127.0.0.1:8899)。
 
 ### 局域网访问
 
@@ -144,7 +152,6 @@ postinstall 会从[项目 Release 页面](https://github.com/isChen0111/icloud-a
    powershell -ExecutionPolicy Bypass -File scripts/install-ffmpeg-full.ps1
    powershell -ExecutionPolicy Bypass -File scripts/install-icloudpd.ps1
    ```
-
 2. 设置环境变量 `FFMPEG_FULL_URL` / `ICLOUDPD_URL` 指向可访问的地址，重新执行 `npm ci`。
 
 不要用 `npm ci --ignore-scripts`，它会跳过自动安装。
@@ -263,18 +270,18 @@ icloud-app/
 <details>
 <summary>展开全部变量</summary>
 
-| 变量 | 默认值 | 说明 |
-|---|---|---|
-| `PORT` | `8899` | 后端端口 |
-| `HOST` | `0.0.0.0` | 监听地址；设 `127.0.0.1` 可收回仅本机 |
-| `ICLOUDPD_EXE` | `server/vendor/icloudpd-1.32.3-windows-amd64.exe` | icloudpd 可执行文件 |
-| `FFMPEG_DIR` | `server/vendor/ffmpeg-full` | FFmpeg 解压目录 |
-| `FFMPEG_PATH` / `FFPROBE_PATH` | 自动查找 | 直接指定可执行文件 |
-| `SCAN_LIMIT` | `0`（全量） | 调试用，>0 时只扫前 N 个文件 |
-| `SCAN_MIN_INTERVAL_MS` | `5000` | 热监听两次扫描的最小间隔，`0` 关闭闸门 |
-| `IMPORT_SCAN_EVERY_FILES` | `100` | 导入期间每落位多少个文件允许扫一次，`0` 关闭 |
-| `IMPORT_SCAN_MIN_INTERVAL_MS` | `20000` | 导入期间两次周期扫描的最小间隔 |
-| `MAX_UPLOAD_BYTES` | `0`（不限） | 上传导入的单文件大小上限 |
+| 变量                               | 默认值                                              | 说明                                           |
+| ---------------------------------- | --------------------------------------------------- | ---------------------------------------------- |
+| `PORT`                           | `8899`                                            | 后端端口                                       |
+| `HOST`                           | `0.0.0.0`                                         | 监听地址；设 `127.0.0.1` 可收回仅本机        |
+| `ICLOUDPD_EXE`                   | `server/vendor/icloudpd-1.32.3-windows-amd64.exe` | icloudpd 可执行文件                            |
+| `FFMPEG_DIR`                     | `server/vendor/ffmpeg-full`                       | FFmpeg 解压目录                                |
+| `FFMPEG_PATH` / `FFPROBE_PATH` | 自动查找                                            | 直接指定可执行文件                             |
+| `SCAN_LIMIT`                     | `0`（全量）                                       | 调试用，>0 时只扫前 N 个文件                   |
+| `SCAN_MIN_INTERVAL_MS`           | `5000`                                            | 热监听两次扫描的最小间隔，`0` 关闭闸门       |
+| `IMPORT_SCAN_EVERY_FILES`        | `100`                                             | 导入期间每落位多少个文件允许扫一次，`0` 关闭 |
+| `IMPORT_SCAN_MIN_INTERVAL_MS`    | `20000`                                           | 导入期间两次周期扫描的最小间隔                 |
+| `MAX_UPLOAD_BYTES`               | `0`（不限）                                       | 上传导入的单文件大小上限                       |
 
 优先级：命令行 > `.env` > 代码默认值。
 
@@ -282,14 +289,14 @@ icloud-app/
 
 ## 常用命令
 
-| 命令 | 位置 | 作用 |
-|---|---|---|
-| `npm run dev` | `server/` | 启动后端（热重启） |
-| `npm start` | `server/` | 启动后端 |
-| `npm run scan` | `server/` | 命令行触发一次扫描 |
-| `npm test` | `server/` | 单元测试与端到端扫描测试 |
-| `npm run dev` | `web/` | 启动前端开发服务 |
-| `npm run build` | `web/` | 类型检查 + 构建生产版本 |
+| 命令              | 位置        | 作用                     |
+| ----------------- | ----------- | ------------------------ |
+| `npm run dev`   | `server/` | 启动后端（热重启）       |
+| `npm start`     | `server/` | 启动后端                 |
+| `npm run scan`  | `server/` | 命令行触发一次扫描       |
+| `npm test`      | `server/` | 单元测试与端到端扫描测试 |
+| `npm run dev`   | `web/`    | 启动前端开发服务         |
+| `npm run build` | `web/`    | 类型检查 + 构建生产版本  |
 
 > 测试脚本在 `package.json` 里是**显式文件列表**，不是 glob。新增测试文件必须手动加进那串路径，否则不会被执行。
 
