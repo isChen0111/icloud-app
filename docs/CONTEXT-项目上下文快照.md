@@ -2,7 +2,7 @@
 
 > **用途**：接手这个项目（无论人还是 AI）先读这份 + `docs/架构设计文档.html` + 根目录 `README.md`，即可建立完整心智模型。
 >
-> **更新方式**：只记「现在是什么样」和「为什么这么做」。新完成的工作记进 `.workbuddy/memory/YYYY-MM-DD.md`，有架构含义的决策补进第二节。**不要在这里按时间堆流水账**——2026-11-02 之前的历史已切到 `docs/archive/CONTEXT-时间线归档-2026-11-02.md`（编号 1→33 的阶段流水，约 130 行）。
+> **更新方式**：只记「现在是什么样」和「为什么这么做」。新完成的工作直接补进本文件相应小节，有架构含义的决策补进第二节。**不要在这里按时间堆流水账**——2026-11-02 之前的历史已切到 `docs/archive/CONTEXT-时间线归档-2026-11-02.md`（编号 1→33 的阶段流水，约 130 行）。`.workbuddy/memory` 只留指路页，不再写日报。
 
 最后更新：2026-11-04
 
@@ -24,7 +24,7 @@
 ### 1.2 库结构（2026-10-31 改过，别无意识按旧理解）
 
 ```
-F:\iPhone\icloud-app\
+<仓库根>\                      # 路径相对描述，不绑定盘符；仓库可随时删掉重 clone
 ├─ PhotoLib\lib<id>\           # library_root，每个库一个目录
 │  ├─ icloud\                  # icloudpd 下载目标（--directory 指向这里），YYYY/MM/DD
 │  └─ import\                  # 用户导入，重排为 YYYY/MM/DD
@@ -39,9 +39,10 @@ F:\iPhone\icloud-app\
 
 ### 1.3 数据与运行
 
-- **正式数据在原位** `F:\iPhone\iCloudPhoto`（约 163GB / 2 万文件），项目目录之外，开发期间暂放。**禁止对它有写操作、扫描、清理、删除**。
-- 2026-11-04 照片库根目录由 `iCloudPhoto` 改名为 **`PhotoLib`**，同时清空了全部测试库（lib18~21 的照片与缓存已移至 `C:\Users\isChen\AppData\Local\Temp\photolib-wipe-backup`，可弃）。当前无任何库，等用户重建并迁入正式数据。
-- `F:\iPhone\icloud-app` 目录内的一切（含 `PhotoLib\`、`server\cache\`）都是可弃测试数据，可随便造/删。
+- **工作区布局（2026-11-04 迁移后）**：工作区根 `F:\Agent Program\icloud-app-agent\`，内含 `icloud-app\`（本仓库，删掉重 clone 即可恢复）、`iCloudPhoto\`（**正式照片数据**）、`TestPhotoLib\`（测试照片暂存）、`iCloudTool\`（icloudpd 等工具）、`.workbuddy\`（AI 工作区记忆，只留指路页）。
+- **正式照片数据在工作区根的 `iCloudPhoto\`**（万级媒体文件）。它在仓库之外、工作区之内，**同样禁止一切写操作、扫描、清理、删除**；能碰它的只有「迁回正式数据」这一条路（见下）。
+- 2026-11-04 照片库根目录由 `iCloudPhoto` 改名为 **`PhotoLib`**，同时清空了全部测试库。当前无任何库，等用户重建并迁入正式数据。
+- 工作区根的 `TestPhotoLib\` 与仓库内的一切（`PhotoLib\`、`server\cache\`）都是可弃测试数据，可随便造/删。
 - 迁回正式数据：**先停后端 → 复制进 `icloud/` → 再启动**，让 `runScan('startup')` 一次对账。否则 chokidar 会为每个新文件排 2 秒 `awaitWriteFinish`，几万文件就是事件洪峰。迁入前用户会先清掉现有测试数据。
 - **后端是 `tsx watch` 起的**：改后端代码即热重启，启动迁移会**立刻对真实库生效**。凡「要先备份再迁移」的改动，先请用户停后端。
 - 测试现状：后端 `npm test` **178 例**；前端 **0 例**（全靠手工验收）。
@@ -177,4 +178,4 @@ F:\iPhone\icloud-app\
 | 某期审查提了什么、修完没有 | `docs/archive/整体审查报告-*.md`（当前期在 `docs/`） |
 | 每份文档还有没有效 | `docs/README.md` |
 | 怎么跑起来、有哪些命令/API | 根目录 `README.md` |
-| 最近几天具体在做什么 | `.workbuddy/memory/YYYY-MM-DD.md` |
+| 最近做了什么 | `git log` + `docs/archive/CONTEXT-时间线归档-*.md` |
