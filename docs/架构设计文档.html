@@ -219,7 +219,7 @@ DELETE /api/library/:id/sync                 <span class="c"># P0 取消同步</
 <h3>3.6.1 环境变量与路径配置（.env）</h3>
 <p>所有路径/端口集中在 <code>server/src/config.ts</code>，均支持环境变量覆盖。<b>server/.env</b> 文件（照 <code>.env.example</code> 复制，gitignore 不入库）由启动脚本经 Node 原生 <code>--env-file-if-exists=.env</code> 自动加载——新机器/新目录改路径不用敲命令行。</p>
 <pre>
-PHOTO_LIBRARY  &lt;项目根&gt;/iCloudPhoto        <span class="c"># 照片库根（iCloudPD 输出，只读）</span>
+PHOTO_LIBRARY  &lt;项目根&gt;/PhotoLib         <span class="c"># 照片库根（iCloudPD 输出，只读）</span>
 CACHE_DIR      &lt;项目根&gt;/server/cache       <span class="c"># 缩略图/封面/转码缓存</span>
 DB_PATH        &lt;项目根&gt;/server/cache/library.db
 PORT           8899
@@ -265,9 +265,9 @@ CREATE VIRTUAL TABLE assets_fts USING fts5(
 <h4>3.8.1 多库注册表与激活上下文</h4>
 <ul>
   <li><b>注册表</b>：应用级 <code>server/cache/meta.db</code>（所有库共享，不随激活库切换；随 cache 清理重建 = 重新注册库，可接受）。表 <code>libraries</code>：name（唯一别名）/ library_root / cache_dir / cookie_dir / account / auth_status（none|authed|expired）/ last_sync_at / active（单活跃标记）。</li>
-  <li><b>目录分离（库名只是别名，不参与路径）</b>：照片根 <code>&lt;项目根&gt;/iCloudPhoto/lib&lt;id&gt;</code>（icloudpd 下载目标，文件夹结构 <code>%Y/%m/%d</code> 锁定不可改）；缓存 <code>server/cache/lib&lt;id&gt;</code>（library.db / thumbs / cookies）；cookie <code>server/cache/lib&lt;id&gt;/cookies</code>。</li>
+  <li><b>目录分离（库名只是别名，不参与路径）</b>：照片根 <code>&lt;项目根&gt;/PhotoLib/lib&lt;id&gt;</code>（icloudpd 下载目标，文件夹结构 <code>%Y/%m/%d</code> 锁定不可改）；缓存 <code>server/cache/lib&lt;id&gt;</code>（library.db / thumbs / cookies）；cookie <code>server/cache/lib&lt;id&gt;/cookies</code>。</li>
   <li><b>单活跃库模型</b>：同一时间仅一个库 <code>active=1</code>；切库（<code>PATCH /api/libraries/:id/active</code>）= 停旧库任务 → 清队列 → 关旧库 DB → 覆写全局 config 指向新库 → 重扫，前端<b>就地重建</b>：回照片墙路由（详情页 <code>:id</code> 属于旧库）→ 清 assets/search/selection 三 store → KeepAlive 换 <code>key</code> 重建视图树 → 重拉库列表与 <code>stats</code>。旧实现是 <code>location.reload()</code>，会把设置页一起关掉（用户切完库被弹回照片墙），现仅<b>删除激活库</b>还整页刷新。<b>新建库不自动激活</b>（已有激活库时仅注册，主页面/下拉/设置中心保持原库；首次建库才激活）。</li>
-  <li><b>同步全局单任务</b>：全量/增量任务一次只有一个（内存态 <code>icloudpd/state.ts</code>，不建任务表）；只能对当前激活库发起（其他库 409 → 前端「等待执行…」）。删除库 = 必删注册 + <code>cache/lib&lt;id&gt;</code>，勾选 <code>removePhotos</code> 才删 <code>iCloudPhoto/lib&lt;id&gt;</code>；删激活库自动切剩余最小 id 库/删最后一个回默认路径；删除/切库后重置全局同步状态（防旧库「同步完成」残留）。</li>
+  <li><b>同步全局单任务</b>：全量/增量任务一次只有一个（内存态 <code>icloudpd/state.ts</code>，不建任务表）；只能对当前激活库发起（其他库 409 → 前端「等待执行…」）。删除库 = 必删注册 + <code>cache/lib&lt;id&gt;</code>，勾选 <code>removePhotos</code> 才删 <code>PhotoLib/lib&lt;id&gt;</code>；删激活库自动切剩余最小 id 库/删最后一个回默认路径；删除/切库后重置全局同步状态（防旧库「同步完成」残留）。</li>
 </ul>
 
 <h4>3.8.2 icloudpd 集成（黑盒 spawn）</h4>
@@ -291,7 +291,7 @@ ICLOUDPD_RECENT （已废弃；同步限量改由设置中心每库 recentLimit 
 
 <h4>3.9.1 库结构：两个子树物理隔离</h4>
 <pre>
-iCloudPhoto/lib&lt;id&gt;/          <span class="c"># library_root（扫描递归此根，统一浏览）</span>
+PhotoLib/lib&lt;id&gt;/           <span class="c"># library_root（扫描递归此根，统一浏览）</span>
 ├─ icloud/                    <span class="c"># icloudpd 下载目标（--directory 已指向），YYYY/MM/DD，程序管理</span>
 └─ import/                    <span class="c"># 用户导入，YYYY/MM/DD，程序管理</span>
 </pre>
@@ -431,7 +431,7 @@ iCloudPhoto/lib&lt;id&gt;/          <span class="c"># library_root（扫描递�
 
 <h3>4.7 主题切换与详情返回位置保留（2026-09-08 审查后落地）</h3>
 <ul>
-<li><b>主题系统</b>：浅色/深色双主题 = 根元素 <code>[data-theme]</code> + CSS 变量（<code>--bg-*/--text-*/--border/--accent</code>），所有组件引用 var()，切换零重渲染。<b>默认浅色</b>。持久化 localStorage（key <code>icloud-app-theme</code>），index.html 内联脚本在 CSS 生效前设初值防闪烁。详情页/实况/视频<b>查看区恒深</b>（对标 iCloud 白天主题下详情查看器仍为黑底白字）。主题化范围：App/GridView/GridScroller/DateNavPanel。</li>
+<li><b>主题系统</b>：浅色/深色双主题 = 根元素 <code>[data-theme]</code> + CSS 变量（<code>--bg-*/--text-*/--border/--accent</code>），所有组件引用 var()，切换零重渲染。<b>默认浅色</b>。持久化 localStorage（key <code>icloud-app-theme</code>），index.html 内联脚本在 CSS 生效前设初值防闪烁。详情页/实况/视频<b>查看区背景跟随主题</b>（<code>--detail-bg</code>：浅色 <code>#f5f5f7</code> / 深色 <code>#111113</code>）。主题化范围：App/GridView/GridScroller/DateNavPanel。</li>
 <li><b>KeepAlive 缓存照片墙</b>：<code>&lt;KeepAlive :include="['GridView']"&gt;</code> 包路由出口，返回详情时滚动位置/已加载数据/搜索态原样保留（详情页不缓存，大图 DOM 不常驻）。
   <ul>
   <li><b>滚动位置保存/恢复</b>：deactivated 钩子与路由切换瞬间都读不到真值（DOM 已移出文档），改为 onScroll 持续记录 + onActivated 写回 + 派发 scroll 事件重算可视窗口。</li>
@@ -451,7 +451,7 @@ iCloudPhoto/lib&lt;id&gt;/          <span class="c"># library_root（扫描递�
 
 <h3>4.9 P2+-1 目录热监听 + 删除对账 + 启动同步（已落地；一键拉取已由 P0 同步模块承接）</h3>
 <ul>
-<li><b>热监听（scanner/watcher.ts）</b>：chokidar 监听 <code>iCloudPhoto/</code> 目录树——<code>ignoreInitial</code>（启动时已有文件不触发，由启动同步负责）+ <code>awaitWriteFinish 2s</code>（拷贝完成才视为落盘）+ 忽略规则按「名字特征」判定（点开头、<code>stats.json</code>、<code>library.db</code>、<code>*.db-wal</code>/<code>*.db-shm</code>、<code>thumbs</code>/<code>tmp</code>/<code>blur</code>、<b><code>*.part</code></b>）；<b>不能用扩展名白名单</b>——chokidar 的 <code>ignored</code> 对目录也会调用，按扩展名过滤会把 <code>icloud/</code>、<code>import/</code> 这类无扩展名目录整个忽略掉，目录内事件全部丢失。add/change/unlink/unlinkDir 任一事件 → 防抖 1.5s 合并 → <b>过一道最小触发间隔闸门</b>（<code>scanMinIntervalMs</code>，默认 5s，0 = 关闭；只作用于 watcher 自己派发的扫描，手动/启动/切库/导入不受限）→ 触发一次 <code>runScan('watcher')</code>（幂等增量）。扫描互斥：扫描中先挂着（dirty 标志），当前轮结束后「距上次派发不足最小间隔就只补足剩余时间，否则立刻派发」——旧实现是固定 2s 后再走一遍 1.5s 防抖，扫描中重排要连吃两次延迟（约 3.5s）。<b><code>*.part</code> 是导入的原子写中间名</b>（写完才 rename 到正式名），旧规则放它进来，导致每个导入文件产生双倍事件。<b>会话代数（R-11）</b>：每次 <code>startWatcher()</code> / <code>stopWatcher()</code> 都递增 <code>watcherGeneration</code>，事件回调闭包捕获注册时的代数，<code>scheduleScan(gen)</code> 与防抖/重试定时器回调都先校验、不符即丢弃。原因：chokidar 的 <code>close()</code> 是 fire-and-forget，<code>awaitWriteFinish</code> 又会把事件压后 2s——换库后迟到的事件仍会触发 <code>runScan</code>，而它读的是已被替换的 <code>config.libraryRoot</code>（新库），表现为对刚切过去的库白跑一次全量扫描。</li>
+<li><b>热监听（scanner/watcher.ts）</b>：chokidar 监听 <code>PhotoLib/</code> 目录树——<code>ignoreInitial</code>（启动时已有文件不触发，由启动同步负责）+ <code>awaitWriteFinish 2s</code>（拷贝完成才视为落盘）+ 忽略规则按「名字特征」判定（点开头、<code>stats.json</code>、<code>library.db</code>、<code>*.db-wal</code>/<code>*.db-shm</code>、<code>thumbs</code>/<code>tmp</code>/<code>blur</code>、<b><code>*.part</code></b>）；<b>不能用扩展名白名单</b>——chokidar 的 <code>ignored</code> 对目录也会调用，按扩展名过滤会把 <code>icloud/</code>、<code>import/</code> 这类无扩展名目录整个忽略掉，目录内事件全部丢失。add/change/unlink/unlinkDir 任一事件 → 防抖 1.5s 合并 → <b>过一道最小触发间隔闸门</b>（<code>scanMinIntervalMs</code>，默认 5s，0 = 关闭；只作用于 watcher 自己派发的扫描，手动/启动/切库/导入不受限）→ 触发一次 <code>runScan('watcher')</code>（幂等增量）。扫描互斥：扫描中先挂着（dirty 标志），当前轮结束后「距上次派发不足最小间隔就只补足剩余时间，否则立刻派发」——旧实现是固定 2s 后再走一遍 1.5s 防抖，扫描中重排要连吃两次延迟（约 3.5s）。<b><code>*.part</code> 是导入的原子写中间名</b>（写完才 rename 到正式名），旧规则放它进来，导致每个导入文件产生双倍事件。<b>会话代数（R-11）</b>：每次 <code>startWatcher()</code> / <code>stopWatcher()</code> 都递增 <code>watcherGeneration</code>，事件回调闭包捕获注册时的代数，<code>scheduleScan(gen)</code> 与防抖/重试定时器回调都先校验、不符即丢弃。原因：chokidar 的 <code>close()</code> 是 fire-and-forget，<code>awaitWriteFinish</code> 又会把事件压后 2s——换库后迟到的事件仍会触发 <code>runScan</code>，而它读的是已被替换的 <code>config.libraryRoot</code>（新库），表现为对刚切过去的库白跑一次全量扫描。</li>
 <li><b>删除/配对对账</b>：runScan 末尾按配对后的主资产路径核对 DB——只有根目录和所有可见子目录都成功读取时才清理已删除资产，或清除已从独立视频转为实况附件的旧视频记录及 FTS/缩略图缓存；配对 MOV 仍在磁盘但不作为照片墙独立资产。任一目录读取失败则保留数据库记录并跳过本次对账。完整扫描后再清理孤儿缩略图。</li>
 <li><b>启动同步</b>：index.ts 启动即后台 <code>runScan('startup')</code>（不 await 不阻塞），手动拷入的文件开机即被发现。</li>
 <li><b>扫描期间刷新</b>：前端由单一任务状态 store（<code>stores/tasks.ts</code>）统一轮询 <code>/api/stats</code>，频率自适应——有任务在跑（扫描/缩略图/同步/导入）或弹窗打开时 1.5 秒，空闲 15 秒，页面隐藏时停表、回到前台立刻补拉一次；启动/取消同步与导入的返回值直接写回同一份快照，不再"操作后再拉一遍"。扫描期间不因资产数变化自动刷新照片墙，避免清空已加载页并导致格子/缩略图反复重载；用户可手动刷新查看已入库内容。扫描完成或失败后自动做一次最终刷新，并尽量保留滚动位置。<b>当前不使用 WebSocket/SSE</b>：单机 localhost 下轮询的实测成本（每次 2.5–5ms、约 1KB）远小于推送化的复杂度，且推送的前置条件是三个全局任务状态先收敛为"按库作用域 + 单一事件源"，那属于另一项工程。</li>
@@ -498,7 +498,7 @@ iCloudPhoto/lib&lt;id&gt;/          <span class="c"># library_root（扫描递�
 <h2>5. 项目结构（已落地）</h2>
 <pre>
 F:\iPhone\icloud-app\
-├─ iCloudPhoto/              <span class="c"># 照片库根（程序独占数据目录，应用内只读；每库 lib&lt;id&gt;/ 下分 icloud/ 与 import/ 两子树，见 §3.9）</span>
+├─ PhotoLib/                 <span class="c"># 照片库根（程序独占数据目录，应用内只读；每库 lib&lt;id&gt;/ 下分 icloud/ 与 import/ 两子树，见 §3.9）</span>
 ├─ iCloudTool/               <span class="c"># iCloudPD 用户工具（bat 脚本/官方文档/说明，应用不依赖；exe 已复制到 server\vendor）</span>
 ├─ docs/                     <span class="c"># 活文档：架构设计文档 / CONTEXT 上下文快照 / 当前审查报告；archive/ 为历史快照（见 docs/README.md）</span>
 ├─ server/

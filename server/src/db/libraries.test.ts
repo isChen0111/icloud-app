@@ -65,7 +65,7 @@ test('validateLibraryName：/g 状态性回归（P3c）——非法字符判定�
 test('ensureDirs：多层嵌套一次建出（含中间父目录）', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'lib-dirs-'))
   try {
-    const photos = path.join(root, 'iCloudPhoto', 'lib9')
+    const photos = path.join(root, 'PhotoLib', 'lib9')
     const cache = path.join(root, 'cache', 'lib9')
     const cookies = path.join(cache, 'cookies')
     // 三个目录共享未知父级，recursive:true 应一次建出全部
