@@ -17,7 +17,7 @@
 - 后端 `server/`：Node 24 + TypeScript + Fastify 5 + better-sqlite3，监听 **0.0.0.0:8899**
 - 前端 `web/`：Vue 3.5 + Vite + TypeScript + Pinia + vue-router(hash)，**5173**（Vite 绑 IPv6，勿用 `127.0.0.1:5173`）
 - 两个照片来源：**iCloudPD 下载**（`icloud/`）与**用户本地目录导入**（`import/`），统一扫描入库、统一浏览
-- 版本管理：私有仓库 + GitHub `isChen0111/icloud-app`，SSH 推送；`git push origin main`
+- 版本管理：私有仓库 + GitHub `isChen0111/icloud-app`，HTTPS 推送（需开代理，见第四节）；`git push origin main`
 
 能力范围：虚拟滚动照片墙（4~12 列）、月份跳转、详情轮播与渐进显示（复用 grid 图做 CSS 模糊占位再淡入）、实况照片按住播放、视频 Range 播放、FTS5 搜索（文件名/日期子串）、深浅主题、客户端删除（照片墙单选/多选 + 详情页）、缩略图失败清单（重试/忽略/恢复提醒）、目录热监听 + 删除对账 + 启动自动同步、多照片库（创建/切换/删除/链接 iCloud/全量拉取/增量同步）、导入本地目录（本机迁移/上传）。
 
@@ -124,8 +124,8 @@
 - **临时目录删除**：本机 `rm` / `fs.rmSync` 走系统回收站（安全钩子拦），仓库内临时文件用 `mv` 移出；`os.tmpdir()` 下的测试临时目录不受影响。
 - **git commit message 用 heredoc**（`git commit -F - <<'EOF'`），Git Bash 下中文编码正常。
 - **`git merge --no-ff <branch> -F -` 不认 stdin**，得先写临时文件。
-- **`origin` 必须走 SSH，不能用 HTTPS**：本机 `github.com:443` 的握手会被掐断（`Empty reply from server`，重试变 `CONNECT tunnel failed, response 502`，即请求被某个代理接住并回了 502），凭据配置得再对也没用。`origin` 固定为 `git@github.com:isChen0111/icloud-app.git`（2026-11-04 从 HTTPS 改过来），日常 `git push origin main`。
-- **SSH 会间歇性 `Permission denied (publickey)`，同一把 key 相隔几秒一成一败**：这不是配置错，是链路不稳，且重试越快越容易被挡。失败时先用 `git ls-remote origin refs/heads/main` 探一次，通了再 push；**不要连着换 ssh 可执行文件猛试**，那只是把失败次数刷上去，把「排查」变成「试错」。当前不设 `core.sshCommand`，用 Git Bash 自带 `/usr/bin/ssh` + `~/.ssh/id_rsa` 就是可用组合。注意本机有两套 git（系统 + WorkBuddy 自带 PortableGit），HOME 相同、共用全局配置。
+- **推不上去先看代理状态，别在通道上空转**：这台机器上「哪条通道能用」完全跟着代理走。**不开代理**：`github.com:443` 握手被掐断（`Empty reply from server`，重试变 `CONNECT tunnel failed, response 502`），HTTPS 直接死；SSH 时通时不通。**开代理**：HTTPS 立刻可用（`ls-remote` 与 `push` 都正常）。当前 `origin` 是 HTTPS（`https://github.com/isChen0111/icloud-app.git`），凭据交给 gh CLI（`credential.https://github.com.helper=!'...gh.exe' auth git-credential`），日常 `git push origin main`。
+- **SSH 认证成功率低，根因还没定位**：不开代理时偶发 `Permission denied (publickey)`，同一把 key 相隔几秒一成一败；开着代理时手动 `ssh -T git@github.com` 能返回 `Hi isChen0111`，但 git 用**同一个** `ssh.exe` 推送仍被拒（verbose 里 `Offering public key` 之后没有 `Server accepts key`）。所以别再换 ssh 可执行文件反复猛试——那只是把失败次数刷上去，把「排查」变成「试错」。要推就优先走 HTTPS。注意本机有两套 git（系统 + WorkBuddy 自带 PortableGit），HOME 相同、共用全局配置。
 - **别用 `git push git@github.com:...` 绕过 remote 推送**：提交推得上去，但 `origin/main` 跟踪指针不会更新，`git status` 会一直假显示 `ahead N`，极易误判成「没推成功」。
 - **缩略图缓存的 rev 是动态的**：前端 URL 带 `rev = 资产 file_mtime`（后端 `AssetDto.rev` / `dates.thumbRev` 下发），源文件一变 URL 就变、浏览器强制重拉，**不需要手动 bump 版本号**。`THUMB_REV` 常量只作无 rev 场景的兜底。
 - **服务进程由用户自启**（后端 8899 / 前端 5173），不要占用；临时验证起进程用完就 `TaskStop`。
