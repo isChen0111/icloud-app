@@ -149,6 +149,16 @@
 - 无待办。最近一次审查（`docs/archive/整体审查报告-2026-11-02.md`，4 P0 / 16 P1 / 18 P2 + 10 项文档处置）已全部修完并归档。
 
 **功能类**
+- **ffmpeg 换 lgpl-shared 构建（方案已定，暂缓执行）**：2026-11-04 实测确认，BtbN 的 `win64-lgpl-shared` 下载 77.9 MiB（现为 163MB 自托管 zip）、解压 190MB（现 431MB），HEIC 解码 / ffprobe 读元数据 / 视频抽帧三条链路全部通过；且**构建里根本没有 libheif，靠 FFmpeg 原生 HEIF 解析 + HEVC 解码器**，脚本开头「必须用 full 构建含 libheif」的注释已过时。用户只要求减小**下载体积**，解压后的 doc/include/lib/presets 保留不删。已确认走 **B 方案**：把 78MB 的 `ffmpeg-lgpl-shared.zip` 上传到本仓库 Release `vendor-binaries`，脚本 URL 指向它（不用 BtbN 的 `latest`，那会版本漂移；也不能钉日期 tag，BtbN 会滚动清理旧 release）。**阻塞原因：GitHub 连接不稳，无法上传 asset**，恢复后执行。
+
+  > 改动清单（8 处，后端代码零改动）：
+  > ① `server/scripts/install-ffmpeg-full.ps1`——L1-3 注释改为实测结论、L12 压缩包名改 `ffmpeg-lgpl-shared.zip`（**必须改**，否则 L41「有包就跳过下载」会继续复解压本地旧 GPL 包）、L37 下载地址、L44/51/54 体积文案。
+  > ② `server/src/ffmpeg.ts` 仅 L4 注释（`findToolPair` 递归找 exe，不依赖内层目录名，逻辑零改动）。
+  > ③ `server/src/config.ts` **不改**（`ffmpegDir` 仍指 `vendor/ffmpeg-full`，目录名不变）。
+  > ④ `.gitignore` L21 注释里的体积数字。⑤ `README.md` L148/152/217/278。
+  > ⑥ `server/.env.example` L33-37（顺带清掉 `F:\iPhone\...` 旧盘符）。
+  > ⑦ `docs/架构设计文档.html` L133「full 构建含 libheif」+ L523/L561 体积。⑧ 本文件第二节补一条决策。
+  > 执行注意：脚本开头 `Find-FfmpegTools` 命中现有 exe 会直接 `exit 0`，本机要生效须先删 `server/vendor/ffmpeg-full/` 重跑。唯一行为差异是 `exe + dll` 必须同目录（spawn 绝对路径时 Windows 自动从 exe 目录找 dll，无需改代码）。
 - `npm run backfill-exif`：全库普查出 918 张无日期 EXIF（820 JPG / 94 PNG / 4 HEIC），828 个 JPG 可补。**等正式数据迁回后、首次扫描前再跑**。
 - 账本判重（`import_ledger`：源目录 + 源相对路径）与哈希判重：**先不做**，等真遇到重复问题再说。
 - P2+-4 详情缓存治理（保留最近 N 月 detail 图 / 一键清空）：未做，约 250KB/张。
