@@ -65,11 +65,112 @@ export interface ImageMeta {
   width: number | null
   height: number | null
   gps: { lat: number; lon: number } | null
+  /**
+   * 实况内容标识（Apple MakerNote 0x0011，36 字符 UUID）。
+   * 与配对视频的 `com.apple.quicktime.content.identifier` 相同即同一张实况。
+   * null = 文件里没有这个标签（非 Apple 来源 / 非实况 / 被外部工具剥掉了 MakerNote）。
+   */
+  contentIdentifier: string | null
+}
+
+/** Apple MakerNote 里实况内容标识的 tag 号（ExifTool 命名为 ContentIdentifier） */
+const APPLE_MAKERNOTE_CID_TAG = 0x0011
+
+/** UUID 文本形态（36 字符，带连字符） */
+const UUID_TEXT_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i
+
+/**
+ * exifr 的 makerNote 原始字节 → Buffer。
+ *
+ * exifr 7.x 没有 Apple MakerNote 的标签表，`{ makerNote: true }` 时把整块未解析的
+ * 字节返回成「偏移 → 字节值」的普通对象（如 `{0: 65, 1: 112, …}`）。JavaScript 规范
+ * 保证整数索引键按升序枚举，所以 Object.values 的顺序就是原始字节顺序（2026-11-04 实测）。
+ * 另外几种形态一并兼容，避免 exifr 升级换表示后静默取不到值。
+ */
+function makerNoteToBuffer(raw: unknown): Buffer | null {
+  if (!raw) return null
+  if (Buffer.isBuffer(raw)) return raw
+  if (raw instanceof Uint8Array) return Buffer.from(raw)
+  if (Array.isArray(raw)) {
+    return raw.every((v) => typeof v === 'number') ? Buffer.from(raw as number[]) : null
+  }
+  if (typeof raw === 'object') {
+    const values = Object.values(raw as Record<string, unknown>)
+    if (values.length > 0 && values.every((v) => typeof v === 'number')) {
+      return Buffer.from(values as number[])
+    }
+  }
+  return null
+}
+
+/** 在字节里兜底匹配 UUID 文本（结构解析失败时用） */
+function matchUuidText(buf: Buffer): string | null {
+  const m = buf.toString('latin1').match(UUID_TEXT_RE)
+  return m ? m[0] : null
+}
+
+/**
+ * 从图片的 MakerNote 原始字节里取实况内容标识（UUID）。
+ *
+ * Apple MakerNote 布局（0 基偏移，2026-11-04 用真实 iPhone HEIC 核对）：
+ *   0..8   "Apple iOS\0"
+ *   12..14 字节序（"II" 小端 / "MM" 大端）
+ *   16..20 首个 IFD 的偏移，**相对字节序字段**（即整体减 12 才是 0 基绝对偏移）
+ *   其后是标准 TIFF IFD：2 字节条目数，每条 12 字节（tag/type/len/value），最后 4 字节 next IFD 指针
+ *
+ * 0x0011 的 type 是 7（UNDEFINED），长度 36，值是指向字符串的偏移；长度 ≤4 时值内联在条目里。
+ *
+ * 分两层：先按结构精确命中；结构不认识（非 Apple 设备 / 未预期的变体）就退化为
+ * 全文正则。正则不会错配到「假 UUID」之外的字段——这个值本身恒为 36 字符 UUID 形态，
+ * 而 MakerNote 里出现第二段同格式字符串的概率可忽略。
+ */
+export function extractContentIdentifier(makerNote: unknown): string | null {
+  const buf = makerNoteToBuffer(makerNote)
+  if (!buf || buf.length < 24) return null
+
+  // 非 Apple MakerNote（安卓等）：不做结构解析，直接正则兜底
+  if (!buf.subarray(0, 9).toString('latin1').startsWith('Apple ')) return matchUuidText(buf)
+
+  const order = buf.subarray(12, 14).toString('latin1')
+  const le = order === 'II'
+  if (!le && order !== 'MM') return matchUuidText(buf)
+  const readU16 = (o: number): number => (le ? buf.readUInt16LE(o) : buf.readUInt16BE(o))
+  const readU32 = (o: number): number => (le ? buf.readUInt32LE(o) : buf.readUInt32BE(o))
+  /** 结构内所有偏移相对字节序字段，换算成 0 基绝对偏移 */
+  const toAbs = (rel: number): number => 12 + rel
+
+  let ifdRel = readU32(16)
+  // 跟随 IFD 链（不同 iOS 版本 0x0011 可能不在第一个 IFD 里），最多 4 层防坏数据死循环
+  for (let hop = 0; hop < 4 && ifdRel > 0; hop++) {
+    const ifd = toAbs(ifdRel)
+    if (ifd + 2 > buf.length) break
+    const count = readU16(ifd)
+    if (count === 0 || count > 512) break
+    for (let i = 0; i < count; i++) {
+      const entry = ifd + 2 + i * 12
+      if (entry + 12 > buf.length) break
+      if (readU16(entry) !== APPLE_MAKERNOTE_CID_TAG) continue
+      const len = readU32(entry + 4)
+      if (len === 0 || len > 128) continue
+      const valueStart = len > 4 ? toAbs(readU32(entry + 8)) : entry + 8
+      if (valueStart + len > buf.length) continue
+      const text = buf
+        .subarray(valueStart, valueStart + len)
+        .toString('latin1')
+        .replace(/\0+$/, '')
+        .trim()
+      if (UUID_TEXT_RE.test(text)) return text
+    }
+    const nextPtr = ifd + 2 + count * 12
+    if (nextPtr + 4 > buf.length) break
+    ifdRel = readU32(nextPtr)
+  }
+  // 结构走完没命中：可能是未预期的变体，最后用正则兜底
+  return matchUuidText(buf)
 }
 
 /** 度分秒数组（EXIF 的 GPS 格式）→ 十进制度数。例：DMS [50,30,10] → 50.5028 */
 function dmsToDecimal(v: unknown): number | null {
-  if (typeof v === 'number') return v
   if (Array.isArray(v) && v.length === 3) {
     const [d, m, s] = v.map(Number)
     if ([d, m, s].some((n) => Number.isNaN(n))) return null
@@ -85,6 +186,12 @@ export async function readImageMeta(absPath: string): Promise<ImageMeta> {
       pick: ['DateTimeOriginal', 'CreateDate', 'Orientation', 'ImageWidth', 'ImageHeight', 'GPSLatitude', 'GPSLongitude'],
       // 不翻译值：Orientation 返回数字 1~8（默认会转成 "Rotate 90 CW" 这种字符串，前端用不了）
       translateValues: false,
+      /**
+       * 实况 UUID 藏在 Apple MakerNote 里，必须显式打开（exifr 默认不读 MakerNote）。
+       * 代价实测为零：MakerNote 就在 EXIF 段内，开与不开的解析耗时都在噪声范围内，
+       * 所以顺手取走，不额外起一次 IO（这也是不用 exiftool 读图片侧的原因——27ms/个）。
+       */
+      makerNote: true,
     })
     const lat = dmsToDecimal(exif?.GPSLatitude)
     const lon = dmsToDecimal(exif?.GPSLongitude)
@@ -99,6 +206,7 @@ export async function readImageMeta(absPath: string): Promise<ImageMeta> {
       width: exif?.ImageWidth ?? null,
       height: exif?.ImageHeight ?? null,
       gps: lat != null && lon != null ? { lat, lon } : null,
+      contentIdentifier: extractContentIdentifier((exif as { makerNote?: unknown } | undefined)?.makerNote),
     }
   } catch {
     // exifr 解析失败（如损坏文件）时返回空对象，由调用方兜底
@@ -110,6 +218,7 @@ export async function readImageMeta(absPath: string): Promise<ImageMeta> {
       width: null,
       height: null,
       gps: null,
+      contentIdentifier: null,
     }
   }
 }
@@ -121,6 +230,12 @@ export interface VideoMeta {
   height: number | null
   /** 元数据里的创建时间（ISO8601）或 null */
   creationTime: string | null
+  /**
+   * 实况内容标识（`com.apple.quicktime.content.identifier`）。
+   * 与静止帧的 MakerNote UUID 相同即同一张实况；独立视频/非 Apple 来源为 null。
+   * 走 format.tags 白拿——这个 tag 本来就在 ffprobe 的输出里，不额外加 IO。
+   */
+  contentIdentifier: string | null
 }
 
 /**
@@ -211,20 +326,29 @@ export async function readVideoFullMeta(absPath: string): Promise<VideoFullMeta>
   try {
     const data = await ffprobeJson(absPath)
     if (!data.format) {
-      return { duration: null, width: null, height: null, creationTime: null, codec: null, bitRate: null }
+      return {
+        duration: null, width: null, height: null, creationTime: null,
+        contentIdentifier: null, codec: null, bitRate: null,
+      }
     }
     const stream = data.streams?.find((s) => s.codec_type === 'video')
     const creation = data.format.tags?.creation_time
+    // 实况 MOV 的 UUID：ffprobe 把它放在容器级 tags 里（-show_format 已含全部 tags）
+    const cid = data.format.tags?.['com.apple.quicktime.content.identifier']
     return {
       duration: numOrNull(data.format.duration),
       width: stream?.width ?? null,
       height: stream?.height ?? null,
       creationTime: typeof creation === 'string' ? creation : null,
+      contentIdentifier: typeof cid === 'string' && cid.trim() ? cid.trim() : null,
       codec: stream?.codec_name ?? null,
       bitRate: numOrNull(stream?.bit_rate) ?? numOrNull(data.format.bit_rate),
     }
   } catch {
-    return { duration: null, width: null, height: null, creationTime: null, codec: null, bitRate: null }
+    return {
+      duration: null, width: null, height: null, creationTime: null,
+      contentIdentifier: null, codec: null, bitRate: null,
+    }
   }
 }
 
@@ -236,6 +360,7 @@ export async function readVideoMeta(absPath: string): Promise<VideoMeta> {
     width: full.width,
     height: full.height,
     creationTime: full.creationTime,
+    contentIdentifier: full.contentIdentifier,
   }
 }
 

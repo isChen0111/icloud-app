@@ -16,7 +16,16 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { config } from '../config.js'
 import { getDb } from '../db/index.js'
-import { readImageMeta, readVideoMeta, normalizeDate, parseDateFromDir, isTrustedDateDir, baseName } from '../metadata/index.js'
+import {
+  readImageMeta,
+  readVideoMeta,
+  normalizeDate,
+  parseDateFromDir,
+  isTrustedDateDir,
+  type ImageMeta,
+} from '../metadata/index.js'
+import { readContentIdentifier } from '../metadata/exifWrite.js'
+import { pairLiveAssets } from './pair.js'
 import { beginThumbnailBatch, enqueueAsset, resetThumbnailProgress } from '../pipeline/queue.js'
 import { isCacheUsable, thumbCachePath } from '../pipeline/thumbnails.js'
 import { toDateCompact, toLocalIso } from '../utils/date.js'
@@ -61,13 +70,6 @@ interface RawFile {
   /** 源文件签名（F-03 修复）：size 字节数；mtimeMs 修改时间（毫秒，取整防抖动） */
   size: number
   mtimeMs: number
-}
-
-/** 已配对的资产：主资产 + 可选实况视频 */
-interface PairedAsset {
-  image: RawFile
-  /** 配对的实况视频（可能无） */
-  liveVideo: RawFile | null
 }
 
 /**
@@ -313,6 +315,10 @@ async function doRunScan(
      */
     type: string
     liveVideo: string | null
+    /** 实况内容标识（UUID）。签名未变的文件配对时直接取这里，零 IO */
+    contentIdentifier: string | null
+    /** 配对视频的 UUID（与 live_video 一起参与「配对结果是否变化」判断） */
+    liveVideoCid: string | null
     /** F-03 修复：上次扫描记录的源文件签名（新库为 null） */
     size: number | null
     mtimeMs: number | null
@@ -320,7 +326,7 @@ async function doRunScan(
   const existingMeta = new Map<string, ExistingMeta>()
   for (const r of db
     .prepare(
-      `SELECT file_path, date_taken, width, height, duration, orientation, gps_lat, gps_lon, type, live_video, file_size, file_mtime FROM assets`,
+      `SELECT file_path, date_taken, width, height, duration, orientation, gps_lat, gps_lon, type, live_video, content_identifier, live_video_cid, file_size, file_mtime FROM assets`,
     )
     .all() as {
     file_path: string
@@ -333,6 +339,8 @@ async function doRunScan(
     gps_lon: number | null
     type: string
     live_video: string | null
+    content_identifier: string | null
+    live_video_cid: string | null
     file_size: number | null
     file_mtime: number | null
   }[]) {
@@ -346,67 +354,65 @@ async function doRunScan(
       gpsLon: r.gps_lon,
       type: r.type,
       liveVideo: r.live_video,
+      contentIdentifier: r.content_identifier,
+      liveVideoCid: r.live_video_cid,
       size: r.file_size,
       mtimeMs: r.file_mtime,
     })
   }
 
-  // ② 实况配对：按「目录 + 配对基名」索引。
-  //    配对基名 = 文件名去扩展名；对 *_HEVC.MOV 再去掉 _HEVC（与静止帧同名）。
-  //    例：IMG_1234_HEVC.MOV → IMG_1234；IMG_1234.HEIC → IMG_1234
-  //    ⚠ 配对必须限定在同一目录内：iCloudPD 会把同名文件（不同设备 / 编辑版本）
-  //    归档进不同的日期目录，只看基名会把不同照片错误配对成一组，
-  //    并导致同组多余视频（videos[0] 之外）被直接丢弃（曾丢失 3382 个视频）。
-  const byPairKey = new Map<string, RawFile[]>()
+  /**
+   * ②′ 实况 UUID 探测（③ 配对判据的前置步骤）
+   *
+   * 成本控制是这一段唯一需要留意的地方：
+   *   - 签名未变的已入库文件 → 直接用库里的 content_identifier，**零 IO**（稳态不开销）
+   *   - 新增 / 内容变化的图片 → exifr 顺带取（MakerNote 就在同一个 EXIF 段里）
+   *   - 新增 / 内容变化的视频 → exiftool 常驻进程（70ms/个；ffprobe 要 spawn，219ms）
+   *
+   * 图片元数据在这里就解析了一次，缓存给 ③ 阶段复用，避免 exifr 对同一文件跑两遍。
+   */
+  const cidOf = new Map<string, string | null>()
+  /** 图片元数据缓存（仅探测过的文件有值；③ 阶段优先用它） */
+  const imageMetaCache = new Map<string, ImageMeta>()
+  let probed = 0
   for (const f of files) {
-    let base = baseName(f.fileName)
-    if (f.kind === 'video' && base.endsWith('_HEVC')) base = base.slice(0, -'_HEVC'.length)
-    // Windows 下 relPath 是反斜杠，统一转 / 再拼目录，保证跨平台一致
-    const dirKey = path.posix.dirname(f.relPath.replace(/\\/g, '/'))
-    const key = `${dirKey}/${base}`
-    const arr = byPairKey.get(key) ?? []
-    arr.push(f)
-    byPairKey.set(key, arr)
-  }
-
-  // 组装主资产列表：图片永远是主资产；没有图片配对的视频才是独立视频资产
-  const assets: PairedAsset[] = []
-  let livePairs = 0
-  for (const [key, group] of byPairKey) {
-    const images = group.filter((f) => f.kind === 'image')
-    const videos = group.filter((f) => f.kind === 'video')
-    if (images.length > 0) {
-      // 图片 + 最多一个视频 → 实况照片（取第一个图片为主资产）
-      const img = images[0]
-      const live = videos[0] ?? null
-      if (live) {
-        livePairs++
-      }
-      assets.push({ image: img, liveVideo: live })
-      // 同基名多余图片（如编辑变体）也独立入库为照片
-      for (const extra of images.slice(1)) assets.push({ image: extra, liveVideo: null })
-      // 额外视频不能静默丢弃；作为普通视频资产保留。
-      for (const extra of videos.slice(1)) assets.push({ image: extra, liveVideo: null })
-    } else if (videos.length > 0) {
-      // 只有视频 → 普通视频资产
-      for (const v of videos) assets.push({ image: v, liveVideo: null })
+    const exist = existingMeta.get(f.relPath)
+    const unchanged =
+      exist != null && exist.size !== null && exist.size === f.size && exist.mtimeMs === f.mtimeMs
+    if (unchanged) {
+      cidOf.set(f.relPath, exist.contentIdentifier)
+      continue
     }
+    if (f.kind === 'image') {
+      const meta = await readImageMeta(f.absPath)
+      imageMetaCache.set(f.relPath, meta)
+      cidOf.set(f.relPath, meta.contentIdentifier)
+    } else {
+      cidOf.set(f.relPath, await readContentIdentifier(f.absPath))
+    }
+    if (++probed % 200 === 0) await yieldToEventLoop()
   }
 
+  /** 该文件的实况内容标识（缺失一律视为 null，调用方不必再判 undefined） */
+  const cidOfFile = (f: RawFile): string | null => cidOf.get(f.relPath) ?? null
+
+  // ② 实况配对（UUID 优先、文件名兜底，判据与取舍见 scanner/pair.ts）
+  const { assets, livePairs } = pairLiveAssets(files, cidOfFile)
   scanProgress.livePairs = livePairs
 
   // ③ 逐资产提取元数据 + ④ 入库
   // RETURNING id：UPSERT 后直接拿到主键，同步 FTS 索引（见下方 upsertFts）
   // F-03 修复：DO UPDATE 同时写入 file_size/file_mtime（签名列）。
   const insert = db.prepare(`
-    INSERT INTO assets (file_path, type, filename, date_taken, width, height, duration, orientation, gps_lat, gps_lon, live_video, file_size, file_mtime)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO assets (file_path, type, filename, date_taken, width, height, duration, orientation, gps_lat, gps_lon, live_video, file_size, file_mtime, content_identifier, live_video_cid)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(file_path) DO UPDATE SET
       type=excluded.type, filename=excluded.filename, date_taken=excluded.date_taken,
       width=excluded.width, height=excluded.height, duration=excluded.duration,
       orientation=excluded.orientation, gps_lat=excluded.gps_lat, gps_lon=excluded.gps_lon,
       live_video=excluded.live_video,
-      file_size=excluded.file_size, file_mtime=excluded.file_mtime
+      file_size=excluded.file_size, file_mtime=excluded.file_mtime,
+      content_identifier=excluded.content_identifier, live_video_cid=excluded.live_video_cid
     RETURNING id
   `)
 
@@ -469,23 +475,26 @@ async function doRunScan(
     if (exist && !changed) {
       /**
        * 稳态跳过写库（2026-11-03）：签名与磁盘一致、配对结果也和库里一致时，
-       * 下面那 13 列写回去全是幂等空操作（元数据取自 exist 本身，size/mtime 相同），
+       * 下面那 15 列写回去全是幂等空操作（元数据取自 exist 本身，size/mtime 相同），
        * 连带着 FTS 的 INSERT OR REPLACE 也是白写。大库稳态下每轮因此从
        * 「N 次 UPSERT + N 次 FTS 重写」降到「纯遍历 + stat」。
        *
-       * 三个必须同时成立的条件，缺一不可：
+       * 五个必须同时成立的条件，缺一不可：
        *  1. size / mtime 都非 NULL —— 老库（file_size 为 NULL 的历史行）的 changed 恒为
        *     false，它们**只能靠这条写库路径补写签名**。跳过就永远补不上，之后文件内容
        *     变化也永远检测不到（changed 恒 false）。
-       *  2. type 一致 —— 配对结果按「目录+基名」每轮重算，跨目录同名、MOV 增删都会变。
+       *  2. type 一致 —— 配对结果每轮重算，跨目录 UUID 配对、MOV 增删都会变。
        *  3. live_video 一致 —— 同上。
-       * 后两条是 13 列里唯一有「修正语义」的，漏掉就是静默且不可自愈的错误。
+       *  4/5. 两侧 UUID 一致 —— UUID 配对结果同样每轮重算，漏掉就是静默且不可自愈的错误。
+       * 后四条是 15 列里唯一有「修正语义」的。
        */
       const skipWrite =
         exist.size !== null &&
         exist.mtimeMs !== null &&
         exist.type === type &&
-        (exist.liveVideo ?? null) === liveVideoRel
+        (exist.liveVideo ?? null) === liveVideoRel &&
+        (exist.contentIdentifier ?? null) === cidOfFile(a.image) &&
+        (exist.liveVideoCid ?? null) === (a.liveVideo ? cidOfFile(a.liveVideo) : null)
       if (skipWrite) {
         scanProgress.scannedFiles += fileCount
         scanProgress.assetsFound++
@@ -505,6 +514,8 @@ async function doRunScan(
         liveVideoRel,
         a.image.size,
         a.image.mtimeMs,
+        cidOfFile(a.image),
+        a.liveVideo ? cidOfFile(a.liveVideo) : null,
       ])
       scanProgress.scannedFiles += fileCount
       scanProgress.assetsFound++
@@ -529,8 +540,13 @@ async function doRunScan(
       width = vm.width
       height = vm.height
       dateTaken = normalizeDate(vm.creationTime)
+      // 探测阶段用 exiftool 读 UUID；它不可用（被杀软拦、二进制缺失）时这里还有一次机会：
+      // ffprobe 的输出本来就带 com.apple.quicktime.content.identifier，白拿。
+      if (!cidOfFile(a.image) && vm.contentIdentifier) cidOf.set(a.image.relPath, vm.contentIdentifier)
     } else {
-      const im = await readImageMeta(absPath)
+      // ②′ 探测阶段已经解析过这个文件（新增/签名变化的图片都在那轮读过），直接复用；
+      // 缓存未命中才是真的一次额外解析（理论上不会发生，留作兜底）
+      const im = imageMetaCache.get(a.image.relPath) ?? (await readImageMeta(absPath))
       dateTaken = normalizeDate(im.dateTaken)
       orientation = im.orientation
       gpsLat = im.gps?.lat ?? null
@@ -608,6 +624,8 @@ async function doRunScan(
       a.liveVideo ? a.liveVideo.relPath : null,
       a.image.size,
       a.image.mtimeMs,
+      cidOfFile(a.image),
+      a.liveVideo ? cidOfFile(a.liveVideo) : null,
     ])
     scanProgress.scannedFiles += fileCount
     scanProgress.assetsFound++
