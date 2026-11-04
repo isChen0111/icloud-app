@@ -62,6 +62,38 @@ export function isPatchableImage(absPath: string): boolean {
 }
 
 /**
+ * 读取实况内容标识（只读，HEIC/JPEG/MOV 通用）。
+ *
+ * 实况照片的静止帧与配对视频共享同一个 UUID：静止帧写在 Apple MakerNote 0x0011，
+ * 视频写在 `com.apple.quicktime.content.identifier`。exiftool 对两边都报成
+ * `ContentIdentifier` 这一个标签名（2026-11-04 实测）。
+ *
+ * 为什么放在这个文件而不是 metadata/index.ts：
+ *   exiftool 常驻进程由本文件的 `getTool()` 独占持有（懒启动 + shutdown 里统一 close）。
+ *   另起一个 ExifTool 实例就是第二个进程，退出时还容易漏关。
+ *
+ * 为什么视频侧用它而不是 ffprobe：
+ *   ffprobe 每次 spawn 子进程，实测 219ms/文件；exiftool 走常驻进程 RPC，70ms/文件。
+ *   万级实况视频差出十几分钟。已经要跑 ffprobe 的独立视频则从 format.tags 白拿
+ *   （见 metadata/index.ts 的 readVideoFullMeta），不用调这里。
+ *
+ * 失败（文件损坏 / exiftool 不可用 / 非媒体文件）一律返回 null，由调用方降级为
+ * 文件名配对——配对是「有则更好」的信息，不能因为它让整轮扫描失败。
+ */
+export async function readContentIdentifier(absPath: string): Promise<string | null> {
+  try {
+    const tags = (await getTool().read(absPath, ['-ContentIdentifier'])) as unknown as {
+      ContentIdentifier?: unknown
+    }
+    const v = tags.ContentIdentifier
+    return typeof v === 'string' && v.trim() ? v.trim() : null
+  } catch (err) {
+    console.warn(`[exif] 读取内容标识失败（按缺失处理）: ${path.basename(absPath)}`, (err as Error).message)
+    return null
+  }
+}
+
+/**
  * 本地 ISO8601（'2026-11-01T11:34:18+08:00'）→ EXIF 时间格式（'2026:11:01 11:34:18'）。
  *
  * 注意取的是字符串里的「本地时间」部分，不带时区换算：EXIF 没有时区概念，

@@ -125,6 +125,20 @@ function ensureOpen(): Database.Database {
   // F-03 修复：源文件签名列（size + mtimeMs）——旧库补齐，新库建表已含
   if (!assetColumns.has('file_size')) db.exec(`ALTER TABLE assets ADD COLUMN file_size INTEGER`)
   if (!assetColumns.has('file_mtime')) db.exec(`ALTER TABLE assets ADD COLUMN file_mtime INTEGER`)
+  /**
+   * 实况 UUID 配对（2026-11-04）：两列都允许 NULL。
+   *
+   * 只加列、不设版本标记、也不做强制回填——当前库只有测试数据，升级时重扫一遍即可；
+   * 而升级前入库的行这两列为 NULL，会走「至少一侧缺 UUID → 文件名兜底」的老路径，
+   * 与改造前行为一致，没有回归。若将来真需要给存量数据补齐 UUID，按 `backfill-exif`
+   * 的做法加一个独立脚本，不要往扫描流程里塞「跳过 skipWrite」的时间窗口。
+   */
+  if (!assetColumns.has('content_identifier')) {
+    db.exec(`ALTER TABLE assets ADD COLUMN content_identifier TEXT`)
+  }
+  if (!assetColumns.has('live_video_cid')) {
+    db.exec(`ALTER TABLE assets ADD COLUMN live_video_cid TEXT`)
+  }
 
   // R-08：date_taken 基准统一。必须放在 FTS 判断之前——改了 date_taken 就得重建索引，
   // 否则 FTS 里还留着旧基准的 date_taken / date_compact（搜索结果与排序会跟主表不一致）。

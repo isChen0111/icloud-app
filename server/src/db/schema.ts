@@ -45,6 +45,14 @@ CREATE TABLE IF NOT EXISTS assets (
   -- 实况照片配对视频的相对路径（仅 type='live' 有值）
   live_video    TEXT,
 
+  -- 实况内容标识（UUID）：静止帧写在 Apple MakerNote 0x0011，配对视频写在
+  -- com.apple.quicktime.content.identifier，两侧相同即同一张实况。
+  -- 用它配对能跨目录、抗改名（文件名方案都做不到）；NULL = 文件里没有该标签。
+  content_identifier TEXT,
+  -- 本资产配对视频的内容标识（仅 type='live' 有值）。与 live_video 一起参与
+  -- 「配对结果是否变化」的判断，否则稳态跳过写库会让 UUID 配对结果无法被重扫修正。
+  live_video_cid TEXT,
+
   -- 缩略图生成状态机：pending → done | error
   thumb_status  TEXT DEFAULT 'pending',
   thumb_error   TEXT,

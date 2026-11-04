@@ -142,19 +142,20 @@
 <tr><td>HEIC</td><td><code>IMG_1234.HEIC</code></td><td><code>IMG_1234_HEVC.MOV</code></td></tr>
 <tr><td>JPEG</td><td><code>IMG_1234.JPG</code></td><td><code>IMG_1234.MOV</code></td></tr>
 </table>
-<div class="note"><b>配对规则</b>：扫描时对每个文件计算「去后缀 + 去 _HEVC 后缀」后的基名，<b>基名相同且位于同一目录内</b>且一个为图片（HEIC/JPG/PNG…）一个为视频（MOV/MP4…）即配对为实况照片（iCloudPD 的 suffix 命名天然保证一一对应，<b>无时间差校验</b>）。视频不带静态帧配对的即为普通视频。</div>
+<div class="note"><b>配对规则（2026-11-04 起 UUID 优先）</b>：两侧内容标识（UUID）都存在且相同 → 实况照片；<b>至少一侧没有 UUID</b> 时才退回「<b>目录 + 去 _HEVC 基名</b>」的文件名匹配；<b>两侧都有但不同 → 不配对</b>（哪怕文件名一模一样），因为被重编码过的那一半已经被剥掉了 MakerNote / content.identifier，硬配只会放出错误的片段，Apple 自己也认不出这对。UUID 来自 Apple 官方机制：静止帧写在 Apple MakerNote 标签 <code>0x0011</code>，视频写在 <code>com.apple.quicktime.content.identifier</code>。UUID 那一轮<b>全局匹配、不限目录</b>（跨日期目录、被改过名的实况也能接回），文件名那一轮<b>必须限定目录</b>（见下方跨目录同名坑）。没有配到静止帧的视频即为普通视频。<br>
+<b>读取成本</b>：图片侧 <code>exifr</code> 开 <code>makerNote</code> 几乎零增量（同一 EXIF 段内）；视频侧走 exiftool 常驻进程约 70ms/个（ffprobe 每次 spawn 要 219ms）；独立视频本来就跑 ffprobe，其 UUID 从 <code>format.tags</code> 白拿。已入库且签名未变的资产直接取库里的 UUID，稳态零开销。</div>
 
 <div class="callout"><b>⚠️ 跨目录同名文件坑（重要，2026-09-08 修复）</b><br>
 <b>现象</b>：iCloudPD 会把<b>不同设备 / 编辑版本</b>的同名文件（如 <code>IMG_0040</code>）按各自拍摄日期归档进<b>不同目录</b>——实测库中存在 <code>2018/02/04/IMG_0040.HEIC + IMG_0040_HEVC.MOV</code> 与 <code>2021/07/27/IMG_0040.MOV</code> 这类跨目录同名组（全库大量基名分布在多个目录）。早期扫描按「文件名基名」配对，跨目录同名被合并成一组，代码只取 <code>videos[0]</code> 配对实况，<b>同组其余视频被静默丢弃</b>，且实况视频可能配到另一张同名照片上。这里的“只取第一个视频”是旧行为；当前实现会把同组额外视频作为独立视频资产保留。<br>
 <b>实测影响</b>：磁盘视频文件只入库一部分，<b>丢失大量视频</b>（含实况配对视频与独立视频）；同时有相当数量的实况照片因跨目录被误记为普通照片。<br>
-<b>修复</b>：① 配对 key 从「文件名基名」改为「<b>目录 + 基名</b>」，配对只在同一目录内进行；② 增量扫描从「已入库直接跳过」改为「<b>复用现有元数据、仍执行 UPSERT 修正 type/live_video</b>」，保证重扫时旧数据能按新配对规则归位。<br>
+<b>修复</b>：① 配对 key 从「文件名基名」改为「<b>目录 + 基名</b>」，配对只在同一目录内进行（2026-11-04 起再升级为 UUID 优先，目录限制只作用于「文件名兜底」那一轮）；② 增量扫描从「已入库直接跳过」改为「<b>复用现有元数据、仍执行 UPSERT 修正 type/live_video</b>」，保证重扫时旧数据能按新配对规则归位。<br>
 <b>重扫验证</b>：photo/live/video 数量与磁盘文件数精确一致（视频全部入库）；与 iCloud 网页端统计基本对齐（照片与独立视频数近似）。</div>
 
 <h3>3.3 入库流水线</h3>
 <div class="flow">
   <div class="step"><b>① 扫描</b>遍历并收集媒体文件，随后按目录日期从新到旧安排处理</div>
   <div class="arrow">→</div>
-  <div class="step"><b>② 配对</b>目录内基名匹配（无时间校验），标记 live</div>
+  <div class="step"><b>② 配对</b>UUID 优先，缺 UUID 才用「目录 + 基名」兜底；UUID 冲突不配</div>
   <div class="arrow">→</div>
   <div class="step"><b>③ 读元数据</b>exifr 提取时间/GPS/方向/尺寸；视频用 ffprobe 读时长</div>
   <div class="arrow">→</div>
@@ -162,7 +163,7 @@
   <div class="arrow">→</div>
   <div class="step"><b>⑤ 入队</b>生成缩略图 / 抽视频帧 / 加入后台队列</div>
 </div>
-<p class="muted">增量设计：以 <code>file_path</code> 为唯一键 UPSERT（无 checksum 比对）；<b>已入库文件复用现有元数据</b>，且签名（size + mtimeMs）与 <code>type</code>/<code>live_video</code> 三项全一致时<b>完全跳过写库</b>（2026-11-03，稳态零写）。依据：13 列里只有 <code>type</code>/<code>live_video</code> 有「修正语义」（配对按「目录 + 基名」每轮重算，换归属要能改），其余元数据取自库、写回是空操作，因此三项一致 ⇒ 写与不写等价；但 <code>file_size IS NULL</code> 的历史行必须仍写库 —— 它们 <code>changed</code> 恒为 false，唯一补签名的途径就是这条写库路径，跳过等于永久失去内容变化检测。2 万文件一轮从「遍历 + N 次 UPSERT + N 次 FTS 重写」降到「遍历 + stat」（实测稳态 <code>total_changes</code> 增量为 0）。媒体类型以支持的扩展名识别；隐藏目录忽略，但隐藏媒体文件仍会检查扩展名。对文件名恰为扩展名的合法文件（如 <code>.mp4</code>），在 Node 将其视为 dotfile、<code>path.extname()</code> 返回空字符串时仍按媒体类型收录。扫描优先依据常见的 <code>YYYY/MM/DD</code> 目录日期处理较新的媒体；这只是处理优先级，入库和照片墙展示仍按 EXIF/ffprobe 得到的实际拍摄时间排序。没有可识别目录日期的文件排在有日期文件之后，不会被跳过。全量扫描时间主要取决于媒体元数据读取和磁盘性能。</p>
+<p class="muted">增量设计：以 <code>file_path</code> 为唯一键 UPSERT（无 checksum 比对）；<b>已入库文件复用现有元数据</b>，且签名（size + mtimeMs）与 <code>type</code>/<code>live_video</code>/两侧 UUID（<code>content_identifier</code>、<code>live_video_cid</code>）五项全一致时<b>完全跳过写库</b>（2026-11-03，稳态零写）。依据：15 列里只有这四项有「修正语义」（配对每轮重算——UUID 全局匹配、文件名按「目录 + 基名」，换归属要能改），其余元数据取自库、写回是空操作，因此五项一致 ⇒ 写与不写等价；但 <code>file_size IS NULL</code> 的历史行必须仍写库 —— 它们 <code>changed</code> 恒为 false，唯一补签名的途径就是这条写库路径，跳过等于永久失去内容变化检测。2 万文件一轮从「遍历 + N 次 UPSERT + N 次 FTS 重写」降到「遍历 + stat」（实测稳态 <code>total_changes</code> 增量为 0）。媒体类型以支持的扩展名识别；隐藏目录忽略，但隐藏媒体文件仍会检查扩展名。对文件名恰为扩展名的合法文件（如 <code>.mp4</code>），在 Node 将其视为 dotfile、<code>path.extname()</code> 返回空字符串时仍按媒体类型收录。扫描优先依据常见的 <code>YYYY/MM/DD</code> 目录日期处理较新的媒体；这只是处理优先级，入库和照片墙展示仍按 EXIF/ffprobe 得到的实际拍摄时间排序。没有可识别目录日期的文件排在有日期文件之后，不会被跳过。全量扫描时间主要取决于媒体元数据读取和磁盘性能。</p>
 
 <h3>3.4 缩略图流水线</h3>
 <p>参照 iCloud 的「档位 + 按需」模型，定义 grid 与 detail 两档缩略图，视频另生成 poster：</p>
