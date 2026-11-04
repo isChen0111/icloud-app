@@ -4,7 +4,7 @@
 >
 > **更新方式**：只记「现在是什么样」和「为什么这么做」。新完成的工作记进 `.workbuddy/memory/YYYY-MM-DD.md`，有架构含义的决策补进第二节。**不要在这里按时间堆流水账**——2026-11-02 之前的历史已切到 `docs/archive/CONTEXT-时间线归档-2026-11-02.md`（编号 1→33 的阶段流水，约 130 行）。
 
-最后更新：2026-11-02
+最后更新：2026-11-04
 
 ---
 
@@ -25,7 +25,7 @@
 
 ```
 F:\iPhone\icloud-app\
-├─ iCloudPhoto\lib<id>\        # library_root，每个库一个目录
+├─ PhotoLib\lib<id>\           # library_root，每个库一个目录
 │  ├─ icloud\                  # icloudpd 下载目标（--directory 指向这里），YYYY/MM/DD
 │  └─ import\                  # 用户导入，重排为 YYYY/MM/DD
 └─ server\cache\
@@ -40,8 +40,8 @@ F:\iPhone\icloud-app\
 ### 1.3 数据与运行
 
 - **正式数据在原位** `F:\iPhone\iCloudPhoto`（约 163GB / 2 万文件），项目目录之外，开发期间暂放。**禁止对它有写操作、扫描、清理、删除**。
-- 当前激活库「我的相册」的 `library_root` 是 `F:\iPhone\icloud-app\iCloudPhoto\lib1`，里面是 **317 项测试数据**，不是正式库。
-- `F:\iPhone\icloud-app` 目录内的一切（含 `iCloudPhoto\`、`server\cache\`）都是可弃测试数据，可随便造/删。
+- 2026-11-04 照片库根目录由 `iCloudPhoto` 改名为 **`PhotoLib`**，同时清空了全部测试库（lib18~21 的照片与缓存已移至 `C:\Users\isChen\AppData\Local\Temp\photolib-wipe-backup`，可弃）。当前无任何库，等用户重建并迁入正式数据。
+- `F:\iPhone\icloud-app` 目录内的一切（含 `PhotoLib\`、`server\cache\`）都是可弃测试数据，可随便造/删。
 - 迁回正式数据：**先停后端 → 复制进 `icloud/` → 再启动**，让 `runScan('startup')` 一次对账。否则 chokidar 会为每个新文件排 2 秒 `awaitWriteFinish`，几万文件就是事件洪峰。迁入前用户会先清掉现有测试数据。
 - **后端是 `tsx watch` 起的**：改后端代码即热重启，启动迁移会**立刻对真实库生效**。凡「要先备份再迁移」的改动，先请用户停后端。
 - 测试现状：后端 `npm test` **178 例**；前端 **0 例**（全靠手工验收）。
@@ -164,7 +164,7 @@ F:\iPhone\icloud-app\
 - 技术/财经类内容偏好「深度解析 + 大白话 + 结构化清单」。
 - **改动工作流程（硬性）**：① 需求改动先给评估（怎么改、对现有代码什么影响）→ ② 用户明确确认 → ③ 动手改 → ④ 测试 + 用户验收 → ⑤ 用户明确说可提交才 commit → ⑥ 合并 main → 推送。约定是「大改动开分支」，近期的小批次改动多直接在 main 上做完再提交。
 - 验收可接受「轻量验证」：涉及真实同步/下载的功能，用「启动后 1~2 秒内取消」或 DevTools 拦截规避资源消耗。
-- UI 口径：默认浅色主题、CSS 变量双主题、localStorage 持久化 + 内联脚本防闪烁；**详情 / 实况 / 视频查看区恒深色**（观片体验优先）。
+- UI 口径：默认浅色主题、CSS 变量双主题、localStorage 持久化 + 内联脚本防闪烁；**详情 / 实况 / 视频查看区背景跟随主题**（`--detail-bg`：浅色 `#f5f5f7` / 深色 `#111113`，见 `web/index.html`）。
 
 ---
 

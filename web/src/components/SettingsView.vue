@@ -18,6 +18,7 @@ import { useTaskStore } from '../stores/tasks'
 import type { LibraryInfo } from '../types'
 import SyncButton from './SyncButton.vue'
 import ImportDialog from './ImportDialog.vue'
+import { version as appVersion } from '../../package.json'
 
 /**
  * 任务状态（同步进度、全局是否忙碌）统一从 tasks store 读 ——
@@ -755,13 +756,96 @@ onBeforeUnmount(() => {
           </template>
 
           <template v-else>
-            <div class="settings-title">关于</div>
-            <div class="settings-sub">iCloud 本地照片应用 · P0 照片库同步迭代</div>
-            <div class="config-card">
-              <div class="config-row"><span class="config-key">照片墙</span><code>本地浏览，缩略图按需生成</code></div>
-              <div class="config-row"><span class="config-key">同步</span><code>icloudpd 官方 exe（1.32.3，免 Python）</code></div>
-              <div class="config-row"><span class="config-key">数据</span><code>SQLite（better-sqlite3）+ meta.db 多库注册表</code></div>
+            <!-- 关于页：身份卡式排版。标签承载功能概览，图标清单承载安全承诺，避免大段纯文字 -->
+            <div class="about-hero">
+              <div class="about-app">
+                <span class="about-app-name">本地照片库</span>
+                <span class="about-ver">v{{ appVersion }}</span>
+              </div>
+              <div class="about-tagline">部署在个人电脑或家庭局域网的照片管理应用</div>
             </div>
+
+            <p class="about-intro">
+              把 iCloud 拉取的照片和本地目录导入的照片收进同一个库，统一归置、检索、浏览。
+            </p>
+
+            <div class="about-label">功能</div>
+            <div class="about-feats">
+              <div class="feat">
+                <svg class="feat-ico" viewBox="0 0 16 16" aria-hidden="true"><rect x="2" y="2" width="5" height="5" rx="1" /><rect x="9" y="2" width="5" height="5" rx="1" /><rect x="2" y="9" width="5" height="5" rx="1" /><rect x="9" y="9" width="5" height="5" rx="1" /></svg>
+                <div class="feat-body">
+                  <div class="feat-t">照片墙</div>
+                  <div class="feat-d">虚拟滚动覆盖全库，几万张也能流畅翻</div>
+                </div>
+              </div>
+              <div class="feat">
+                <svg class="feat-ico" viewBox="0 0 16 16" aria-hidden="true"><rect x="2" y="3" width="12" height="11" rx="2" /><path d="M2 6.5h12M5.5 1.5v3M10.5 1.5v3" /></svg>
+                <div class="feat-body">
+                  <div class="feat-t">月份分组</div>
+                  <div class="feat-d">按拍摄时间归组，点年月直达任意一天</div>
+                </div>
+              </div>
+              <div class="feat">
+                <svg class="feat-ico" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6.5" /><path d="M6.5 5.5v5l4-2.5-4-2.5Z" /></svg>
+                <div class="feat-body">
+                  <div class="feat-t">实况照片</div>
+                  <div class="feat-d">按住即播，带原声，松开即停</div>
+                </div>
+              </div>
+              <div class="feat">
+                <svg class="feat-ico" viewBox="0 0 16 16" aria-hidden="true"><rect x="1.5" y="3" width="13" height="10" rx="2" /><path d="M6.5 6v4l3.5-2-3.5-2Z" /></svg>
+                <div class="feat-body">
+                  <div class="feat-t">视频播放</div>
+                  <div class="feat-d">流式播放不等待，进度随意拖</div>
+                </div>
+              </div>
+              <div class="feat">
+                <svg class="feat-ico" viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.5" /><path d="m10.5 10.5 3 3" /></svg>
+                <div class="feat-body">
+                  <div class="feat-t">全文检索</div>
+                  <div class="feat-d">文件名与日期都能搜，3 字符片段即可命中</div>
+                </div>
+              </div>
+              <div class="feat">
+                <svg class="feat-ico" viewBox="0 0 16 16" aria-hidden="true"><path d="M4.5 11.5h6.8a2.4 2.4 0 0 0 .5-4.75 3.4 3.4 0 0 0-6.6-.85A2.6 2.6 0 0 0 4.5 11.5Z" /><path d="M8 6.8v4M6.5 9.3 8 10.8l1.5-1.5" /></svg>
+                <div class="feat-body">
+                  <div class="feat-t">iCloud 同步</div>
+                  <div class="feat-d">icloudpd 增量拉取，登录凭据保存在本地</div>
+                </div>
+              </div>
+              <div class="feat">
+                <svg class="feat-ico" viewBox="0 0 16 16" aria-hidden="true"><rect x="5" y="5" width="9" height="9" rx="2" /><path d="M11 5V4a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2v5a2 2 0 0 0 2 2h1" /></svg>
+                <div class="feat-body">
+                  <div class="feat-t">多照片库</div>
+                  <div class="feat-d">各库独立目录与账号，家人各存各的</div>
+                </div>
+              </div>
+              <div class="feat">
+                <svg class="feat-ico" viewBox="0 0 16 16" aria-hidden="true"><path d="M1.5 4.5v8a1 1 0 0 0 1 1h11a1 1 0 0 0 1-1v-6a1 1 0 0 0-1-1H8L6.5 3.5h-4a1 1 0 0 0-1 1Z" /><path d="M8 11V8M6.2 9.3 8 7.5l1.8 1.8" /></svg>
+                <div class="feat-body">
+                  <div class="feat-t">本地导入</div>
+                  <div class="feat-d">自动按日期归置、补拍摄时间、配对实况</div>
+                </div>
+              </div>
+            </div>
+
+            <div class="about-label">数据与隐私</div>
+            <ul class="about-points">
+              <li>
+                <svg class="pt-ico ok" viewBox="0 0 16 16" aria-hidden="true"><path d="M3 8.5 6.5 12 13 4.5" /></svg>
+                照片、索引、缩略图全部保存在本机
+              </li>
+              <li>
+                <svg class="pt-ico ok" viewBox="0 0 16 16" aria-hidden="true"><path d="M3 8.5 6.5 12 13 4.5" /></svg>
+                无账号体系、无云端、无遥测
+              </li>
+              <li>
+                <svg class="pt-ico warn" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2.5 14.5 13.5H1.5L8 2.5Z" /><path d="M8 6.5v3M8 11.4v.1" /></svg>
+                面向家庭网络设计，请勿暴露到公网
+              </li>
+            </ul>
+
+            <div class="about-foot">技术栈：Vue 3 · Fastify · SQLite（FTS5）· sharp · ffprobe · icloudpd</div>
           </template>
         </div>
       </div>
@@ -900,6 +984,88 @@ onBeforeUnmount(() => {
 .settings-panel { flex: 1; padding: 18px 22px 24px; overflow: auto; min-width: 0; }
 .settings-title { font-size: 15px; font-weight: 700; }
 .settings-sub { margin-top: 3px; margin-bottom: 14px; color: var(--text-2); font-size: 12px; }
+/* ===== 关于页：身份卡式排版 ===== */
+/* 应用名 + 版本徽章 + 一句话定位：名字略大于正文即可，不压过「关于」标题 */
+.about-hero { margin: 2px 0 0; }
+.about-app { display: flex; align-items: center; gap: 10px; }
+.about-app-name { color: var(--text-1); font-size: 14.5px; font-weight: 700; }
+.about-ver {
+  padding: 2px 9px;
+  border: 1px solid rgb(67 132 238 / 35%);
+  border-radius: 999px;
+  background: rgb(67 132 238 / 8%);
+  color: #4384ee;
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 11px;
+  font-weight: 600;
+}
+.about-tagline { margin-top: 4px; color: var(--text-2); font-size: 12px; }
+
+/* 简介：左侧蓝色竖线的引言形态，和上面的副标题拉开角色差 */
+.about-intro {
+  margin: 14px 0 18px;
+  padding: 2px 0 2px 11px;
+  border-left: 3px solid rgb(67 132 238 / 45%);
+  color: var(--text-1);
+  font-size: 12.5px;
+  line-height: 1.7;
+}
+
+/* 小节标签 */
+.about-label {
+  margin: 0 0 9px;
+  color: var(--text-3);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 2px;
+}
+
+/* 功能网格：两列，图标 + 标题 + 一行说明；无边框，靠图标提神 */
+.about-feats {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 4px 16px;
+  margin-bottom: 18px;
+}
+.feat { display: flex; align-items: flex-start; gap: 9px; padding: 5px 2px; }
+.feat-ico {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 16px;
+  margin-top: 2px;
+  fill: none;
+  /* 中性灰描边：图标只做视觉锚点，不用主题蓝——蓝色太像可点击的按钮 */
+  stroke: var(--text-3);
+  stroke-width: 1.4;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.feat-t { color: var(--text-1); font-size: 12.5px; font-weight: 600; }
+.feat-d { margin-top: 1px; color: var(--text-2); font-size: 12px; line-height: 1.55; }
+
+/* 数据与隐私：图标 + 文案的清单，绿勾表示承诺、黄三角表示提醒 */
+.about-points { margin: 0; padding: 0; list-style: none; }
+.about-points li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+  color: var(--text-1);
+  font-size: 12.5px;
+}
+.pt-ico { width: 14px; height: 14px; flex: 0 0 14px; fill: none; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.pt-ico.ok { stroke: #34a853; }
+.pt-ico.warn { stroke: #d29a04; }
+
+/* 底部技术栈：整行弱化但保持可读 */
+.about-foot {
+  margin-top: 16px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+  color: var(--text-2);
+  font-size: 11px;
+  letter-spacing: 0.3px;
+}
 .settings-empty { color: var(--text-2); font-size: 12px; }
 .settings-link { border: 0; background: transparent; color: #4384ee; font: inherit; font-size: 12px; cursor: pointer; }
 

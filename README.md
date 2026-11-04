@@ -1,185 +1,338 @@
-# 本地照片库 Web 应用
+# 本地照片库
 
-用于浏览 iCloudPD 同步到本地的照片、实况照片和视频（支持虚拟滚动照片墙、缩放、日期定位、详情轮播和视频流式播放）。
+iCloud 空间按月收费，拉回本地又只剩一堆没索引的文件；硬盘上的旧照片目录结构各异，翻起来同样费劲。
 
-## 目录结构
+这个项目把两类照片收进同一个本地库 —— 从 iCloud 拉回来的，和从硬盘导入的。归置、补拍摄时间、配对实况照片、建索引全在本地完成，浏览走本机 IO。界面照着 iCloud 照片网页端复刻，装在自己电脑上，局域网内的手机、平板打开浏览器就能翻。
 
-```
-icloud-app/
-├── docs/
-│   ├── 架构设计文档.html               # 系统全景：接口/扫描/媒体处理/架构
-│   ├── CONTEXT-项目上下文快照.md        # 现状 + 决策 + 踩坑（活文档）
-│   ├── README.md                        # docs 索引
-│   └── archive/                         # 历史快照（归档后不再修改）
-│       ├── 整体审查报告-2026-10-06.md   # F-01~F-07（已完结）
-│       ├── 整体审查报告-2026-10-27.md   # R-01~R-30（30 项已全部落地）
-│       ├── 整体审查报告-2026-11-02.md   # P0/P1/P2 + 文档处置（已全部落地）
-│       ├── 日期处理方案审查-2026-11-01.md
-│       ├── 导入功能审查与重构方案-2026-11-01.md
-│       ├── iCloudPD照片库同步-架构功能设计.html
-│       ├── 产品设计稿-照片库拉取同步.html
-│       └── CONTEXT-时间线归档-2026-11-02.md
-├── iCloudPhoto/            # 照片库根：多库 iCloudPhoto/lib<id>/，下分 icloud/（icloudpd 下载）与 import/（本地导入）
-├── server/                 # Fastify 后端与媒体处理流水线
-│   ├── src/
-│   ├── scripts/
-│   ├── vendor/              # 第三方二进制（ffmpeg-full/、icloudpd exe，均不提交 git）
-│   ├── cache/               # 应用缓存（meta.db 注册表 + lib<id>/ 各库缓存，可重建）
-│   ├── package.json
-│   └── package-lock.json
-└── web/                    # Vue 前端
-    ├── src/
-    ├── package.json
-    └── package-lock.json
-```
+![照片墙](docs/images/photowall.jpg)
 
-## 快速启动
+## 目录
 
-**前置要求**：Windows、Node.js 22 或更高版本。
+- [亮点](#亮点)
+- [定位与边界](#定位与边界)
+- [更多能力](#更多能力)
+- [技术栈](#技术栈)
+- [快速开始](#快速开始)
+- [使用](#使用)
+- [目录结构](#目录结构)
+- [注意事项](#注意事项)
+- [环境变量](#环境变量)
+- [常用命令](#常用命令)
+- [API](#api)
+- [开发与测试](#开发与测试)
+- [已知限制](#已知限制)
 
-`server/` 和 `web/` 是独立项目，分别在各自目录运行 `npm ci` 安装依赖。安装后端依赖时，npm 会自动检查 FFmpeg；首次安装或文件缺失时会下载约 170MB 的套件。通常无需手动处理，下载失败时再使用后文的备用方案。
+## 亮点
 
-**启动前准备**：应用是**多照片库**模式——照片库通过网页端创建（首页引导：命名 → 添加照片，iCloud 拉取或导入本地目录二选一即可）。照片库根目录为项目根的 `iCloudPhoto/`（每库 `iCloudPhoto/lib<id>/`，下分 `icloud/`（icloudpd 下载，文件夹结构固定 `YYYY/MM/DD`）与 `import/`（本地目录导入，统一按 `YYYY/MM/DD` 归置）两个子目录）；各库缓存与会话在 `server/cache/lib<id>/`，库注册表 `server/cache/meta.db`。这些路径在建库时按项目根派生并写入注册表，**不支持用环境变量改到别处**（多库下 cookie、照片目录、数据库三者绑定，单独挪其中一项会造成半迁移状态）。
+- **整库虚拟滚动的照片墙**。几万张照片，总高度精确预计算，滚到任何位置都能继续往上下走，不卡也不跳。
+- **实况照片按住就动**。带原声，松开停，不是一张静图配个角标。
+- **视频不用等转码**。HTTP Range 流式播放，拖到哪播到哪，封面自动抽帧。
+- **任意三个字符就能搜到**。文件名和日期都进了 FTS5 索引，输中间一段片段也能命中；搜索结果同样是一整面可滚动的照片墙，不是只给一百条。
+- **在网页里登录 iCloud**。密码、双重验证码走图形界面，登录凭据存在本地，全量与增量同步一键完成。
+- **一人一库**。每个库有独立的目录、数据库和 iCloud 登录状态，家里几口人各存各的；iCloud 拉取和本地导入在同一个库里混排。
+- **旧硬盘里的照片能收编**。任意目录结构导入后按拍摄日期重新归置，缺失的拍摄时间补进 EXIF，实况自动配对，重名自动处理。
+- **手机平板直接看**。Web 应用，局域网内打开浏览器即用，不用装 App。
+
+## 定位与边界
+
+单进程 Node 服务加一个 SQLite 文件，不需要 Docker，也不需要独立的数据库和缓存服务。目标场景是一台个人电脑或家庭局域网。
+
+它没有用户鉴权、没有 HTTPS、没有限流，媒体处理也是单进程排队 —— **不要把它映射到公网**。要从外网访问，用 WireGuard、Tailscale 这类 VPN 回家里网络。
+
+和 Immich、PhotoPrism 这类通用自托管相册相比，区别在入口：那些需要你把文件投喂进去，这里多一条 iCloud 原生通道。没有做的功能列在「已知限制」里。
+
+## 更多能力
+
+月份面板按年/月跳转，顶部吸顶条实时显示当前视口的日期跨度。详情页左右切换、渐进显示（先用已缓存的网格图做模糊占位，再淡入大图），并实时解析 EXIF 与 ffprobe 给出设备、镜头、光圈、快门、ISO、焦距和 GPS。深浅双主题，默认浅色，选择保存在当前浏览器里。
+
+导入支持复制与移动两种模式，也可以从浏览器直接上传。归置途中会周期性入库，几万张不必等全部搬完才看到第一张。库目录有文件增删会自动触发增量扫描；后端每次启动也会先做一次增量对账。
+
+缩略图按需生成：滚到哪生成到哪，剩下的在后台排队，和前台浏览共用同一批并发槽位（交互请求优先插队）。生成失败的项能查看原因、重试，或先忽略提醒。
+
+同步、导入、扫描、缩略图四类长任务各自独立显示进度，关掉弹窗不会中断。照片墙与详情页都支持多选删除，会同时删除磁盘上的源文件。
+
+<img src="docs/images/detail.jpg" width="49%" alt="详情页"> <img src="docs/images/datenav.jpg" width="49%" alt="日期导航面板">
+
+左：详情页，左右切换、可展开信息面板。右：日期导航，按年选月直达。
+
+## 技术栈
+
+| 层 | 选型 |
+|---|---|
+| 前端 | Vue 3.5 + Vite 6 + TypeScript + Pinia + `@tanstack/vue-virtual`；自研懒加载与缩略图调度器 |
+| 后端 | Node.js 22+ + TypeScript + Fastify 5 + better-sqlite3（SQLite） |
+| 媒体处理 | sharp（缩略图，WebP）、FFmpeg full（HEIC 解码、视频抽帧与探测）、exiftool（补写 EXIF） |
+| 检索 | SQLite FTS5，`trigram` 分词器 |
+| 取图 | [icloudpd](https://github.com/icloud-photos-downloader/icloud_photos_downloader) 1.32.3，黑盒 spawn，版本锁定 |
+
+几个值得一提的实现选择：
+
+- **`date_taken` 统一存成本地时间 + 时区偏移**（`2026-10-25T16:47:15+08:00`）。字符串排序即本地时间排序，按月分组直接截前 7 位就对，换时区也不会解析错。
+- **实况照片的配对键是「目录 + 基名」**。只按基名会在不同设备、不同编辑版本的同名文件之间错配。
+- **缩略图 URL 带 `rev`（源文件 mtime）与 `lib`（库 id）**。源文件被覆盖、或切到另一个库，URL 自动变化，浏览器不会拿旧缓存顶替。
+- **扫描对未变化的文件跳过写库**：签名（size + mtime）与类型都没变时，不 UPSERT、不重写索引。几万张的库一轮从「遍历 + N 次写库」降到「遍历 + stat」。
+
+## 快速开始
+
+### 环境要求
+
+- **Windows 10 / 11**
+- **Node.js 22 或更高**（`package.json` 的 `engines` 要求）
+- 磁盘空间：照片本身 + 缩略图缓存。网格图（最长边 320px WebP）几十 KB 一张，详情图（最长边 1600px）约几百 KB 一张，都是按需生成
+- 首次安装会下载约 170MB 的 FFmpeg 压缩包与 icloudpd 可执行文件，解压后占用更大
+
+### 安装
+
+`server/` 与 `web/` 是两个独立项目，各自安装依赖。首次装 `server/` 时 postinstall 会自动下载 FFmpeg 与 icloudpd。
 
 ```powershell
-# 终端一：安装并启动后端
 Set-Location .\server
 npm ci
-npm run dev
+
+Set-Location ..\web
+npm ci
 ```
 
+### 启动
+
+**开发模式**（前后端分离，热更新）—— 两个终端，分别运行：
+
 ```powershell
-# 终端二：安装并启动前端
+# 终端一
+Set-Location .\server
+npm run dev
+
+# 终端二
 Set-Location .\web
-npm ci
 npm run dev
 ```
 
-打开 http://localhost:5173 查看照片墙。首次启动后端会先收集媒体文件，再优先处理目录日期较新的文件；扫描期间，首批资产入库后照片墙会自动显示已入库内容，扫描结束后再自动刷新一次以同步最终数据。扫描完成后，剩余网格缩略图进入后台生成队列；已显示照片的缩略图仍按需加载。目录日期只用于安排处理顺序，照片墙最终仍按实际拍摄时间排序。后端之后也会在启动时增量同步，并监听照片库的文件变化。
+打开 <http://localhost:5173>。
 
-如需调整端口等可选参数，可复制模板后在 `server/.env` 修改（不创建也能正常启动，可用变量见文末「环境变量」）：
-
-```powershell
-Set-Location .\server
-Copy-Item .env.example .env
-```
-
-### 生产模式（单端口部署）
-
-开发模式使用前端 5173 和后端 8899 两个端口。生产模式先构建前端，再由后端托管页面，本机访问 `http://127.0.0.1:8899`（后端默认监听 `0.0.0.0`，同一局域网内其他设备用 `http://<服务器IP>:8899` 访问）：
+**生产模式**（单端口，日常用这个）—— 前端构建一次，之后由后端直接托管页面：
 
 ```powershell
 Set-Location .\web
 npm run build
 
 Set-Location ..\server
-npm run start
+npm start
 ```
 
-### 第三方二进制下载失败时（备用方案）
+访问 <http://127.0.0.1:8899>。
 
-`server/` 下执行 `npm ci` 时 postinstall 会自动下载安装 FFmpeg（含 libheif）与 icloudpd exe（均从[项目 Release 页面](https://github.com/isChen0111/icloud-app/releases/tag/vendor-binaries)下载；已存在则跳过）。若自动下载失败，可选以下任一方案：
+### 局域网访问
 
-1. 手动下载 `ffmpeg-full.zip`（FFmpeg）或 `icloudpd-1.32.3-windows-amd64.exe`（icloudpd），分别放到 `server/vendor/ffmpeg-full.zip` / `server/vendor/icloudpd-1.32.3-windows-amd64.exe`，再在 `server/` 目录运行：
+后端默认监听 `0.0.0.0`，同一网络下的其他设备可以直接访问：
+
+```
+http://<这台电脑的局域网 IP>:8899
+```
+
+用 `ipconfig` 查 IP。Windows 防火墙首次可能弹窗询问，允许专用网络即可。
+
+只想本机访问时，在 `server/.env` 里设 `HOST=127.0.0.1`。
+
+### 第三方二进制下载失败时
+
+postinstall 会从[项目 Release 页面](https://github.com/isChen0111/icloud-app/releases/tag/vendor-binaries)下载两个二进制，已存在则跳过。失败时任选一种方式：
+
+1. 手动下载 `ffmpeg-full.zip` 与 `icloudpd-1.32.3-windows-amd64.exe`，分别放到 `server/vendor/`，然后：
 
    ```powershell
+   Set-Location .\server
    powershell -ExecutionPolicy Bypass -File scripts/install-ffmpeg-full.ps1
    powershell -ExecutionPolicy Bypass -File scripts/install-icloudpd.ps1
    ```
 
-2. 或设置环境变量 `FFMPEG_FULL_URL` / `ICLOUDPD_URL` 指向可访问的文件地址，再从 `server/` 目录重新运行 `npm ci`。
+2. 设置环境变量 `FFMPEG_FULL_URL` / `ICLOUDPD_URL` 指向可访问的地址，重新执行 `npm ci`。
 
-不要使用 `npm ci --ignore-scripts`，否则会跳过自动安装。若已使用该参数，可按上面的步骤手动安装。
+不要用 `npm ci --ignore-scripts`，它会跳过自动安装。
 
-### 环境变量（.env）
+## 使用
 
-端口、第三方二进制路径与调试开关支持环境变量覆盖。在 `server/` 目录建 `.env`（照 `.env.example` 复制），启动脚本已自动加载（Node 原生 `--env-file-if-exists=.env`，文件不存在也不影响）：
+### 创建照片库
 
-> **照片库 / 缓存 / 数据库路径不再支持环境变量覆盖**（2026-11-01 移除 `PHOTO_LIBRARY`、`CACHE_DIR`、`DB_PATH`、`META_DB_PATH`）。多照片库下每库的照片目录、cache、cookie、`library.db` 与注册表 `meta.db` 通过绝对路径绑定，路径由建库时按项目根派生并记录在 `meta.db`；单独用环境变量挪动其中一项会导致「注册表在一处、库文件在另一处」的半迁移状态。要整体搬家请连同项目目录与 `server/cache` 一起移动。
+首次打开会进入引导。给库起个名字，然后二选一：
+
+- **链接 iCloud** —— 输入 Apple ID、密码、双重验证码。
+- **导入本地目录** —— 选一个本机目录，选择复制或移动。
+
+两者都可以之后再补。库名只是显示用的别名，实际目录按 `lib<id>` 隔离。之后要改配置、加导入，都在右上角的「设置中心」里。
+
+### 从 iCloud 拉取
+
+1. 设置中心 → 链接 iCloud 账号。
+2. 触发「全量拉取」下载整个 iCloud 照片库，或「增量同步」只补新的。
+3. 同步是全局单任务的：多个库排队执行，同一时刻只有一个在跑。
+
+进度显示「已下载 N 项」而不是百分比 —— icloudpd 不返回总数，所以这里不画假的进度条。
+
+### 导入本地目录
+
+设置中心 → 库卡片「导入」→ 选目录。导入会做这几件事：
+
+1. **定日期**：图片读 EXIF 拍摄时间，视频读 `creation_time`，都没有就用文件修改时间。不按源目录结构推断 —— 各人整理的目录结构不一，不可靠。
+2. **归置**：按日期重排到 `import/YYYY/MM/DD`，保留原 mtime。
+3. **配对**：同基名的图片 + 视频识别为实况照片。
+4. **补 EXIF**：无拍摄时间的 JPEG 会把日期写进 EXIF（只写 `DateTimeOriginal` 与 `CreateDate`，像素数据零改动，mtime 写完还原）。
+5. **判重**：同名且 mtime 相同（1ms 容差）视为同一个文件，跳过。
+6. **改名**：同名但不同文件，自动加 `(1)`、`(2)`。
+
+也可以从浏览器直接上传文件，走同一条流水线。
+
+### 日常浏览
+
+- 照片墙工具栏的滑块调列数（4~12 列），左侧「日期」按钮按年月跳转。
+- 单击选中，`Ctrl`/`⌘` 加选，`Esc` 取消；双击进详情。
+- 详情页 `←` `→` 或空格切换，`Esc` 返回。
+- 搜索框输入 3 个字符以上自动搜，文件名和日期都能搜。
+
+## 目录结构
+
+```
+icloud-app/
+├── docs/                    # 文档（架构设计、上下文快照、历史审查报告）
+├── PhotoLib/                # 照片库根（不入库）
+│   └── lib<id>/
+│       ├── icloud/          # icloudpd 下载目标，YYYY/MM/DD
+│       └── import/          # 本地导入，统一归置为 YYYY/MM/DD
+├── server/                  # Fastify 后端
+│   ├── src/
+│   │   ├── routes/          # API 路由
+│   │   ├── scanner/         # 扫描、对账、热监听
+│   │   ├── import/          # 导入流水线（日期链、判重、配对、上传）
+│   │   ├── icloudpd/        # 认证桥接与同步
+│   │   ├── pipeline/        # 缩略图调度器与队列
+│   │   ├── metadata/        # EXIF / ffprobe 读取与补写
+│   │   └── db/              # schema、迁移、库注册表
+│   ├── scripts/             # 第三方二进制安装脚本
+│   ├── vendor/              # ffmpeg-full 与 icloudpd（不入库）
+│   └── cache/               # meta.db + lib<id>/ 缓存（不入库，可重建）
+└── web/                     # Vue 前端
+    └── src/
+        ├── components/      # GridScroller 虚拟滚动、GridItem、详情子组件
+        ├── views/           # GridView、DetailView
+        ├── stores/          # assets / search / selection / tasks / theme
+        └── composables/     # 懒加载、缩略图调度
+```
+
+`PhotoLib/` 与 `server/cache/` 都不进 Git：前者是照片原件，后者是可重建的缓存。
+
+## 注意事项
+
+实操中真正容易踩的几条，建议读完。
+
+### 数据安全
+
+- **删除是永久的**。应用内的删除直接删掉磁盘上的源文件，不进回收站，无法从应用恢复。删之前请确认重要照片另有备份。
+- **这个应用没有登录鉴权**。它假设你在自己家里、自己信任的网络上使用。**不要暴露到公网**，也不要在公共 Wi-Fi 环境下监听 `0.0.0.0`。局域网内任何设备只要能打开这个地址，就能看到全部照片、执行删除。
+- **`PhotoLib/` 是你的唯一原件**。删了就得重新从 iCloud 下。`server/cache/` 是可重建的缓存 —— 删掉只会重新生成缩略图、重新扫描，两个目录的重要性完全不同。
+- **iCloud cookie 明文保存在 `server/cache/lib<id>/`**，等同于一份登录凭据。备份或分享目录时注意别把它一起带出去。
+
+### 库目录是程序独占的
+
+**不要手动往 `PhotoLib/lib<id>/` 里放文件。** 手动放的绕过了判重、日期链和 EXIF 补写，会产生日期错误的记录，重复导入时还会多出副本。要加照片，走「导入」。
+
+同理，`icloud/` 与 `import/` 两个子目录是物理隔离的：`icloud/` 是 icloudpd 的下载目标，`import/` 是导入的落点。混放会让 icloudpd 的增量判断（`--until-found`）失效。
+
+### 迁移与备份
+
+- **整个项目目录一起搬**。照片目录、缓存、数据库三者的绝对路径在建库时写进了 `server/cache/meta.db`，单独挪其中一项会出现「注册表在一处、库文件在另一处」的半迁移状态。所以这些路径**不支持用环境变量改到别处**。
+- **搬完直接启动，别边跑边拷**。一次几万个新文件会让文件监听器排队处理，建议停后端 → 搬 → 启动，让启动对账一次扫完。
+
+### 运行
+
+- **不要同时跑两个后端实例连同一个库**，SQLite 写锁会冲突。
+- 后端用 `tsx watch` 起时会热重启，改代码即生效 —— **意味着启动迁移会立刻对真实库生效**。涉及改存量数据的改动，先停后端。
+- MFA 会话大约两个月过期，届时同步会失败，重新链接一次即可。
+- 首次扫描几万文件需要一段时间。扫描期间照片墙会先显示已入库的部分，结束后自动刷新。
+- 刚导入完一个大目录时，墙上的灰块会陆续变成照片，这是缩略图在后台排队，属于正常现象。
+
+### 口径说明
+
+- 「照片数」包含实况照片。
+- 「视频数」不含实况配对的视频 —— 它在配对时被并进了照片那条记录，重复计数会让总数虚高。
+
+## 环境变量
+
+照 `server/.env.example` 复制一份到 `server/.env` 即可，不建也能跑。启动脚本用 Node 原生的 `--env-file-if-exists`，文件缺失不影响启动。
+
+照片库、缓存、数据库三者的路径**不支持在这里配置**，原因见「迁移与备份」。
+
+<details>
+<summary>展开全部变量</summary>
 
 | 变量 | 默认值 | 说明 |
 |---|---|---|
-| `ICLOUDPD_EXE` | `<项目根>\\server\\vendor\\icloudpd-1.32.3-windows-amd64.exe` | icloudpd 可执行文件（黑盒调用，版本锁定） |
-| ~~`ICLOUDPD_RECENT`~~ | — | 已废弃（2026-10-13）：同步限量改由设置中心按库 `recentLimit` 配置，不再读取此变量 |
-| `FFMPEG_DIR` | `<项目根>\\server\\vendor\\ffmpeg-full` | BtbN ffmpeg full 解压目录 |
-| `FFMPEG_PATH` / `FFPROBE_PATH` | （自动在 FFMPEG_DIR 内查找） | 直接指定可执行文件 |
 | `PORT` | `8899` | 后端端口 |
-| `HOST` | `0.0.0.0` | 后端监听地址（默认全网卡，同一局域网设备可用 `http://<服务器IP>:8899` 访问；设 `127.0.0.1` 可收回仅本机） |
-| `SCAN_LIMIT` | `0`（全量） | 调试用，>0 只扫前 N 个文件 |
-| `SCAN_MIN_INTERVAL_MS` | `5000` | 热监听两次扫描的最小间隔（0 = 关闭闸门） |
-| `IMPORT_SCAN_EVERY_FILES` | `100` | 导入归置期间每落位多少个文件允许扫一次（0 = 关闭周期扫描） |
-| `IMPORT_SCAN_MIN_INTERVAL_MS` | `20000` | 导入归置期间两次周期扫描的最小间隔 |
-| `MAX_UPLOAD_BYTES` | `0`（不限） | 导入上传的单文件大小上限 |
+| `HOST` | `0.0.0.0` | 监听地址；设 `127.0.0.1` 可收回仅本机 |
+| `ICLOUDPD_EXE` | `server/vendor/icloudpd-1.32.3-windows-amd64.exe` | icloudpd 可执行文件 |
+| `FFMPEG_DIR` | `server/vendor/ffmpeg-full` | FFmpeg 解压目录 |
+| `FFMPEG_PATH` / `FFPROBE_PATH` | 自动查找 | 直接指定可执行文件 |
+| `SCAN_LIMIT` | `0`（全量） | 调试用，>0 时只扫前 N 个文件 |
+| `SCAN_MIN_INTERVAL_MS` | `5000` | 热监听两次扫描的最小间隔，`0` 关闭闸门 |
+| `IMPORT_SCAN_EVERY_FILES` | `100` | 导入期间每落位多少个文件允许扫一次，`0` 关闭 |
+| `IMPORT_SCAN_MIN_INTERVAL_MS` | `20000` | 导入期间两次周期扫描的最小间隔 |
+| `MAX_UPLOAD_BYTES` | `0`（不限） | 上传导入的单文件大小上限 |
 
-优先级：命令行临时设置 > `.env` 文件 > 代码默认值。同一时间不要两个后端实例连同一个 `library.db`（SQLite 写锁冲突）。
+优先级：命令行 > `.env` > 代码默认值。
+
+</details>
 
 ## 常用命令
 
 | 命令 | 位置 | 作用 |
 |---|---|---|
-| `npm run dev` | `server/` | 启动后端开发服务 |
-| `npm run start` | `server/` | 启动后端服务 |
-| `npm run scan` | `server/` | 手动触发一次扫描同步 |
+| `npm run dev` | `server/` | 启动后端（热重启） |
+| `npm start` | `server/` | 启动后端 |
+| `npm run scan` | `server/` | 命令行触发一次扫描 |
+| `npm test` | `server/` | 单元测试与端到端扫描测试 |
 | `npm run dev` | `web/` | 启动前端开发服务 |
-| `npm run build` | `web/` | 构建前端生产版本 |
-| `npm test` | `server/` | 单元测试（node:test，178 用例：缩略图调度器、任务队列、扫描对账与端到端扫描、数据库迁移、接口、工具函数、视频 Range 解析、watcher 会话代数与触发闸门、导入流水线与周期扫描）。新增测试文件需手动加进 `package.json` 的 test 列表——该脚本是显式文件清单，不是 glob |
-| `npm run postinstall` | `server/` | 安装/解压 BtbN ffmpeg full（含 libheif）+ icloudpd exe |
+| `npm run build` | `web/` | 类型检查 + 构建生产版本 |
 
-## API（开发参考）
+> 测试脚本在 `package.json` 里是**显式文件列表**，不是 glob。新增测试文件必须手动加进那串路径，否则不会被执行。
 
-| 方法 | 路径 | 说明 |
-|---|---|---|
-| GET | /api/assets?cursor=&limit= | 照片墙分页（时间倒序，游标分页） |
-| GET | /api/assets?offset=&limit= | 按全局序号取任意区间（照片墙全量骨架的懒加载取数） |
-| GET | /api/assets/:id | 单个资产 + 前后邻居 id + 序号/总数 |
-| GET | /api/assets/:id/info | 详情信息面板：实时解析 EXIF / ffprobe（设备/镜头/ISO/光圈/GPS 等） |
-| GET | /api/thumb/:id?size=grid\|detail | 缩略图（懒生成；URL 带 rev=file_mtime 动态版本，源文件变化后浏览器自动换新图） |
-| GET | /api/video/:id/stream | 视频流（HTTP Range） |
-| GET | /api/video/:id/poster | 视频封面帧（rev 同缩略图） |
-| GET | /api/stats | 库统计 + 扫描进度 + 预览图计数 + 队列指标（thumbQueueMetrics：运行/交互运行/交互等待/已跳过）+ 缩略图并发配置（thumbConcurrency）（扫描时只报已检查文件数；扫描结束后按数据库持久化状态提供全库总量/已处理/已生成/待处理/失败，重启后已生成进度不归零） |
-| GET | /api/thumbnails/failed | 预览图失败文件清单及待处理/已忽略数量 |
-| POST | /api/thumbnails/retry | 重试指定失败项或全部待处理失败项（body: `{ ids }` 或 `{ all: true }`） |
-| POST | /api/thumbnails/ignore | 忽略或恢复失败提醒（body: `{ ids, ignored }` 或 `{ all: true, ignored }`） |
-| POST | /api/scan | 触发扫描 |
-| GET | /api/dates | 年月分组：{ ym, label, count, offset, thumbId, thumbRev }（offset=该月首资产全局位置） |
-| GET | /api/search?q=&limit=&offset= | FTS5 全文搜索（文件名/日期子串，至少 3 字符；返回 total 真实计数 + months 匹配集月份分组 + offset 匹配流分页，搜索结果照片墙化；畸形输入返回空结果，真异常返回 500） |
-| DELETE | /api/assets | 批量删除（body: `{ ids }`；会删除对应源文件，不可恢复） |
-| GET | /api/libraries | 照片库列表（含激活标记/链接状态/账号/目录/照片视频计数） |
-| POST | /api/libraries | 创建照片库（body: `{ name }`；已有激活库时不自动切换） |
-| PATCH | /api/libraries/:id/active | 切换激活库（同步执行中或扫描进行中 409） |
-| PATCH | /api/libraries/:id/config | 更新单库同步参数（body: `{ untilFound, recentLimit }`） |
-| DELETE | /api/libraries/:id | 删除照片库（body: `{ removePhotos }`；必删注册+缓存，勾选才删本地照片；同步执行中或扫描进行中 409） |
-| POST | /api/libraries/:id/import/scan | 从本机目录导入照片（body: `{ path, mode: copy\|move }`；仅激活库，目录守卫拒绝库根/缓存等危险路径） |
-| POST | /api/libraries/:id/import/upload | 上传文件导入（multipart，流式写临时目录，逐文件容错） |
-| GET | /api/libraries/:id/import | 导入任务状态轮询 |
-| DELETE | /api/libraries/:id/import | 取消导入（入库阶段不受理，返回 409） |
-| POST | /api/auth | 开始 iCloud 链接（spawn icloudpd webui auth-only） |
-| POST | /api/auth/input | 输入密码/验证码（桥接 webui；防重锁） |
-| GET | /api/auth | 认证状态轮询（starting/密码/校验/验证码/完成/失败） |
-| POST | /api/auth/cancel | 取消认证 |
-| POST | /api/library/:id/sync | 触发全量拉取/增量同步（body: `{ kind: full\|inc }`；仅当前激活库） |
-| GET | /api/library/:id/sync | 同步任务状态（全局单任务） |
-| DELETE | /api/library/:id/sync | 取消同步任务 |
+## API
 
-## 功能概览
+后端接口都在 `/api` 下，返回 JSON。跨源请求只放行两类：Vite 开发服务器（`5173`），以及与请求 Host 同源的 Origin；其余带 Origin 的写操作一律 `403`。
 
-- 按日期浏览照片、实况照片和视频，支持搜索、日期跳转和详情浏览。
-- **多照片库（P0）**：网页端创建/切换/删除照片库（右上角库切换下拉 + 设置中心）；链接 iCloud 账号（邮箱/密码/双重验证码，cookie 会话保存，过期可重新链接）；全量拉取 / 增量同步（单按钮四态，全局单任务，多库「等待执行」排队）；库名只是别名，目录按 `lib<id>` 稳定隔离。
-- **导入本地照片目录**：从本机目录（复制或移动）或浏览器上传导入照片/视频，统一按拍摄日期归置到 `import/YYYY/MM/DD`，与 iCloud 下载的照片同库浏览；冲突自动改名、无 EXIF 时补写拍摄日期、进度实时可见。**归置期间就周期性入库**（每落位 100 个文件且间隔 ≥20 秒扫一次，`IMPORT_SCAN_*` 可调），大目录不必等全部归置完才看到照片。
-- **状态浮层**：同步 / 导入 / 照片库扫描 / 预览图四类任务各占一行，各自生命期；同步显示「已下载 N 项」（icloudpd 不报总数，故不画百分比进度条），扫描在落库阶段显示「已入库 N 项」回答「现在能看多少」，完成态说明带「· 新增 M 项」。
-- 照片墙采用虚拟滚动和图片懒加载；慢速滚动与滚轮操作持续加载，网格图并发上限以后端配置为准（默认 8，经 `/api/stats.thumbConcurrency` 同步）；拖动滚动条时每 250ms 检查一次位移，快速跨屏时跳过中途区域，缓慢移动（每次检查不超过约 1/5 屏）或停住时渐进加载当前视口，松开后优先加载最终视口，再补邻近图片。源文件被覆盖后，扫描比对签名（size+mtime）使旧缩略图失效重建，URL 的 rev（= 文件 mtime）自动变化，浏览器绕过 1 年强缓存强制拉新图（F-03 缓存失效闭环）。
-- 顶栏资源状态提供照片库扫描数量和预览图后台处理进度；扫描文件数与照片/视频资产数分别按文件和入库资产统计。后台补图与用户请求共享最多 8 个并发槽位：后台任务始终入队但优先级最低，照片墙、搜索与详情触发的交互请求插队先执行，交互任务不足时后台填满剩余槽位——不需要等待时间窗口，浏览过程中也会持续消化后台任务；已开始运行的任务不会被抢占。失败项可点击查看原因、单项/批量重试或忽略提醒；忽略不会删除原文件，且可随时恢复提醒。
-- 实况照片可按住播放；视频支持封面预览和流式播放。
-- 照片库目录发生变化后会自动同步；删除照片是永久操作，源文件无法从应用恢复。
-- 深浅主题和照片墙缩放设置会保存在当前浏览器中。
+<details>
+<summary>展开接口清单</summary>
 
-## 数据与隐私
+- **浏览**：`GET /api/assets`（游标或 offset 分页）、`GET /api/assets/:id`、`GET /api/assets/:id/info`、`GET /api/dates`
+- **媒体**：`GET /api/thumb/:id?size=grid|detail`、`GET /api/video/:id/stream`（Range）、`GET /api/video/:id/poster`
+- **搜索**：`GET /api/search?q=&limit=&offset=`
+- **库管理**：`GET|POST /api/libraries`、`PATCH /api/libraries/:id/active`、`PATCH /api/libraries/:id/config`、`DELETE /api/libraries/:id`
+- **导入**：`POST /api/libraries/:id/import/scan`、`POST /api/libraries/:id/import/upload`、`GET|DELETE /api/libraries/:id/import`
+- **iCloud**：`POST /api/auth`、`POST /api/auth/input`、`GET /api/auth`、`POST /api/library/:id/sync`
+- **状态**：`GET /api/stats`（任务进度、队列指标、库统计）、`GET|POST /api/thumbnails/failed|retry|ignore`
 
-- 照片、视频和数据库都保存在本地；应用不会将媒体上传到云端。
-- `iCloudPhoto/lib<id>/` 是各照片库源目录，`server/cache/` 是应用缓存（`meta.db` 注册表 + `lib<id>/` 各库数据与可重建缓存）；两者都不会随 Git 克隆下载。
-- 删除照片库会移除注册与缓存；勾选「同时删除本地照片副本」才会删除 `iCloudPhoto/lib<id>/` 下的源文件。
-- 删除功能会尝试删除磁盘上的源文件。因权限或文件占用而未能删除时，界面会提示；请在确认前确保重要照片另有备份。
+</details>
 
-## 开发与架构文档
+## 开发与测试
 
-接口、扫描规则、媒体处理流程及架构细节请参阅[架构设计文档](./docs/架构设计文档.html)。README 侧重安装、运行和日常使用。
+- 后端 182 个用例，覆盖扫描对账、数据库迁移、视频 Range 解析、导入流水线、文件监听、接口契约等；前端目前依赖手工验收。
+- 扫描有端到端测试脚手架：在临时目录里用 sharp 生成真 JPEG、用 ffmpeg 生成真 MP4，直接跑完整扫描断言数据库结果。
+- 更细的架构说明见 [`docs/架构设计文档.html`](docs/架构设计文档.html)，现状与决策记录见 [`docs/CONTEXT-项目上下文快照.md`](docs/CONTEXT-项目上下文快照.md)。
+
+## 已知限制
+
+- 仅 Windows。
+- 单机单人：没有用户系统、账号隔离、分享链接，也没有移动端 App。
+- 没有 AI 能力：不做人脸识别、场景分类、语义搜索。
+- 不做 HEVC 按需转码缓存，能否直接播放 HEVC 取决于浏览器和系统的解码能力。
+- 不做逆地理编码：只显示 GPS 坐标，不显示地名。
+- 不做收藏、最近删除、原片下载。
+- 不做 iCloud 云端删除（`--auto-delete` 一类）：只做单向拉取，清理云端空间要在 iCloud 里操作。
+- 只对 JPEG 补写 EXIF；HEIC 与视频的日期仍依赖原始元数据或文件 mtime。
+
+## 致谢
+
+- [icloudpd](https://github.com/icloud-photos-downloader/icloud_photos_downloader) —— iCloud 照片下载，本项目的取图基石。
+- [FFmpeg](https://ffmpeg.org/)（BtbN 构建）、[sharp](https://sharp.pixelplumbing.com/)、[exiftool](https://exiftool.org/) —— 媒体处理。
+- [@tanstack/vue-virtual](https://tanstack.com/virtual) —— 虚拟滚动。
+
+## 许可证
+
+<!-- 待定：仓库目前没有 LICENSE 文件。开源前需补充（MIT / Apache-2.0 都可）。 -->
