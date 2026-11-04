@@ -6,7 +6,7 @@
  *
  * R-20 修复（2026-10-28）：
  *  - **多库上下文**：多库模式下真实路径由 `context.applyLibraryPaths()` 覆写。
- *    此前这里直接 `runScan()`，扫的是默认 `iCloudPhoto/` 并写进 `server/cache/library.db`
+ *    此前这里直接 `runScan()`，扫的是默认 `PhotoLib/` 并写进 `server/cache/library.db`
  *    —— 一个网页端根本不会读的库，用户看到的是「扫完了但一张没变」。
  *    现在与 `index.ts` 启动流程一致：先切到激活库上下文再扫。
  *  - **队列收尾**：扫完立刻 `process.exit(0)` 会把刚入队的缩略图预热切成半截。

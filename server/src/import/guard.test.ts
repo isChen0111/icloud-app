@@ -20,7 +20,7 @@ interface Env {
 
 function setup(): Env {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'import-guard-'))
-  const lib = path.join(root, 'iCloudPhoto', 'lib7')
+  const lib = path.join(root, 'PhotoLib', 'lib7')
   fs.mkdirSync(path.join(lib, 'icloud', '2024', '09', '13'), { recursive: true })
   fs.mkdirSync(path.join(lib, 'import', '2024', '09', '14'), { recursive: true })
   const cache = path.join(root, 'cache', 'lib7')
@@ -47,7 +47,7 @@ test('checkImportSource：拒绝库根、库内子目录、包含库的上层目
     reject(path.join(env.lib, 'import'), '内部的目录')
     reject(path.join(env.lib, 'icloud', '2024', '09', '13'), '内部的目录')
     // 库的父目录（= 含库根的上层）
-    reject(path.join(env.root, 'iCloudPhoto'), '包含当前照片库')
+    reject(path.join(env.root, 'PhotoLib'), '包含当前照片库')
     reject(env.root, '包含当前照片库')
     // 缓存目录：里面全是缩略图，导进去会被当成照片
     reject(env.cache, '缓存目录')
@@ -89,7 +89,7 @@ test('checkImportSource：放行库外目录（含库的兄弟目录与完全无
     assert.equal(ok2.ok, true, '应放行库外子目录')
 
     // 库的兄弟目录（与库根同级、不在库内）
-    const sibling = path.join(env.root, 'iCloudPhoto', 'backup')
+    const sibling = path.join(env.root, 'PhotoLib', 'backup')
     fs.mkdirSync(sibling, { recursive: true })
     const ok3 = checkImportSource(sibling, { libraryRoot: env.lib, cacheDir: env.cache })
     assert.equal(ok3.ok, true, '应放行与库根同级的兄弟目录')

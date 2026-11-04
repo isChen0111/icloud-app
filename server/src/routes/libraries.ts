@@ -264,7 +264,7 @@ export async function registerLibraryRoutes(app: FastifyInstance): Promise<void>
    *
    * 删除范围说明（安全边界，用户确认弹窗同文案）：
    *   - 永远删除：meta.db 库注册 + server/cache/lib<id>（缩略图/library.db/stats/cookies 会话）
-   *   - 可选删除（removePhotos=true）：iCloudPhoto/lib<id> 本地照片副本；云端原片不动
+   *   - 可选删除（removePhotos=true）：PhotoLib/lib<id> 本地照片副本；云端原片不动
    *   - 绝不调用 icloudpd 删除类命令
    *
    * 约束：

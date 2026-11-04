@@ -5,7 +5,7 @@
  * 1. 每个照片库独立一组路径：library_root（icloudpd 下载目标，文件夹结构 %Y/%m/%d 锁定）、
  *    cache_dir（缩略图/视频封面/该库 DB，路径 = server/cache/lib<id>/）、cookie_dir（icloudpd 会话）。
  * 2. 目录与库名解耦：库名只是显示别名（meta.db），目录用稳定标识 lib<id>，
- *    照片统一放 <项目根>/iCloudPhoto/lib<id>，缓存统一放 server/cache/lib<id>。
+ *    照片统一放 <项目根>/PhotoLib/lib<id>，缓存统一放 server/cache/lib<id>。
  * 3. 单活跃库：active 标记，一次只有一个库处于激活；切换 = 停旧任务 → 关旧 DB → 覆写全局
  *    config 指向新库 → 重扫（详见 context.ts / routes）。
  * 4. P0 启动流程：无库时不隐式建库，前端走首次引导（新建库 → 链接 iCloud → 拉取）。
@@ -106,7 +106,7 @@ function toRow(row: Record<string, unknown>): LibraryRow {
  * 预建目录（recursive，幂等）。返回创建失败的目录路径列表，空数组表示全部成功。
  *
  * 抽成独立函数的原因：`createLibrary` 依赖真实的项目根与 meta.db，单测里直接跑会污染
- * 用户自己的 iCloudPhoto 目录；而「建库时把三层目录真的建出来」这个行为本身值得覆盖，
+ * 用户自己的 PhotoLib 目录；而「建库时把三层目录真的建出来」这个行为本身值得覆盖，
  * 因此把目录创建单独抽出来，用临时目录测试。
  */
 export function ensureDirs(dirs: string[]): string[] {
@@ -147,7 +147,7 @@ export function libraryImportDir(libraryRoot: string): string {
  * 建库（首次引导流程用）。目录自动派生，不开放手填。
  *
  * 目录规则（多库分离设计）：
- *   照片根  = <项目根>/iCloudPhoto/lib<id>     —— 库名只是显示别名，不参与路径；
+ *   照片根  = <项目根>/PhotoLib/lib<id>     —— 库名只是显示别名，不参与路径；
  *   缓存    = server/cache/lib<id>             —— library.db / stats.json / thumbs / cookies 都在这；
  *   注册表  = server/cache/meta.db             —— 所有库共享（放 cache 根，不随库切换）。
  * 先 INSERT 拿到自增 id，再回填目录路径。
@@ -171,8 +171,8 @@ export function createLibrary(name: string): LibraryRow {
       )
       .run(trimmed, now, active)
     const id = info.lastInsertRowid as number
-    // 照片根：<项目根>/iCloudPhoto/lib<id>
-    const photosRoot = path.join(projectRoot, 'iCloudPhoto', `lib${id}`)
+    // 照片根：<项目根>/PhotoLib/lib<id>
+    const photosRoot = path.join(projectRoot, 'PhotoLib', `lib${id}`)
     const cacheDir = path.join(path.dirname(config.metaDbPath), `lib${id}`)
     const cookieDir = path.join(cacheDir, 'cookies')
     meta

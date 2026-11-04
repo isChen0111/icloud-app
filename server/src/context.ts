@@ -45,7 +45,7 @@ export function applyLibraryPaths(lib: LibraryRow): void {
 
 /** 重置为默认路径（删除最后一个照片库后回到无库状态；前端整页刷新走首次引导） */
 export function resetLibraryPaths(): void {
-  config.libraryRoot = path.join(projectRoot, 'iCloudPhoto')
+  config.libraryRoot = path.join(projectRoot, 'PhotoLib')
   config.cacheDir = path.join(projectRoot, 'server', 'cache')
   config.dbPath = path.join(projectRoot, 'server', 'cache', 'library.db')
 }

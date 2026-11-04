@@ -37,7 +37,7 @@ export const config = {
    * 照片库根目录：无库时的占位值；有库后由 context.applyLibraryPaths()
    * 覆写为激活库的 library_root（本字段是运行时上下文，不是配置常量，勿用于派生新库路径）。
    */
-  libraryRoot: path.join(projectRoot, 'iCloudPhoto'),
+  libraryRoot: path.join(projectRoot, 'PhotoLib'),
 
   /** 缓存目录（同上，运行时被激活库的 cache_dir 覆写） */
   cacheDir: path.join(projectRoot, 'server', 'cache'),
