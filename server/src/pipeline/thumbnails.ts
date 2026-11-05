@@ -21,7 +21,7 @@ import type { Sharp } from 'sharp'
 import { config } from '../config.js'
 import { getDb } from '../db/index.js'
 import { resolveInsideRoot } from '../utils/path.js'
-import { ffprobeJson, runFfmpeg } from '../ffmpeg.js'
+import { ffprobeJson, runFfmpeg, runFfmpegToBuffer } from '../ffmpeg.js'
 
 sharp.concurrency(2)
 
@@ -203,32 +203,32 @@ async function generate(
     fs.mkdirSync(path.dirname(outPath), { recursive: true })
 
     if (row.type === 'video') {
-      // —— 视频：ffmpeg 抽帧 → sharp 缩放 ——
-      const framePath = await extractVideoFrame(abs, target, row.duration, priority)
+      // —— 视频：ffmpeg 抽帧 → sharp 缩放（帧走 JPEG 管道，不落临时文件）——
+      const frame = await videoFrameSource(abs, target, row.duration, priority)
       try {
         await writeAtomicWebp(
-          sharp(framePath, { failOn: 'none' })
+          frame.image
             .resize(target, target, { fit: 'inside', withoutEnlargement: true })
             .keepIccProfile()
             .webp({ quality }),
           outPath,
         )
       } finally {
-        // 修复（审查 P2-B5）：异常路径也必须删临时帧，否则 tmp 目录累积垃圾
-        fs.rmSync(framePath, { force: true })
+        // 兜底路径会产生临时帧，管道路径 release 是空操作
+        frame.release()
       }
     } else if (isHeic(row.file_path)) {
-      // —— HEIC：sharp 官方预编译无 HEVC 解码器 → 用 ffmpeg(libheif) 解码为 PNG 再处理 ——
-      const pngPath = await heicToPng(abs, priority)
+      // —— HEIC：sharp 官方预编译无 HEVC 解码器 → 用 ffmpeg(libheif) 解码，JPEG 管道直送 sharp ——
+      const frame = await heicFrameSource(abs, priority)
       try {
         await writeAtomicWebp(
-          sharp(pngPath, { failOn: 'none' })
+          frame.image
             .resize(target, target, { fit: 'inside', withoutEnlargement: true })
             .webp({ quality }),
           outPath,
         )
       } finally {
-        fs.rmSync(pngPath, { force: true })
+        frame.release()
       }
     } else {
       // —— 其他图片（JPG/PNG/…）：sharp 直接解码 ——
@@ -281,6 +281,23 @@ async function generate(
   }
 }
 
+/**
+ * 一次缩略图生成的「帧来源」。
+ * 管道模式（JPEG buffer）不落任何临时文件，release 是空操作；
+ * 回落到 PNG 落盘兜底时才需要删文件。
+ */
+interface FrameSource {
+  image: Sharp
+  release: () => void
+}
+
+/**
+ * JPEG 中间帧质量。
+ * 实测 `-q:v 1` 与 `-q:v 2` 输出的字节数完全一致（mjpeg 量化表被 clamp 到同一档），
+ * 所以取 2，不要再往 1 试。
+ */
+const FRAME_JPEG_QUALITY = '2'
+
 /** 判断是否为 HEIC/HEIF（需要 ffmpeg 解码） */
 function isHeic(relPath: string): boolean {
   const ext = path.extname(relPath).toLowerCase()
@@ -312,7 +329,58 @@ async function heicToPng(absPath: string, priority: 'interactive' | 'background'
   }
 }
 
-/** 用 ffmpeg 抽取视频某一帧为临时 PNG（供 sharp 二次处理） */
+/**
+ * HEIC → JPEG buffer（管道，不落盘）。
+ *
+ * 为什么不写字：解码本身只要约 0.3s，旧实现那 3s 里 90% 花在把全尺寸帧编码成 PNG
+ * 并写 10~12MB 临时文件、再由 sharp 读回来。改成 JPEG 管道后单张 3.2s → 0.35s。
+ *
+ * 注意：这批 HEIC 内部是多路 HEVC 子图，ffmpeg 用 complex filtergraph 组装主图，
+ * 所以**不能**加 `-vf`（会报 Simple and complex filtering cannot be used together），
+ * 也**不能**加 `-map 0:v:0`（拿到的是 512×512 缩略图子图）。缩放一律交给 sharp。
+ */
+async function heicToJpegBuffer(absPath: string, priority: 'interactive' | 'background'): Promise<Buffer | null> {
+  try {
+    const buf = await runFfmpegToBuffer([
+      '-hide_banner',
+      '-loglevel',
+      'error',
+      '-threads',
+      priority === 'background' ? '1' : '2',
+      '-i',
+      absPath,
+      '-frames:v',
+      '1',
+      '-q:v',
+      FRAME_JPEG_QUALITY,
+      '-an',
+      '-f',
+      'image2pipe',
+      '-c:v',
+      'mjpeg',
+      '-',
+    ])
+    if (buf.length === 0) throw new Error('ffmpeg 未输出任何帧数据')
+    return buf
+  } catch (error) {
+    // 管道失败（编码器不支持 / 输出被截断 / 文件损坏）→ 交给 PNG 落盘老路，
+    // 保证「慢但能出图」，不让一张缩略图因为优化路径失败而进失败清单。
+    console.warn(
+      `[thumb] HEIC JPEG 管道失败，回落 PNG 落盘: ${path.basename(absPath)}（${(error as Error).message.slice(0, 120)}）`,
+    )
+    return null
+  }
+}
+
+/** HEIC 帧来源：优先 JPEG 管道，失败回落 PNG 临时文件 */
+async function heicFrameSource(absPath: string, priority: 'interactive' | 'background'): Promise<FrameSource> {
+  const buf = await heicToJpegBuffer(absPath, priority)
+  if (buf) return { image: sharp(buf, { failOn: 'none' }), release: () => {} }
+  const pngPath = await heicToPng(absPath, priority)
+  return { image: sharp(pngPath, { failOn: 'none' }), release: () => fs.rmSync(pngPath, { force: true }) }
+}
+
+/** 用 ffmpeg 抽取视频某一帧为临时 PNG（供 sharp 二次处理；现已降级为兜底路径） */
 async function extractVideoFrame(
   absPath: string,
   maxSize: number,
@@ -363,6 +431,79 @@ async function extractVideoFrame(
     fs.rmSync(tmp, { force: true })
     throw error
   }
+}
+
+/**
+ * 视频抽帧 → JPEG buffer（管道）。
+ * 与 HEIC 不同，视频可以放心用 `-vf scale`，所以缩放放在 ffmpeg 里做，
+ * 送进 sharp 的就已经是目标尺寸附近的小图（约 0.1MB），sharp 只负责压 webp。
+ */
+async function extractVideoFrameJpeg(
+  absPath: string,
+  maxSize: number,
+  duration: number | null,
+  priority: 'interactive' | 'background',
+): Promise<Buffer | null> {
+  const vf = `scale='min(${maxSize},iw)':'min(${maxSize},ih)':force_original_aspect_ratio=decrease`
+  const seek =
+    duration !== null && Number.isFinite(duration) && duration > 0
+      ? Math.min(config.videoPosterSeek, duration / 2)
+      : config.videoPosterSeek
+
+  async function pipeAt(seconds: number): Promise<Buffer> {
+    const buf = await runFfmpegToBuffer([
+      '-hide_banner',
+      '-loglevel',
+      'error',
+      '-ss',
+      String(seconds), // -ss 在 -i 前：快搜
+      '-threads',
+      priority === 'background' ? '1' : '2',
+      '-i',
+      absPath,
+      '-vf',
+      vf,
+      '-frames:v',
+      '1',
+      '-q:v',
+      FRAME_JPEG_QUALITY,
+      '-an',
+      '-f',
+      'image2pipe',
+      '-c:v',
+      'mjpeg',
+      '-',
+    ])
+    if (buf.length === 0) throw new Error(`No video frame available at ${seconds}s`)
+    return buf
+  }
+
+  try {
+    try {
+      return await pipeAt(seek)
+    } catch (error) {
+      if (seek === 0) throw error
+      return await pipeAt(0)
+    }
+  } catch (error) {
+    console.warn(
+      `[thumb] 视频抽帧 JPEG 管道失败，回落 PNG 落盘: ${path.basename(absPath)}（${(error as Error).message.slice(0, 120)}）`,
+    )
+    return null
+  }
+}
+
+/** 视频帧来源：优先 JPEG 管道，失败回落 PNG 临时文件 */
+async function videoFrameSource(
+  absPath: string,
+  maxSize: number,
+  duration: number | null,
+  priority: 'interactive' | 'background',
+): Promise<FrameSource> {
+  const buf = await extractVideoFrameJpeg(absPath, maxSize, duration, priority)
+  if (buf) return { image: sharp(buf, { failOn: 'none' }), release: () => {} }
+  const pngPath = await extractVideoFrame(absPath, maxSize, duration, priority)
+  return { image: sharp(pngPath, { failOn: 'none' }), release: () => fs.rmSync(pngPath, { force: true }) }
 }
 
 /**

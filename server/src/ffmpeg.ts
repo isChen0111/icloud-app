@@ -102,9 +102,16 @@ export interface RunProcessOptions {
 
 /**
  * 通用子进程运行（导出供单元测试直接验证超时/kill 逻辑；生产由 runFfmpeg/ffprobeJson 使用）。
- * 返回 stdout 全文（collectStdout 时），失败/超时 reject 并附 stderr 尾部。
+ * 返回原始 stdout 字节，失败/超时 reject 并附 stderr 尾部。
+ *
+ * 为什么返回 Buffer 而不是 string：缩略图流水线需要把 ffmpeg 解出来的帧直接喂给 sharp
+ * （`-f image2pipe`），走字符串会按 utf8 解码、二进制内容当场损坏。
  */
-export function runProcess(binaryPath: string, args: string[], options: RunProcessOptions): Promise<string> {
+export function runProcessBuffer(
+  binaryPath: string,
+  args: string[],
+  options: RunProcessOptions,
+): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     const child = spawn(binaryPath, args, { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] })
     const stdout: Buffer[] = []
@@ -155,7 +162,7 @@ export function runProcess(binaryPath: string, args: string[], options: RunProce
         return
       }
       if (code === 0) {
-        resolve(Buffer.concat(stdout).toString('utf8'))
+        resolve(Buffer.concat(stdout))
         return
       }
       reject(new Error(`${path.basename(binaryPath)} exited with code ${code}${detail ? `: ${detail}` : ''}`))
@@ -163,9 +170,30 @@ export function runProcess(binaryPath: string, args: string[], options: RunProce
   })
 }
 
+/** 文本版包装：ffprobe JSON 等需要字符串的调用方沿用它，行为与旧实现一致。 */
+export async function runProcess(
+  binaryPath: string,
+  args: string[],
+  options: RunProcessOptions,
+): Promise<string> {
+  const output = await runProcessBuffer(binaryPath, args, options)
+  return output.toString('utf8')
+}
+
 /** 执行 FFmpeg 命令；args 不应包含可执行文件本身。超时由 config.ffmpegTimeoutMs 控制（F-07）。 */
 export async function runFfmpeg(args: string[]): Promise<void> {
   await runProcess(getTools().ffmpegPath, args, { timeoutMs: config.ffmpegTimeoutMs })
+}
+
+/**
+ * 执行 FFmpeg 并把 stdout 收成 Buffer（`-f image2pipe` 场景）。
+ * 超时同样由 config.ffmpegTimeoutMs 控制。
+ */
+export async function runFfmpegToBuffer(args: string[]): Promise<Buffer> {
+  return runProcessBuffer(getTools().ffmpegPath, args, {
+    collectStdout: true,
+    timeoutMs: config.ffmpegTimeoutMs,
+  })
 }
 
 /** 读取 FFprobe JSON 元数据。超时由 config.ffprobeTimeoutMs 控制（F-07）。 */

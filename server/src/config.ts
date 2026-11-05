@@ -86,8 +86,15 @@ export const config = {
    */
   ffmpegTimeoutMs: 60_000,
 
-  /** FFprobe 子进程超时（毫秒，修复审查 F-07）：读元数据/尺寸用；卡死直接 kill。 */
-  ffprobeTimeoutMs: 30_000,
+  /**
+   * FFprobe 子进程超时（毫秒，修复审查 F-07）：读元数据/尺寸用；卡死直接 kill。
+   *
+   * 30s → 5s（2026-11-05）：实测 60 个随机视频 p99 = 959ms、max = 959ms，而首扫时
+   * 观察到个别 `*_HEVC.MOV` 会让 ffprobe 卡满 30 秒才被 kill。万级视频首扫时哪怕
+   * 1% 卡死（约 100 个），30s 超时下也要多花 5-6 分钟、5% 则半小时。
+   * 5s 对正常文件仍是 5 倍余量，超时的文件本来也读不出元数据，退回「无 UUID」处理即可。
+   */
+  ffprobeTimeoutMs: 5_000,
 
   /** 分页默认每页条数 */
   pageSize: 100,

@@ -23,6 +23,7 @@ import {
   parseDateFromDir,
   isTrustedDateDir,
   type ImageMeta,
+  type VideoMeta,
 } from '../metadata/index.js'
 import { readContentIdentifier } from '../metadata/exifWrite.js'
 import { pairLiveAssets } from './pair.js'
@@ -374,24 +375,70 @@ async function doRunScan(
   const cidOf = new Map<string, string | null>()
   /** 图片元数据缓存（仅探测过的文件有值；③ 阶段优先用它） */
   const imageMetaCache = new Map<string, ImageMeta>()
+  /** 视频元数据缓存（同上；②′ 用 ffprobe 探标识，③ 阶段直接复用，同一个视频只读一遍） */
+  const videoMetaCache = new Map<string, VideoMeta>()
   let probed = 0
-  for (const f of files) {
-    const exist = existingMeta.get(f.relPath)
-    const unchanged =
-      exist != null && exist.size !== null && exist.size === f.size && exist.mtimeMs === f.mtimeMs
-    if (unchanged) {
-      cidOf.set(f.relPath, exist.contentIdentifier)
-      continue
-    }
+  const probeTotal = files.length
+
+  /** 单个文件的探测（图片走 exifr / 视频走 ffprobe），结果写进三个缓存 */
+  const probeOne = async (f: RawFile): Promise<void> => {
     if (f.kind === 'image') {
       const meta = await readImageMeta(f.absPath)
       imageMetaCache.set(f.relPath, meta)
       cidOf.set(f.relPath, meta.contentIdentifier)
-    } else {
-      cidOf.set(f.relPath, await readContentIdentifier(f.absPath))
+      return
     }
-    if (++probed % 200 === 0) await yieldToEventLoop()
+    // 视频侧用 ffprobe 而不是 exiftool 单独探：ffprobe 的 format.tags 里白拿
+    // com.apple.quicktime.content.identifier，而 ③ 阶段本来就要靠它读尺寸/时长。
+    // 单看探测这一步 exiftool(约 70ms) 比 ffprobe(约 219ms) 省，但两步合起来是
+    // 70+219；合并后 219 一次到位。新库首扫万级视频，这一步能省十几分钟。
+    const vm = await readVideoMeta(f.absPath).catch(() => null)
+    if (vm) {
+      videoMetaCache.set(f.relPath, vm)
+      cidOf.set(f.relPath, vm.contentIdentifier)
+      return
+    }
+    // ffprobe 失败（文件损坏 / 二进制不可用）：退回 exiftool 单读标识，
+    // 至少保住实况配对；其余元数据由 ③ 阶段再试一次。
+    cidOf.set(f.relPath, await readContentIdentifier(f.absPath))
   }
+
+  /**
+   * 并发跑探测队列。
+   *
+   * 这段全是「读一个文件、等一个外部进程 / 解析器」的串行等待，单线程跑满也只有
+   * 8 文件/秒（新库首扫万级文件就是半小时）。开 8 路后基本线性降到几分钟。
+   * 8 是经验值：与缩略图并发同档，8 个 ffprobe 子进程并行对 SSD/机械盘都是舒适区，
+   * 再高就开始抢 IO、单文件反而变慢。
+   */
+  const probeConcurrency = Math.max(1, Math.min(8, files.length))
+  let cursor = 0
+  const probeWorker = async (): Promise<void> => {
+    for (;;) {
+      const index = cursor++
+      if (index >= files.length) return
+      const f = files[index]
+      if (!f) return
+      const exist = existingMeta.get(f.relPath)
+      const unchanged =
+        exist != null && exist.size !== null && exist.size === f.size && exist.mtimeMs === f.mtimeMs
+      if (unchanged) {
+        cidOf.set(f.relPath, exist.contentIdentifier)
+      } else {
+        await probeOne(f)
+      }
+      // 进度上报：探测是纯 IO 等待，新库首扫要连着跑十几分钟。
+      // 计数直接写进 scannedFiles —— 界面胶囊（App.vue）和扫描弹窗都只读这个字段，
+      // message 只有调试接口看得到。不喂的话界面一直停在「已检查 0 个文件」，
+      // 看起来就是卡死（2026-11-05 实测：万级文件首扫，前 20 分钟毫无动静）。
+      if (++probed % 200 === 0) {
+        scanProgress.scannedFiles = probed
+        scanProgress.message = `读取实况标识 ${probed}/${probeTotal}`
+        await yieldToEventLoop()
+      }
+    }
+  }
+  await Promise.all(Array.from({ length: probeConcurrency }, () => probeWorker()))
 
   /** 该文件的实况内容标识（缺失一律视为 null，调用方不必再判 undefined） */
   const cidOfFile = (f: RawFile): string | null => cidOf.get(f.relPath) ?? null
@@ -399,6 +446,9 @@ async function doRunScan(
   // ② 实况配对（UUID 优先、文件名兜底，判据与取舍见 scanner/pair.ts）
   const { assets, livePairs } = pairLiveAssets(files, cidOfFile)
   scanProgress.livePairs = livePairs
+
+  // 进入 ③ 前把文案切走：否则会停在「读取实况标识 N/N」，让入库阶段看起来没开始
+  scanProgress.message = '正在写入元数据…'
 
   // ③ 逐资产提取元数据 + ④ 入库
   // RETURNING id：UPSERT 后直接拿到主键，同步 FTS 索引（见下方 upsertFts）
@@ -496,7 +546,7 @@ async function doRunScan(
         (exist.contentIdentifier ?? null) === cidOfFile(a.image) &&
         (exist.liveVideoCid ?? null) === (a.liveVideo ? cidOfFile(a.liveVideo) : null)
       if (skipWrite) {
-        scanProgress.scannedFiles += fileCount
+        scanProgress.scannedFiles = Math.min(scanProgress.totalFiles, scanProgress.scannedFiles + fileCount)
         scanProgress.assetsFound++
         continue
       }
@@ -517,7 +567,7 @@ async function doRunScan(
         cidOfFile(a.image),
         a.liveVideo ? cidOfFile(a.liveVideo) : null,
       ])
-      scanProgress.scannedFiles += fileCount
+      scanProgress.scannedFiles = Math.min(scanProgress.totalFiles, scanProgress.scannedFiles + fileCount)
       scanProgress.assetsFound++
       if (batch.length >= 200) {
         scanAll(batch.splice(0))
@@ -535,7 +585,9 @@ async function doRunScan(
     let gpsLon: number | null = null
 
     if (isVideo) {
-      const vm = await readVideoMeta(absPath)
+      // ②′ 已 ffprobe 过这个视频（新增/签名变化的都在那轮读过），直接复用；
+      // 缓存未命中是兜底（理论上不会发生，留作防御）。
+      const vm = videoMetaCache.get(a.image.relPath) ?? (await readVideoMeta(absPath))
       duration = vm.duration
       width = vm.width
       height = vm.height
@@ -604,7 +656,7 @@ async function doRunScan(
           dateTaken = dirDate
         } else {
           console.warn(`[scan] 跳过不可读文件: ${a.image.relPath}`)
-          scanProgress.scannedFiles += fileCount
+          scanProgress.scannedFiles = Math.min(scanProgress.totalFiles, scanProgress.scannedFiles + fileCount)
           continue
         }
       }
@@ -627,7 +679,7 @@ async function doRunScan(
       cidOfFile(a.image),
       a.liveVideo ? cidOfFile(a.liveVideo) : null,
     ])
-    scanProgress.scannedFiles += fileCount
+    scanProgress.scannedFiles = Math.min(scanProgress.totalFiles, scanProgress.scannedFiles + fileCount)
     scanProgress.assetsFound++
     // 只有走到这里才是真正的「新增一行」。不能在最前面用 !exist 计数：
     // 上面的时间兜底链里还有一条 stat 失败 → continue，那里并没有写库。

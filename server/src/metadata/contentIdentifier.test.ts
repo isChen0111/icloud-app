@@ -42,8 +42,14 @@ function buildMakerNote(opts: MakerNoteOptions = {}): Buffer {
   buf.write(opts.header ?? 'Apple iOS\0', 0, 'latin1')
   buf.writeUInt16BE(2, 10)
   buf.write(le ? 'II' : 'MM', 12, 'latin1')
-  const w16 = (v: number, o: number): void => (le ? buf.writeUInt16LE(v, o) : buf.writeUInt16BE(v, o))
-  const w32 = (v: number, o: number): void => (le ? buf.writeUInt32LE(v, o) : buf.writeUInt32BE(v, o))
+  const w16 = (v: number, o: number): void => {
+    if (le) buf.writeUInt16LE(v, o)
+    else buf.writeUInt16BE(v, o)
+  }
+  const w32 = (v: number, o: number): void => {
+    if (le) buf.writeUInt32LE(v, o)
+    else buf.writeUInt32BE(v, o)
+  }
   w32(ifdA - 12, 16) // 首 IFD 偏移（相对字节序字段）
 
   /** 写一个「只有一个条目」的 IFD；nextRel 为 0 表示没有下一个 */
