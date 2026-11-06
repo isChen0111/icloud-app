@@ -139,6 +139,11 @@ function ensureOpen(): Database.Database {
   if (!assetColumns.has('live_video_cid')) {
     db.exec(`ALTER TABLE assets ADD COLUMN live_video_cid TEXT`)
   }
+  // 视频元数据来源标记（#5）：'ffprobe' | 'container'，NULL = 非视频或尚未探测。
+  // 用途：按来源定位、出问题时精确重扫（只重扫某来源），不用整库重来。
+  if (!assetColumns.has('meta_source')) {
+    db.exec(`ALTER TABLE assets ADD COLUMN meta_source TEXT`)
+  }
 
   // R-08：date_taken 基准统一。必须放在 FTS 判断之前——改了 date_taken 就得重建索引，
   // 否则 FTS 里还留着旧基准的 date_taken / date_compact（搜索结果与排序会跟主表不一致）。

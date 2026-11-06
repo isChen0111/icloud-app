@@ -145,6 +145,34 @@ async function submitName(): Promise<void> {
 }
 
 /**
+ * 切库后等这轮扫描跑完，再让调用方发导入请求（2026-11-06）。
+ *
+ * 为什么必须有：切库接口里的 `void runScan('switch')` 是 fire-and-forget —— 扫描刚挂上
+ * 队列，接口就返回 200 了。前端拿到响应立刻 POST /import/scan，后端 `inFlightGuard()`
+ * 看到 `scanProgress.status === 'scanning'` 就直接 409「照片库扫描进行中，请稍候再导入」。
+ *
+ * 新建库的导入必然要先切库（新库不是激活库，而导入只接受激活库），所以这条路径
+ * 每次都会走切库 → 每次都有扫描，只是空库扫得快、窗口只有几十毫秒，表现为「时不时」。
+ * 已有激活库上直接导入不会切库，也就没有扫描，所以复现不了。
+ *
+ * 两个细节：
+ *  - 开头先睡 120ms：`runScan` 是通过 microtask 起跑的，接口返回那一刻 status 可能还没
+ *    翻到 scanning，直接查会误判成 idle 放行。
+ *  - 用 stats 轮询而不是固定时长：扫描耗时随库大小波动，睡死一个值小了不够（撞 409）、
+ *    大了白等。5 秒是兜底 —— 真扫了 5 秒还没完说明库里有东西，此时让用户重试比无限挂着诚实。
+ */
+async function waitScanIdle(timeoutMs = 5000): Promise<void> {
+  const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms))
+  await sleep(120)
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    await tasks.refresh({ force: true })
+    if (!tasks.scanBusy) return
+    await sleep(200)
+  }
+}
+
+/**
  * 确保目标库是激活库：不是则先确认、再切换。
  *
  * 返回 false 表示用户放弃（或切换失败），调用方必须中止动作。
@@ -164,6 +192,8 @@ async function ensureActive(action: string): Promise<boolean> {
     await switchLibrary(libraryId.value)
     libActive.value = true
     emit('switched')
+    // 切库会顺带起一轮扫描，不等它结束就发导入必被 409 拦住
+    await waitScanIdle()
     return true
   } catch (err) {
     syncError.value = err instanceof Error ? err.message : String(err)

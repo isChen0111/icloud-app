@@ -2,9 +2,9 @@
  * 缩略图流水线（懒生成）
  *
  * 对标 iCloud 的「衍生图分级」思想：
- * - grid  ：320px WebP，覆盖网格任意缩放级别（iCloud 用 415px 档做同样的事）
- * - detail：1600px WebP，详情页大图
- * - poster：视频封面帧（ffmpeg 抽第 1 秒，再经 sharp 压成 320px WebP）
+ * - grid  ：480px WebP，覆盖网格任意缩放级别
+ * - detail：2560px WebP，详情页大图（与 2560 宽屏 1:1）
+ * - poster：视频封面帧（ffmpeg 抽第 1 秒，再经 sharp 压成 grid 尺寸 WebP）
  *
  * 缓存路径：cache/thumbs/<size>/<assetId>.webp
  * 生成后把 assets 表对应 status 置为 done；网格预览图失败时持久化原因。
@@ -21,7 +21,7 @@ import type { Sharp } from 'sharp'
 import { config } from '../config.js'
 import { getDb } from '../db/index.js'
 import { resolveInsideRoot } from '../utils/path.js'
-import { ffprobeJson, runFfmpeg } from '../ffmpeg.js'
+import { ffprobeJson, runFfmpeg, runFfmpegToBuffer } from '../ffmpeg.js'
 
 sharp.concurrency(2)
 
@@ -169,6 +169,32 @@ function isThumbIgnored(assetId: number): boolean {
   return row?.thumb_ignored === 1
 }
 
+/**
+ * #7-A：生成缩略图时顺手把原图「显示方向」尺寸写回 assets（仅当库内值为空）。
+ *
+ * 为什么放 generate 而不是 routes/thumb.ts 的 ensureSize：后台预热队列不经过 HTTP 路由，
+ * 只有挂在这条共用的生成路径上，清缓存重扫时才能把存量空值一并补齐。
+ *
+ * 尽力而为：读元数据 / 写库失败都吞掉，绝不影响缩略图生成。
+ * orientation >= 5 表示 EXIF 90°/270° 旋转，宽高需互换才是用户看到的显示方向。
+ */
+function persistOriginalSize(
+  db: ReturnType<typeof getDb>,
+  assetId: number,
+  ownerDbPath: string,
+  meta: { width?: number; height?: number; orientation?: number },
+): void {
+  if (config.dbPath !== ownerDbPath) return // 切库放弃（与 generate 的归属保护一致）
+  if (!meta.width || !meta.height) return
+  const swap = (meta.orientation ?? 1) >= 5
+  try {
+    db.prepare(`UPDATE assets SET width=?, height=? WHERE id=? AND (width IS NULL OR height IS NULL)`)
+      .run(swap ? meta.height : meta.width, swap ? meta.width : meta.height, assetId)
+  } catch (err) {
+    console.warn(`[thumb] 写回尺寸失败 asset=${assetId}`, err instanceof Error ? err.message : err)
+  }
+}
+
 /** 实际生成逻辑（被 ensureThumbnail 去重包装） */
 async function generate(
   assetId: number,
@@ -203,35 +229,51 @@ async function generate(
     fs.mkdirSync(path.dirname(outPath), { recursive: true })
 
     if (row.type === 'video') {
-      // —— 视频：ffmpeg 抽帧 → sharp 缩放 ——
-      const framePath = await extractVideoFrame(abs, target, row.duration, priority)
+      // —— 视频：ffmpeg 抽帧 → sharp 缩放（帧走 PAM 无损管道，不落临时文件）——
+      const frame = await videoFrameSource(abs, target, row.duration, priority)
       try {
         await writeAtomicWebp(
-          sharp(framePath, { failOn: 'none' })
+          frame.image
             .resize(target, target, { fit: 'inside', withoutEnlargement: true })
             .keepIccProfile()
             .webp({ quality }),
           outPath,
         )
       } finally {
-        // 修复（审查 P2-B5）：异常路径也必须删临时帧，否则 tmp 目录累积垃圾
-        fs.rmSync(framePath, { force: true })
+        // 兜底路径会产生临时帧，管道路径 release 是空操作
+        frame.release()
       }
     } else if (isHeic(row.file_path)) {
-      // —— HEIC：sharp 官方预编译无 HEVC 解码器 → 用 ffmpeg(libheif) 解码为 PNG 再处理 ——
-      const pngPath = await heicToPng(abs, priority)
+      // —— HEIC：sharp 官方预编译无 HEVC 解码器 → 用 ffmpeg(libheif) 解码，PAM 无损管道直送 sharp ——
+      const frame = await heicFrameSource(abs, priority)
       try {
+        // #7-A：HEIC 全尺寸解码帧顺手写回显示方向尺寸
+        if ((row.width == null || row.height == null) && config.dbPath === ownerDbPath) {
+          try {
+            persistOriginalSize(db, assetId, ownerDbPath, await frame.image.metadata())
+          } catch {
+            /* 元数据读取失败：吞掉，不阻断缩略图 */
+          }
+        }
         await writeAtomicWebp(
-          sharp(pngPath, { failOn: 'none' })
+          frame.image
             .resize(target, target, { fit: 'inside', withoutEnlargement: true })
             .webp({ quality }),
           outPath,
         )
       } finally {
-        fs.rmSync(pngPath, { force: true })
+        frame.release()
       }
     } else {
       // —— 其他图片（JPG/PNG/…）：sharp 直接解码 ——
+      // #7-A：写回原图显示方向尺寸（仅当原值为空；orientation>=5 时 W/H 互换）
+      if ((row.width == null || row.height == null) && config.dbPath === ownerDbPath) {
+        try {
+          persistOriginalSize(db, assetId, ownerDbPath, await sharp(abs, { failOn: 'none' }).metadata())
+        } catch {
+          /* 元数据读取失败：吞掉，不阻断缩略图 */
+        }
+      }
       await writeAtomicWebp(
         sharp(abs, { failOn: 'none' }) // failOn: 容忍 EXIF 损坏的半坏图
           .rotate() // 应用 EXIF 方向（rotate 是链式方法，不是构造选项）
@@ -281,6 +323,70 @@ async function generate(
   }
 }
 
+/**
+ * 一次缩略图生成的「帧来源」。
+ * 管道模式（PAM 裸像素 buffer）不落任何临时文件，release 是空操作；
+ * 回落到 PNG 落盘兜底时才需要删文件。
+ */
+interface FrameSource {
+  image: Sharp
+  release: () => void
+}
+
+/**
+ * 无损帧管道的 stdout 上限（80MB）。
+ *
+ * PAM 是「未压缩原始像素」，buffer 大小完全由像素数决定、解码前无法预知：
+ * 12MP 手机照片 4032×3024×3 ≈ 36MB 可以接受，但全景图 14312×3628×3 ≈ 155MB，
+ * 8 路并发同时解全景就是 1.2GB，会把进程撑爆。
+ * 超过上限的帧主动失败、回落 PNG 落盘（慢但内存恒定），普通照片永远走不到这个分支。
+ */
+const PAM_MAX_BYTES = 80 * 1024 * 1024
+
+/** 从 ffmpeg 的 PAM 输出里剥出裸像素与尺寸 */
+interface PamFrame {
+  data: Buffer
+  width: number
+  height: number
+  /** PAM 的 DEPTH，即每像素通道数；sharp 的 raw 输入只接受 1~4 */
+  channels: 1 | 2 | 3 | 4
+}
+
+/**
+ * 解析 PAM（P7）头并切出像素区。
+ *
+ * 选 PAM 而不是 rawvideo，是因为 rawvideo **不带尺寸头**——sharp 的 raw 输入必须显式给出
+ * width/height，否则没法构造图像。PAM 的头是纯文本，自带 WIDTH/HEIGHT/DEPTH，且负载仍是
+ * 未压缩原始像素，等价于无损。
+ *
+ * 头长这样（MAXVAL 恒为 255，即 8bit/通道）：
+ *   P7\nWIDTH 4032\nHEIGHT 3024\nDEPTH 3\nMAXVAL 255\nTUPLTYPE RGB\nENDHDR\n<像素…>
+ */
+export function parsePamHeader(buf: Buffer): PamFrame | null {
+  // 头只有几百字节；先取前 1KB 找 ENDHDR，避免把 36MB 的负载转成字符串
+  const probe = buf.subarray(0, Math.min(buf.length, 1024)).toString('latin1')
+  if (!probe.startsWith('P7')) return null
+  const end = /ENDHDR\r?\n/.exec(probe)
+  if (!end) return null
+  const headerEnd = end.index + end[0].length
+  const header = probe.slice(0, end.index).replace(/\r/g, '')
+  const width = Number(/^WIDTH (\d+)$/m.exec(header)?.[1])
+  const height = Number(/^HEIGHT (\d+)$/m.exec(header)?.[1])
+  const channels = Number(/^DEPTH (\d+)$/m.exec(header)?.[1])
+  if (!Number.isInteger(width) || !Number.isInteger(height) || !Number.isInteger(channels)) return null
+  if (width <= 0 || height <= 0 || channels < 1 || channels > 4) return null
+  const expected = width * height * channels
+  const payload = buf.subarray(headerEnd)
+  if (payload.length < expected) return null
+  return { data: payload.subarray(0, expected), width, height, channels: channels as 1 | 2 | 3 | 4 }
+}
+
+/** 把 PAM 帧包装成 sharp 可用的只读图像（raw 输入，无再解码开销） */
+function pamToSharp(frame: PamFrame): Sharp {
+  const { width, height, channels } = frame
+  return sharp(frame.data, { raw: { width, height, channels } })
+}
+
 /** 判断是否为 HEIC/HEIF（需要 ffmpeg 解码） */
 function isHeic(relPath: string): boolean {
   const ext = path.extname(relPath).toLowerCase()
@@ -312,7 +418,68 @@ async function heicToPng(absPath: string, priority: 'interactive' | 'background'
   }
 }
 
-/** 用 ffmpeg 抽取视频某一帧为临时 PNG（供 sharp 二次处理） */
+/**
+ * HEIC → PAM buffer（无损管道，不落盘）。
+ *
+ * 为什么不写字：解码本身只要约 0.3s，旧实现那 3s 里 90% 花在把全尺寸帧编码成 PNG
+ * 并写 10~12MB 临时文件、再由 sharp 读回来。走管道后单张 3.2s → 0.35s。
+ *
+ * 为什么不是 mjpeg：2026-11-05 实测，mjpeg 中间层（即使 `-q:v 2` 且 `yuvj444p`）会在细节
+ * 密集的照片上引入可见损失——PSNR 仅 32~36dB，放大后叶丛发闷、边缘发虚。换成无损 PAM 后
+ * PSNR 99dB，单张只慢 2%（651ms → 664ms），代价是 buffer 变大（见 PAM_MAX_BYTES）。
+ *
+ * 注意：这批 HEIC 内部是多路 HEVC 子图，ffmpeg 用 complex filtergraph 组装主图，
+ * 所以**不能**加 `-vf`（会报 Simple and complex filtering cannot be used together），
+ * 也**不能**加 `-map 0:v:0`（拿到的是 512×512 缩略图子图）。缩放一律交给 sharp。
+ */
+async function heicToPamBuffer(
+  absPath: string,
+  priority: 'interactive' | 'background',
+): Promise<PamFrame | null> {
+  try {
+    const buf = await runFfmpegToBuffer(
+      [
+        '-hide_banner',
+        '-loglevel',
+        'error',
+        '-threads',
+        priority === 'background' ? '1' : '2',
+        '-i',
+        absPath,
+        '-frames:v',
+        '1',
+        '-an',
+        '-f',
+        'image2pipe',
+        '-c:v',
+        'pam',
+        '-',
+      ],
+      { maxBytes: PAM_MAX_BYTES },
+    )
+    if (buf.length === 0) throw new Error('ffmpeg 未输出任何帧数据')
+    const frame = parsePamHeader(buf)
+    if (!frame) throw new Error('PAM 头解析失败')
+    return frame
+  } catch (error) {
+    // 管道失败（超 80MB 的大图 / 编码器不支持 / 文件损坏）→ 交给 PNG 落盘老路，
+    // 保证「慢但能出图」，不让一张缩略图因为优化路径失败而进失败清单。
+    console.warn(
+      `[thumb] HEIC 无损管道失败，回落 PNG 落盘: ${path.basename(absPath)}（${(error as Error).message.slice(0, 120)}）`,
+    )
+    return null
+  }
+}
+
+/** HEIC 帧来源：优先 PAM 无损管道，失败回落 PNG 临时文件 */
+async function heicFrameSource(absPath: string, priority: 'interactive' | 'background'): Promise<FrameSource> {
+  const frame = await heicToPamBuffer(absPath, priority)
+  if (frame) return { image: pamToSharp(frame), release: () => {} }
+  const pngPath = await heicToPng(absPath, priority)
+  return { image: sharp(pngPath, { failOn: 'none' }), release: () => fs.rmSync(pngPath, { force: true }) }
+}
+
+/** 用 ffmpeg 抽取视频某一帧为临时 PNG（供 sharp 二次处理；现已降级为兜底路径） */
 async function extractVideoFrame(
   absPath: string,
   maxSize: number,
@@ -363,6 +530,80 @@ async function extractVideoFrame(
     fs.rmSync(tmp, { force: true })
     throw error
   }
+}
+
+/**
+ * 视频抽帧 → PAM buffer（无损管道）。
+ * 与 HEIC 不同，视频可以放心用 `-vf scale`，所以缩放放在 ffmpeg 里做，
+ * 送进 sharp 的已经是 maxSize 以内的帧（480×270×3 ≈ 380KB），内存完全不是问题。
+ * 用 PAM 而非 rawvideo 同样是因为需要自带的尺寸头。
+ */
+async function extractVideoFramePam(
+  absPath: string,
+  maxSize: number,
+  duration: number | null,
+  priority: 'interactive' | 'background',
+): Promise<PamFrame | null> {
+  const vf = `scale='min(${maxSize},iw)':'min(${maxSize},ih)':force_original_aspect_ratio=decrease`
+  const seek =
+    duration !== null && Number.isFinite(duration) && duration > 0
+      ? Math.min(config.videoPosterSeek, duration / 2)
+      : config.videoPosterSeek
+
+  async function pipeAt(seconds: number): Promise<PamFrame> {
+    const buf = await runFfmpegToBuffer([
+      '-hide_banner',
+      '-loglevel',
+      'error',
+      '-ss',
+      String(seconds), // -ss 在 -i 前：快搜
+      '-threads',
+      priority === 'background' ? '1' : '2',
+      '-i',
+      absPath,
+      '-vf',
+      vf,
+      '-frames:v',
+      '1',
+      '-an',
+      '-f',
+      'image2pipe',
+      '-c:v',
+      'pam',
+      '-',
+    ])
+    if (buf.length === 0) throw new Error(`No video frame available at ${seconds}s`)
+    const frame = parsePamHeader(buf)
+    if (!frame) throw new Error(`PAM 头解析失败（${seconds}s）`)
+    return frame
+  }
+
+  try {
+    try {
+      return await pipeAt(seek)
+    } catch (error) {
+      if (seek === 0) throw error
+      return await pipeAt(0)
+    }
+  } catch (error) {
+    console.warn(
+      `[thumb] 视频抽帧无损管道失败，回落 PNG 落盘: ${path.basename(absPath)}（${(error as Error).message.slice(0, 120)}）`,
+    )
+    return null
+  }
+}
+
+/** 视频帧来源：优先 PAM 无损管道，失败回落 PNG 临时文件 */
+async function videoFrameSource(
+  absPath: string,
+  maxSize: number,
+  duration: number | null,
+  priority: 'interactive' | 'background',
+): Promise<FrameSource> {
+  const frame = await extractVideoFramePam(absPath, maxSize, duration, priority)
+  if (frame) return { image: pamToSharp(frame), release: () => {} }
+  const pngPath = await extractVideoFrame(absPath, maxSize, duration, priority)
+  return { image: sharp(pngPath, { failOn: 'none' }), release: () => fs.rmSync(pngPath, { force: true }) }
 }
 
 /**

@@ -53,6 +53,10 @@ CREATE TABLE IF NOT EXISTS assets (
   -- 「配对结果是否变化」的判断，否则稳态跳过写库会让 UUID 配对结果无法被重扫修正。
   live_video_cid TEXT,
 
+  -- 视频元数据来源标记（#5）：'ffprobe'（ffprobe 探测）| 'container'（纯 JS box 解析）。
+  -- NULL = 非视频或尚未探测。用途：出问题时按来源定位、精确重扫，不用整库重来。
+  meta_source    TEXT,
+
   -- 缩略图生成状态机：pending → done | error
   thumb_status  TEXT DEFAULT 'pending',
   thumb_error   TEXT,
