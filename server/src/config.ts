@@ -62,16 +62,28 @@ export const config = {
   /** BtbN ffmpeg full 解压目录（含 libheif；postinstall 下载）。可用 FFMPEG_DIR 覆盖 */
   ffmpegDir: process.env.FFMPEG_DIR ?? path.join(projectRoot, 'server', 'vendor', 'ffmpeg-full'),
 
-  /** 缩略图尺寸档位（对标 iCloud 的 derivativeMSL 分级思想） */
+  /**
+   * 缩略图尺寸档位（对标 iCloud 的 derivativeMSL 分级思想）
+   *
+   * 2026-11-05 调整（320→480、1600→2560）：原值在 2560×1440 / 100% 缩放的屏上会被放大显示，
+   * 这是「看着糊」的真正主因——同尺寸下把质量从 q82 提到 q98 肉眼反而看不出差别。
+   * - grid 480：照片墙默认 8 列的格子约 310px，竖图长边 320 时短边只有 240，被 cover 拉到 310
+   *   就是 1.29 倍；480 让短边到 360，留 1.55 倍余量。
+   * - detail 2560：等于屏幕物理宽度，横图与全景在详情页 1:1 显示，不再放大。
+   */
   thumbSizes: {
-    /** 网格缩略图：最长边 320px，覆盖全部缩放级别（对标 iCloud 415px 档） */
-    grid: 320,
-    /** 详情大图：最长边 1600px（对标 iCloud 2048px 档，本地够用） */
-    detail: 1600,
+    /** 网格缩略图：最长边 480px，覆盖网格全部缩放级别 */
+    grid: 480,
+    /** 详情大图：最长边 2560px（与 2560 宽屏 1:1） */
+    detail: 2560,
   } as const,
 
-  /** 缩略图质量（WebP） */
-  thumbQuality: { grid: 80, detail: 82 } as const,
+  /**
+   * 缩略图质量（WebP）
+   * 实测（4032×3024 源，PSNR 对无损参考）：480 q90 = 38.9dB、2560 q92 = 43.3dB，
+   * 均已进入视觉无损区间；再往上加 q95 体积 +30~45%，PSNR 仅 +1dB，肉眼分辨不出。
+   */
+  thumbQuality: { grid: 90, detail: 92 } as const,
 
   /** 后台补图与用户请求共享的预览图最大并发数 */
   thumbConcurrency: 8,

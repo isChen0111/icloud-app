@@ -26,6 +26,7 @@ import {
   type VideoMeta,
 } from '../metadata/index.js'
 import { readContentIdentifier } from '../metadata/exifWrite.js'
+import { probeMp4, validateProbe } from '../metadata/mp4Probe.js'
 import { pairLiveAssets } from './pair.js'
 import { beginThumbnailBatch, enqueueAsset, resetThumbnailProgress } from '../pipeline/queue.js'
 import { isCacheUsable, thumbCachePath } from '../pipeline/thumbnails.js'
@@ -187,6 +188,57 @@ let scanChain: Promise<void> = Promise.resolve()
  *
  * @param source 触发来源：manual（手动/API）/ watcher（热监听）/ startup（启动对账）/ switch（切库）/ import（导入归置期间的周期扫描）
  */
+
+/** 批量首扫启用纯 JS 快路径的待探测视频数阈值（#5）。低于此值（日常增量）一律走 ffprobe。 */
+const FAST_PATH_MIN_VIDEOS = 1000
+
+/** 实况基名：去扩展名 + 去 `_HEVC` + 去尾部 `-数字` 后缀（iCloud 重复文件），
+ * 使 IMG_0644_HEVC-4070798.MOV / IMG_0644-2233927.HEIC / IMG_0644.HEIC 归一到 IMG_0644 */
+function liveBaseName(fileName: string, kind: 'image' | 'video'): string {
+  const dot = fileName.lastIndexOf('.')
+  let base = dot > 0 ? fileName.slice(0, dot) : fileName
+  if (kind === 'video') base = base.replace(/_HEVC/, '')
+  return base.replace(/-\d+$/, '')
+}
+
+/**
+ * 图片文件的「实况基名」全局集合（L2 判定是否存在同名静止帧）。
+ * 全局不限目录：iCloud 偶尔把同一张实况的静止帧与视频归到不同日期目录，文件名配对
+ * 那轮必须限目录，但 L2 只是「多退一次 ffprobe」的兜底，宁多勿漏（误退是安全的，漏退会配对错）。
+ */
+function buildImageKeySet(files: RawFile[]): Set<string> {
+  const set = new Set<string>()
+  for (const f of files) {
+    if (f.kind !== 'image') continue
+    set.add(liveBaseName(f.fileName, 'image'))
+  }
+  return set
+}
+
+/**
+ * L3 抽样复核用：纯 JS 结果与 ffprobe 结果四项是否一致。
+ * 宽高按排序对比较（90°/270° 旋转时 tkhd 显示尺寸与 ffprobe 编码尺寸 W/H 互换）。
+ *
+ * 时长容忍 ±1s：mp4Probe 读 mvhd（= ffprobe 的 stream.duration，精确值），而 ffprobe 的
+ * format.duration 对 DJI 等非 Apple 视频走 elst 编辑列表**向上取整到整数秒**（6.59→7），
+ * 差值恒 <1s。这不是解析错误——mvhd 反而更精确。拍摄时间容忍 ±1s（6 位 vs 3 位小数舍入）。
+ */
+function sameVideoMeta(a: VideoMeta, b: VideoMeta): boolean {
+  if (a.contentIdentifier !== b.contentIdentifier) return false
+  const adim = a.width != null && a.height != null ? [a.width, a.height].sort((x, y) => x - y).join('x') : null
+  const bdim = b.width != null && b.height != null ? [b.width, b.height].sort((x, y) => x - y).join('x') : null
+  if (adim !== bdim) return false
+  if (a.duration != null && b.duration != null) {
+    if (Math.abs(a.duration - b.duration) >= 1) return false
+  } else if ((a.duration == null) !== (b.duration == null)) {
+    return false
+  }
+  const at = a.creationTime ? Date.parse(a.creationTime) : null
+  const bt = b.creationTime ? Date.parse(b.creationTime) : null
+  const timeMatch = at != null && bt != null ? Math.abs(at - bt) <= 1000 : at == null && bt == null
+  return timeMatch
+}
+
 export function runScan(
   source: Exclude<ScanSource, 'idle'> = 'manual',
   options: RunScanOptions = {},
@@ -323,11 +375,13 @@ async function doRunScan(
     /** F-03 修复：上次扫描记录的源文件签名（新库为 null） */
     size: number | null
     mtimeMs: number | null
+    /** 视频元数据来源（#5）：'ffprobe' | 'container'，非视频为 null */
+    metaSource: string | null
   }
   const existingMeta = new Map<string, ExistingMeta>()
   for (const r of db
     .prepare(
-      `SELECT file_path, date_taken, width, height, duration, orientation, gps_lat, gps_lon, type, live_video, content_identifier, live_video_cid, file_size, file_mtime FROM assets`,
+      `SELECT file_path, date_taken, width, height, duration, orientation, gps_lat, gps_lon, type, live_video, content_identifier, live_video_cid, file_size, file_mtime, meta_source FROM assets`,
     )
     .all() as {
     file_path: string
@@ -344,6 +398,7 @@ async function doRunScan(
     live_video_cid: string | null
     file_size: number | null
     file_mtime: number | null
+    meta_source: string | null
   }[]) {
     existingMeta.set(r.file_path, {
       dateTaken: r.date_taken,
@@ -359,6 +414,7 @@ async function doRunScan(
       liveVideoCid: r.live_video_cid,
       size: r.file_size,
       mtimeMs: r.file_mtime,
+      metaSource: r.meta_source,
     })
   }
 
@@ -375,19 +431,36 @@ async function doRunScan(
   const cidOf = new Map<string, string | null>()
   /** 图片元数据缓存（仅探测过的文件有值；③ 阶段优先用它） */
   const imageMetaCache = new Map<string, ImageMeta>()
-  /** 视频元数据缓存（同上；②′ 用 ffprobe 探标识，③ 阶段直接复用，同一个视频只读一遍） */
+  /** 视频元数据缓存（同上；②′ 探标识，③ 阶段直接复用，同一个视频只读一遍） */
   const videoMetaCache = new Map<string, VideoMeta>()
+  /** 视频元数据来源（#5 L4）：'ffprobe' 或 'container'，写进 assets.meta_source 列 */
+  const metaSourceMap = new Map<string, 'ffprobe' | 'container'>()
   let probed = 0
   const probeTotal = files.length
 
-  /** 单个文件的探测（图片走 exifr / 视频走 ffprobe），结果写进三个缓存 */
-  const probeOne = async (f: RawFile): Promise<void> => {
-    if (f.kind === 'image') {
-      const meta = await readImageMeta(f.absPath)
-      imageMetaCache.set(f.relPath, meta)
-      cidOf.set(f.relPath, meta.contentIdentifier)
-      return
-    }
+  /**
+   * 批量/增量口径（#5）：批量首扫（待探测视频 >= FAST_PATH_MIN_VIDEOS）走纯 JS 快路径，
+   * 日常增量一律走 ffprobe。未来新格式（新 iOS 改 meta 写法）的文件根本不会碰到纯 JS
+   * 解析器，风险归零；增量只有几百个文件，ffprobe 本来就不慢。
+   */
+  const pendingVideoCount = files.filter((f) => {
+    if (f.kind !== 'video') return false
+    const exist = existingMeta.get(f.relPath)
+    return !(exist != null && exist.size !== null && exist.size === f.size && exist.mtimeMs === f.mtimeMs)
+  }).length
+  const useFastPath = pendingVideoCount >= FAST_PATH_MIN_VIDEOS
+
+  /** 图片「目录/配对基名」集合（L2 判定同目录是否存在同名静止帧） */
+  const imageKeySet = buildImageKeySet(files)
+
+  /** L3 抽样复核 + 熔断状态（只在快路径里读写） */
+  let fastPathParsed = 0
+  let fastPathSampled = 0
+  let fastPathMismatch = 0
+  let fastPathCircuitBroken = false
+
+  /** 视频走 ffprobe（现状路径），并记录 meta_source */
+  const probeVideoViaFfprobe = async (f: RawFile): Promise<void> => {
     // 视频侧用 ffprobe 而不是 exiftool 单独探：ffprobe 的 format.tags 里白拿
     // com.apple.quicktime.content.identifier，而 ③ 阶段本来就要靠它读尺寸/时长。
     // 单看探测这一步 exiftool(约 70ms) 比 ffprobe(约 219ms) 省，但两步合起来是
@@ -396,11 +469,73 @@ async function doRunScan(
     if (vm) {
       videoMetaCache.set(f.relPath, vm)
       cidOf.set(f.relPath, vm.contentIdentifier)
+      metaSourceMap.set(f.relPath, 'ffprobe')
       return
     }
     // ffprobe 失败（文件损坏 / 二进制不可用）：退回 exiftool 单读标识，
     // 至少保住实况配对；其余元数据由 ③ 阶段再试一次。
     cidOf.set(f.relPath, await readContentIdentifier(f.absPath))
+    metaSourceMap.set(f.relPath, 'ffprobe')
+  }
+
+  /** 视频走纯 JS 快路径（#5），带 L1/L2/L3 三层防御；不通过即退回 ffprobe */
+  const probeVideoFast = async (f: RawFile): Promise<void> => {
+    // L3 熔断：不一致率超 1% 后本轮剩余全部退回 ffprobe
+    if (fastPathCircuitBroken) {
+      await probeVideoViaFfprobe(f)
+      return
+    }
+    const p = await probeMp4(f.absPath)
+    if (!p) {
+      // 解析不出来（moov 不在头尾 / 文件损坏 / 非 ISO BMFF）→ 退 ffprobe
+      await probeVideoViaFfprobe(f)
+      return
+    }
+    // L2 定向兜底：存在同名静止帧（疑似实况伴生视频）但解析不出 UUID →
+    // 单独退 ffprobe（新 iOS 把 UUID 换了键名/位置、或 iCloud 把 UUID 藏进 mdat 时，
+    // 纯 JS 会漏掉这个 UUID；文件名配对对这些 -后缀 重复件本就失效，只能靠 UUID 救回来）
+    if (p.contentIdentifier == null && imageKeySet.has(liveBaseName(f.fileName, 'video'))) {
+      await probeVideoViaFfprobe(f)
+      return
+    }
+    // L1 自洽校验：UUID 形态错（解析错位）→ 整文件退回；其余越界只置 null
+    const vm = validateProbe(p)
+    if (!vm) {
+      await probeVideoViaFfprobe(f)
+      return
+    }
+    videoMetaCache.set(f.relPath, vm)
+    cidOf.set(f.relPath, vm.contentIdentifier)
+    metaSourceMap.set(f.relPath, 'container')
+    fastPathParsed++
+    // L3 抽样复核：每 200 个纯 JS 结果抽 1 个额外跑 ffprobe 四项对比
+    if (fastPathParsed % 200 === 0) {
+      fastPathSampled++
+      const truth = await readVideoMeta(f.absPath).catch(() => null)
+      // truth 为 null 表示 ffprobe 读不了（超时/损坏），不代表纯 JS 结果错，不参与不一致计数
+      if (truth && !sameVideoMeta(vm, truth)) {
+        fastPathMismatch++
+        // 不一致率 >1% → 熔断：本轮剩余全部退回 ffprobe
+        if (fastPathMismatch / fastPathSampled > 0.01) {
+          fastPathCircuitBroken = true
+          console.warn(
+            `[scan] 纯 JS 视频解析复核不一致率超过 1%（${fastPathMismatch}/${fastPathSampled}），本轮剩余视频退回 ffprobe`,
+          )
+        }
+      }
+    }
+  }
+
+  /** 单个文件的探测（图片走 exifr / 视频走 ffprobe 或纯 JS），结果写进缓存 */
+  const probeOne = async (f: RawFile): Promise<void> => {
+    if (f.kind === 'image') {
+      const meta = await readImageMeta(f.absPath)
+      imageMetaCache.set(f.relPath, meta)
+      cidOf.set(f.relPath, meta.contentIdentifier)
+      return
+    }
+    if (useFastPath) await probeVideoFast(f)
+    else await probeVideoViaFfprobe(f)
   }
 
   /**
@@ -454,15 +589,16 @@ async function doRunScan(
   // RETURNING id：UPSERT 后直接拿到主键，同步 FTS 索引（见下方 upsertFts）
   // F-03 修复：DO UPDATE 同时写入 file_size/file_mtime（签名列）。
   const insert = db.prepare(`
-    INSERT INTO assets (file_path, type, filename, date_taken, width, height, duration, orientation, gps_lat, gps_lon, live_video, file_size, file_mtime, content_identifier, live_video_cid)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO assets (file_path, type, filename, date_taken, width, height, duration, orientation, gps_lat, gps_lon, live_video, file_size, file_mtime, content_identifier, live_video_cid, meta_source)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(file_path) DO UPDATE SET
       type=excluded.type, filename=excluded.filename, date_taken=excluded.date_taken,
       width=excluded.width, height=excluded.height, duration=excluded.duration,
       orientation=excluded.orientation, gps_lat=excluded.gps_lat, gps_lon=excluded.gps_lon,
       live_video=excluded.live_video,
       file_size=excluded.file_size, file_mtime=excluded.file_mtime,
-      content_identifier=excluded.content_identifier, live_video_cid=excluded.live_video_cid
+      content_identifier=excluded.content_identifier, live_video_cid=excluded.live_video_cid,
+      meta_source=excluded.meta_source
     RETURNING id
   `)
 
@@ -486,7 +622,7 @@ async function doRunScan(
 
   const scanAll = db.transaction((rows: unknown[][]) => {
     for (const r of rows) {
-      const { id } = insert.get(...r) as { id: number } // 数组展开为 13 个位置参数（注意：值不能是数组，better-sqlite3 会把数组值再展开）
+      const { id } = insert.get(...r) as { id: number } // 数组展开为 16 个位置参数（注意：值不能是数组，better-sqlite3 会把数组值再展开）
       const dateTaken = r[3] as string
       upsertFts.run(id, r[2] as string, dateTaken, toDateCompact(dateTaken)) // filename → search_text（lower 由 SQL 处理），dateTaken + 紧凑日期（R-26：与启动回填共用同一实现）
       // F-03 修复：同路径源文件签名变化 → 状态置 pending（旧缩略图缓存随后统一删除）
@@ -566,6 +702,7 @@ async function doRunScan(
         a.image.mtimeMs,
         cidOfFile(a.image),
         a.liveVideo ? cidOfFile(a.liveVideo) : null,
+        exist.metaSource,
       ])
       scanProgress.scannedFiles = Math.min(scanProgress.totalFiles, scanProgress.scannedFiles + fileCount)
       scanProgress.assetsFound++
@@ -678,6 +815,7 @@ async function doRunScan(
       a.image.mtimeMs,
       cidOfFile(a.image),
       a.liveVideo ? cidOfFile(a.liveVideo) : null,
+      isVideo ? (metaSourceMap.get(a.image.relPath) ?? 'ffprobe') : null,
     ])
     scanProgress.scannedFiles = Math.min(scanProgress.totalFiles, scanProgress.scannedFiles + fileCount)
     scanProgress.assetsFound++

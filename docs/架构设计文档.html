@@ -63,7 +63,7 @@
   <div class="g stat"><div class="n">万级</div><div class="l">媒体资产总数（已全量入库，实况照片合并计数；具体从略）</div></div>
   <div class="g stat"><div class="n">4~12</div><div class="l">网格列数（本应用滑块范围，默认 8）</div></div>
   <div class="g stat"><div class="n">~168</div><div class="l">DOM 常驻网格节点（视口 + 缓冲区，实测 iCloud）</div></div>
-  <div class="g stat"><div class="n">0.68s/25ms</div><div class="l">缩略图冷生成 / 热缓存耗时（本地实测）</div></div>
+  <div class="g stat"><div class="n">1.2s/25ms</div><div class="l">缩略图冷生成 / 热缓存耗时（本地实测，480px q90 含 HEIC 解码）</div></div>
 </div>
 
 <div class="callout"><b>落地状态（2026-10-06 审查修复后全部验收）</b>：P0+P1+P2 全部实现并通过浏览器端到端实测——照片墙虚拟滚动（全量骨架 + 区间懒加载）、缩放滑块（4~12 列）、吸顶日期跨度、照片墙底色占位后加载 grid 缩略图、详情页（hash 深链 + 键盘切换 + 邻居预取 + 信息面板）、实况照片按住播放、视频 206 流式播放、FTS5 搜索全部工作。2026-10-06 全项目代码审查（F-01~F-07）全部修复合并：单调度器并发 ≤8、F-02 轻量版断开检测、F-03 源文件签名驱动缓存失效 + 前端 rev 联动、F-04 副作用请求 Origin 校验（dev 白名单；2026-10-18 修订为「dev 白名单 ∪ 同源判定」，生产同源写请求放行、跨站仍 403）、F-05 搜索错误态、F-06 FTS 版本化、F-07 ffmpeg 超时 + 失败清单系列。本文档已同步实际落地时的关键调整与踩坑（见 §9）。</div>
@@ -131,6 +131,7 @@
 <tr><td>EXIF 提取</td><td><b>exifr</b></td><td>解析 HEIC/JPEG 的拍摄时间、GPS、方向、尺寸，支持分段读取大文件</td></tr>
 <tr><td>图像处理</td><td><b>sharp</b>（libvips）</td><td>生成 WebP 缩略图 4~5 倍于 ImageMagick。<b>注意（实测坑）</b>：sharp 官方预编译<b>不含 HEVC 解码插件</b>（HEIC 的 metadata 可读、转码报 <code>heif: No decoding plugin installed (11.6003)</code>），需配合 ffmpeg full 版解码，见 §9</td></tr>
 <tr><td>视频抽帧 / HEIC 解码</td><td><b>BtbN ffmpeg full 版 + spawn</b></td><td>抽取视频封面帧；<b>同时承担 HEIC 解码</b>（full 构建含 libheif，实测 0.13s/张）。二进制解压到 <code>server/vendor/ffmpeg-full/</code>，由 <code>src/ffmpeg.ts</code> 直接 spawn；不再依赖已停维护的 fluent-ffmpeg，也不再覆盖 npm 的 ffmpeg-static 精简版。</td></tr>
+<tr><td>视频元数据探测</td><td><b>纯 JS box 解析（<code>mp4Probe.ts</code>）+ ffprobe 兜底</b></td><td>批量首扫（待探测视频 ≥1000）直接读 MP4/MOV 容器，一次拿 UUID/时长/宽高/拍摄时间，约 2.5ms/个（ffprobe spawn 约 219ms/个）；日常增量与解析失败一律退 ffprobe。四层防御见 §3.3.1</td></tr>
 <tr><td>任务队列</td><td><b>p-queue</b>（进程内并发控制）</td><td>缩略图生成 / 转码任务共享最多 8 个并发槽位，动态分配给后台补图和交互请求；单机无需 Redis</td></tr>
 <tr><td>静态服务</td><td><b>@fastify/static</b></td><td>自动支持 Range / ETag / Last-Modified，视频拖动进度条依赖 Range</td></tr>
 </table>
@@ -143,7 +144,7 @@
 <tr><td>JPEG</td><td><code>IMG_1234.JPG</code></td><td><code>IMG_1234.MOV</code></td></tr>
 </table>
 <div class="note"><b>配对规则（2026-11-04 起 UUID 优先）</b>：两侧内容标识（UUID）都存在且相同 → 实况照片；<b>至少一侧没有 UUID</b> 时才退回「<b>目录 + 去 _HEVC 基名</b>」的文件名匹配；<b>两侧都有但不同 → 不配对</b>（哪怕文件名一模一样），因为被重编码过的那一半已经被剥掉了 MakerNote / content.identifier，硬配只会放出错误的片段，Apple 自己也认不出这对。UUID 来自 Apple 官方机制：静止帧写在 Apple MakerNote 标签 <code>0x0011</code>，视频写在 <code>com.apple.quicktime.content.identifier</code>。UUID 那一轮<b>全局匹配、不限目录</b>（跨日期目录、被改过名的实况也能接回），文件名那一轮<b>必须限定目录</b>（见下方跨目录同名坑）。没有配到静止帧的视频即为普通视频。<br>
-<b>读取成本</b>：图片侧 <code>exifr</code> 开 <code>makerNote</code> 几乎零增量（同一 EXIF 段内）；视频侧走 exiftool 常驻进程约 70ms/个（ffprobe 每次 spawn 要 219ms）；独立视频本来就跑 ffprobe，其 UUID 从 <code>format.tags</code> 白拿。已入库且签名未变的资产直接取库里的 UUID，稳态零开销。</div>
+<b>读取成本</b>：图片侧 <code>exifr</code> 开 <code>makerNote</code> 几乎零增量（同一 EXIF 段内）；视频侧批量首扫走纯 JS box 解析（<code>mp4Probe.ts</code>）约 2.5ms/个，增量/兜底走 ffprobe（spawn 约 219ms/个）或 exiftool 常驻进程（约 70ms/个）；独立视频本来就跑 ffprobe，其 UUID 从 <code>format.tags</code> 白拿。已入库且签名未变的资产直接取库里的 UUID，稳态零开销。</div>
 
 <div class="callout"><b>⚠️ 跨目录同名文件坑（重要，2026-09-08 修复）</b><br>
 <b>现象</b>：iCloudPD 会把<b>不同设备 / 编辑版本</b>的同名文件（如 <code>IMG_0040</code>）按各自拍摄日期归档进<b>不同目录</b>——实测库中存在 <code>2018/02/04/IMG_0040.HEIC + IMG_0040_HEVC.MOV</code> 与 <code>2021/07/27/IMG_0040.MOV</code> 这类跨目录同名组（全库大量基名分布在多个目录）。早期扫描按「文件名基名」配对，跨目录同名被合并成一组，代码只取 <code>videos[0]</code> 配对实况，<b>同组其余视频被静默丢弃</b>，且实况视频可能配到另一张同名照片上。这里的“只取第一个视频”是旧行为；当前实现会把同组额外视频作为独立视频资产保留。<br>
@@ -157,7 +158,7 @@
   <div class="arrow">→</div>
   <div class="step"><b>② 配对</b>UUID 优先，缺 UUID 才用「目录 + 基名」兜底；UUID 冲突不配</div>
   <div class="arrow">→</div>
-  <div class="step"><b>③ 读元数据</b>exifr 提取时间/GPS/方向/尺寸；视频用 ffprobe 读时长</div>
+  <div class="step"><b>③ 读元数据</b>exifr 提取时间/GPS/方向/尺寸；视频批量首扫走纯 JS 读容器、增量/兜底走 ffprobe</div>
   <div class="arrow">→</div>
   <div class="step"><b>④ 入库</b>UPSERT 进 SQLite，记录文件路径与实况配对关系</div>
   <div class="arrow">→</div>
@@ -165,15 +166,29 @@
 </div>
 <p class="muted">增量设计：以 <code>file_path</code> 为唯一键 UPSERT（无 checksum 比对）；<b>已入库文件复用现有元数据</b>，且签名（size + mtimeMs）与 <code>type</code>/<code>live_video</code>/两侧 UUID（<code>content_identifier</code>、<code>live_video_cid</code>）五项全一致时<b>完全跳过写库</b>（2026-11-03，稳态零写）。依据：15 列里只有这四项有「修正语义」（配对每轮重算——UUID 全局匹配、文件名按「目录 + 基名」，换归属要能改），其余元数据取自库、写回是空操作，因此五项一致 ⇒ 写与不写等价；但 <code>file_size IS NULL</code> 的历史行必须仍写库 —— 它们 <code>changed</code> 恒为 false，唯一补签名的途径就是这条写库路径，跳过等于永久失去内容变化检测。2 万文件一轮从「遍历 + N 次 UPSERT + N 次 FTS 重写」降到「遍历 + stat」（实测稳态 <code>total_changes</code> 增量为 0）。媒体类型以支持的扩展名识别；隐藏目录忽略，但隐藏媒体文件仍会检查扩展名。对文件名恰为扩展名的合法文件（如 <code>.mp4</code>），在 Node 将其视为 dotfile、<code>path.extname()</code> 返回空字符串时仍按媒体类型收录。扫描优先依据常见的 <code>YYYY/MM/DD</code> 目录日期处理较新的媒体；这只是处理优先级，入库和照片墙展示仍按 EXIF/ffprobe 得到的实际拍摄时间排序。没有可识别目录日期的文件排在有日期文件之后，不会被跳过。全量扫描时间主要取决于媒体元数据读取和磁盘性能。</p>
 
+<h3>3.3.1 视频元数据快路径（#5，2026-11-05 落地）</h3>
+<p>视频探测原本无条件 spawn <code>ffprobe</code>：进程启动就占约 127ms，真正读文件只多 2ms，万级视频首扫要把这份启动开销重复支付上万次。<b>2026-11-05 实测</b>（10628 个真实视频）：<code>ffprobe</code> 约 <b>346ms/个</b>，全量约 <b>61 分钟</b>；8 路并发因进程创建开销几乎无加速。此前文档里「8 并发下约 12 分钟」是用 127ms 的 HEIC 小文件数字套出来的，已撤回。<code>metadata/mp4Probe.ts</code> 改为直接在 JS 里解析 MP4/MOV 的 box 结构，只碰文件头与 <code>moov</code>（绝不读视频数据本体），一次遍历拿到 UUID / 时长 / 宽高 / 拍摄时间，实测 <b>2.42ms/个</b>，全量 <b>25.7 秒</b>。</p>
+<ul>
+  <li><b>批量/增量口径</b>：待探测视频数 ≥ <code>FAST_PATH_MIN_VIDEOS=1000</code>（批量首扫）才走纯 JS 快路径；日常增量一律走 ffprobe。理由：未来新格式（新 iOS 改 meta 写法、新机型加轨道）的文件根本不会碰到纯 JS 解析器，风险归零；增量只有几百个文件，ffprobe 本来就不慢。</li>
+  <li><b>L1 自洽校验</b>（<code>validateProbe</code>，每文件 0 成本）：UUID 非 null 但不符合 <code>8-4-4-4-12</code> 形态 → 整文件退回 ffprobe（错值会静默把不相关的 HEIC/MOV 配成一组）；宽高越界、时长不在 [0,24h]、拍摄年份不在 [1990, 明年] 只置 null，不影响实况配对。</li>
+  <li><b>L2 定向兜底</b>：存在同名静止帧（疑似实况伴生视频）但解析不出 UUID → 该文件单独退 ffprobe。基名用 <code>liveBaseName</code>（去扩展名 + 去 <code>_HEVC</code> + 去尾部 <code>-数字</code> 后缀）<b>全局匹配、不限目录</b>——iCloud 重复件照片/视频后缀不同，只靠文件名配不上，只能靠 UUID 救回。</li>
+  <li><b>L3 抽样复核 + 熔断</b>：每 200 个纯 JS 结果抽 1 个额外跑 ffprobe 四项对比；不一致率 &gt;1% → 本轮剩余全部退回 ffprobe 并 warn（ffprobe 超时返回 null 不计为不一致）。</li>
+  <li><b>L4 来源标记</b>：assets 加 <code>meta_source</code> 列（<code>ffprobe</code> / <code>container</code>），出问题按来源定位、精确重扫，不用整库重来。</li>
+</ul>
+<div class="note"><b>全量对照结论（10628 个视频实测，门槛 UUID 零错值）</b>：UUID <b>错值 = 0</b>（不可能出现「照片配错视频」的静默事故）。其余不一致均查清根因、非解析错误——<b>漏报 88</b>（0.83%，iCloud 的 <code>*_HEVC.MOV</code> 把 <code>content.identifier</code> 藏进了 <code>mdat</code> 非标准位置，纯 JS 只读 moov 所以漏掉，已由 L2 兜底）；<b>误报 2</b>（ffprobe 在这俩文件上超时返回 null，纯 JS 读到的 UUID 与同目录 HEIC 完全一致，实为纯 JS 比 ffprobe 强）；<b>时长 78</b>（全是 DJI 无人机视频，ffprobe 按 <code>elst</code> 编辑列表把时长向上取整到整数秒，纯 JS 读 mvhd = ffprobe 的 stream 精确时长，差异恒 &lt;1s）；<b>时间 8</b>（ffprobe 超时文件 + <code>copy_*</code> 文件返回重复值）。对照脚本留 <code>server/scripts/compare-mp4probe.ts</code> 可复验。</div>
+
 <h3>3.4 缩略图流水线</h3>
 <p>参照 iCloud 的「档位 + 按需」模型，定义 grid 与 detail 两档缩略图，视频另生成 poster：</p>
 <table>
 <tr><th>档位</th><th>规格</th><th>用途</th><th>全量估算</th></tr>
-<tr><td><b>grid</b></td><td>最长边 320px，WebP q80</td><td>网格任意缩放级别复用（实测 iCloud 415px 档覆盖 120~346px）</td><td>~25KB/张 × 资产总数（万级，具体从略）≈ <b>0.3GB 级</b></td></tr>
-<tr><td><b>detail</b></td><td>最长边 1600px，WebP q82</td><td>详情页大图（对标 iCloud 2048 档，本地 1600 已足够）</td><td>~250KB/张 ≈ <b>3GB</b>（可仅按需生成最近浏览的）</td></tr>
-<tr><td><b>video poster</b></td><td>ffmpeg 优先抽第 1 秒帧；短视频按时长选择片段内时间点，无帧时回退到开头 → 320px WebP</td><td>视频缩略图</td><td>~60KB × 视频数（具体从略）≈ <b>0.2GB 级</b></td></tr>
+<tr><td><b>grid</b></td><td>最长边 480px，WebP q90</td><td>网格任意缩放级别复用（默认 8 列格约 310px，竖图短边 360，留 1.55 倍余量）</td><td>~40KB/张 × 资产总数 ≈ <b>0.5GB 级</b></td></tr>
+<tr><td><b>detail</b></td><td>最长边 2560px，WebP q92</td><td>详情页大图，与 2560 宽屏 1:1（横图、全景不再被放大）</td><td>~700KB/张，全库浏览一遍约 <b>9GB</b>（仅按需生成）</td></tr>
+<tr><td><b>video poster</b></td><td>ffmpeg 优先抽第 1 秒帧；短视频按时长选择片段内时间点，无帧时回退到开头 → 480px WebP</td><td>视频缩略图</td><td>~60KB × 视频数（具体从略）≈ <b>0.2GB 级</b></td></tr>
 </table>
+<div class="callout"><b>2026-11-05 参数调整（320/q80 → 480/q90，1600/q82 → 2560/q92）与无损中间层</b>：原参数从项目第一版起从未改动，问题不在质量而在<b>尺寸不够被浏览器放大</b>——2560×1440 / 100% 缩放的屏上，照片墙竖图短边只有 240 却被 <code>object-fit:cover</code> 拉到 310（1.29 倍），详情页横图 1600 拉到 1851（1.16 倍）、全景拉到 2560（1.6 倍）。实测两组对比确认<b>同尺寸下 q82→q98 肉眼分辨不出</b>（PSNR 37.8→45.7dB），所以要提的是尺寸；质量只需进视觉无损区间（480 q90 = 38.9dB、2560 q92 = 43.3dB），再往上加 q95 体积 +30~45% 而 PSNR 仅 +1dB。同时把中间层从<b>有损 mjpeg 换成无损 PAM</b>（见下条）。</div>
 <p>生成策略：缩略图按请求惰性生成，并由后台队列补齐缓存。前端请求某张缩略图 → 后端查缓存未命中 → 生成并写入磁盘缓存（ETag 缓存到浏览器）；扫描后待生成资产只将 <code>grid</code> 档加入后台队列。后台补图与照片墙、搜索及详情触发的交互任务共享最多 8 个并发槽位：后台任务始终入队（priority=0），交互任务 priority=10 永远先出队，PQueue 一次启动 8 个任务时交互不足则用后台填满剩余槽位——<b>浏览优先调度 + 后台填满空闲槽位</b>（事件让位，2026-10-07 替换原「浏览租约 30s 挂起 + 60s 强制放行」机制，零时间参数、零槽位浪费）。运行中的任务不被抢占：首次启动大量后台任务占满槽位时，新到达的交互任务需等运行中的后台任务完成（单任务有 ffmpeg 60s 超时上限，通常几百 ms），属可接受的短期等待。照片墙慢速滚动和滚轮操作持续懒加载，浏览器侧最多并发派发 8 个网格图请求；拖动浏览器滚动条时<b>按速度拆开</b>——慢速拖动（250ms 内位移 ≤ 1/5 屏）与普通滚动同体验（rAF 合并每帧派发、始终带一行预载），快速拖动才跳过中间经过的位置（不派发，防请求风暴）；停止移动后继续派发当前位置，松开后等待 180ms，再按最终视口及一行邻近范围排序、逐张补位加载。日期导航跳转立即加载，不经过滚动条拖动延迟。扫描流程不受该调度影响。Sharp 全局并发限制为 2，视频/HEIC 后台抽帧的 FFmpeg 解码线程限制为 1（交互任务为 2）。照片墙格子接近视口时请求 grid，图片加载完成前显示稳定的底色占位，成功加载后淡入。同一资产、同一档位的并发生成由 <code>in-flight Map</code> 去重。F-03：资产表维护源文件签名（size + mtimeMs），扫描比对签名变化 → 该资产状态置待生成并删除旧缓存 → 重建，配合前端 rev（= file_mtime）联动 URL，浏览器 1 年强缓存下的旧图自动失效。</p>
+<div class="note"><b>尺寸写回（#7-A，2026-11-05）</b>：<code>generate()</code> 在解码出全尺寸帧/图时顺手把原图尺寸写回 <code>assets.width/height</code>（仅当为空）。HEIC 分支取 <code>frame.image.metadata()</code>、JPG/PNG 分支取 <code>sharp().metadata()</code>，写<b>显示方向</b>（旋转后）尺寸。放在 generate 而非 HTTP 路由的 <code>ensureSize</code>：后台预热队列不经过路由，放路由里补不到。此前约 9100 条宽高为空的资产，靠清缓存重扫时由这条路径自然补齐（详情页「像素/MP」字段与首次显示时每条一次 ffprobe 的 300~500ms 等待由此消除）。</div>
+<div class="note"><b>中间层格式演进（2026-11-05 改为 PAM 无损管道）</b>：HEIC 与视频抽帧都要先经 ffmpeg 解码成帧，再交给 sharp 缩放/编码。这个中间层的格式经历了三版：<b>① 全尺寸 PNG 落盘</b>（无损，但每张写真 10~12MB 再读回，单张 3.2s）→ <b>② mjpeg 有损管道</b>（单张 0.35s，但引入可见损失）→ <b>③ PAM 无损管道</b>（单张 0.36s，无损）。<b>为什么不继续用 mjpeg</b>：实测在细节密集的照片上，mjpeg 中间层产物与无损路径相差仅 <b>32.5dB</b>（grid）/ 37.4dB（detail），放大后叶丛发闷、边缘发虚，<code>-q:v 2</code> 与 <code>yuvj444p</code> 都救不回来（35.92 vs 36.05dB，说明损失来自 DCT 量化而非色度抽样）。<b>为什么选 PAM 而不是 rawvideo</b>：rawvideo 不带尺寸头，sharp 的 raw 输入必须显式给 width/height；PAM 的头部是纯文本，自带 WIDTH/HEIGHT/DEPTH，负载仍是未压缩原始像素，等价无损。代价是 buffer 变大（12MP 照片 36MB），且 HEIC 因内部多子图的 complex filtergraph <b>不能加 <code>-vf</code> 也不能加 <code>-map 0:v:0</code></b>（后者会拿到 512×512 子图），缩放仍交给 sharp；视频则可以先 <code>-vf scale</code> 再输出 PAM。为避免超大图撑爆内存（全景 14312×3628 单帧约 155MB），<code>runProcessBuffer</code> 新增 <code>maxStdoutBytes</code>：超 <b>80MB</b> 即 kill 并 reject，该图自动回落 PNG 落盘（慢但内存恒定）。</div>
 <div class="callout"><b>调度器实现（F-01 落地 2026-10-06 / 事件让位 2026-10-07，server/src/pipeline/thumbnailScheduler.ts）</b>：单一 p-queue 统一管理交互与后台任务——<code>priority 10 = 交互</code>（浏览中的图插队先跑）、<code>priority 0 = 后台</code>（始终入队；交互任务不足时后台填满剩余槽位，事件让位，原「浏览租约 30s 挂起 + <code>backgroundMaxDeferMs=60s</code> 强制放行」已移除）；总并发 = <code>config.thumbConcurrency</code>（默认 8），旧双队列（后台 8 + 交互 1 = 9 并发）合并后严格 ≤ 8，单元测试 <b>78 例全绿</b>（<code>thumbnailScheduler.test.ts</code> 10 例覆盖并发不变量 / 交互插队 / 后台填槽 / 积压计数 / 队列指标，其余覆盖扫描对账与端到端扫描、数据库迁移、接口、工具函数、视频 Range 解析、watcher 会话代数）。F-02 轻量版：<code>/api/thumb</code> 与 <code>/api/video/poster</code> 任务开始执行时检查 <code>req.raw.destroyed / aborted</code>，断开则跳过生成并计入「已跳过」（<code>cancelled</code>）。<code>/api/stats</code> 新增 <code>thumbConcurrency</code>（前端调度器并发上限的唯一来源，防前后端漂移）与 <code>thumbQueueMetrics { running, interactiveRunning, interactiveWaiting, cancelled }</code>（诊断指标）。前端调度器（web/src/composables/gridThumbnailScheduler.ts）挂载后从 <code>/api/stats</code> 校准并发上限，滚动触发经 rAF 合并。完整机制见 4.12。</div>
 <div class="note"><b>性能取舍：移除独立 blur 档</b>：blur 小图虽小，生成时仍需读取、解码源媒体并缩放/编码；若与 grid 到达间隔很短，额外占位的视觉收益有限。本实现已移除独立 blur 档：后台队列只预热 grid，格子先显示底色，待 grid 图片加载成功后淡入；扫描时会清理旧的 <code>cache/thumbs/blur/</code> 缓存。详情页仍可复用 grid 图并通过 CSS 模糊作为临时占位，不会额外生成或请求 blur 文件。</div>
 
@@ -241,6 +256,9 @@ CREATE TABLE IF NOT EXISTS assets (
   orientation   INTEGER DEFAULT 1,           <span class="c">-- EXIF 方向，渲染时校正</span>
   gps_lat       REAL, gps_lon REAL,
   live_video    TEXT,                        <span class="c">-- 实况配对 MOV 的 file_path</span>
+  content_identifier TEXT,                   <span class="c">-- 实况 UUID（静止帧 MakerNote 0x0011 / 视频 com.apple.quicktime.content.identifier）</span>
+  live_video_cid TEXT,                       <span class="c">-- 配对视频的 UUID（仅 type='live'；参与「配对是否变化」判断）</span>
+  meta_source   TEXT,                        <span class="c">-- 视频元数据来源：ffprobe | container（纯 JS 解析），#5 L4</span>
   thumb_status  TEXT DEFAULT 'pending',      <span class="c">-- pending|done|error</span>
   thumb_error   TEXT,                        <span class="c">-- 最近一次网格预览图失败原因（最长 1000 字符）</span>
   thumb_ignored INTEGER NOT NULL DEFAULT 0,  <span class="c">-- 用户是否忽略失败提醒（失败清单三态）</span>
@@ -512,8 +530,9 @@ F:\iPhone\icloud-app\
 │  │  ├─ db/schema.ts, index.ts  <span class="c"># SQLite 建表 + WAL 连接（better-sqlite3）；FTS 结构版本 user_version 化（F-06）</span>
 │  │  ├─ db/libraries.ts     <span class="c"># P0 库注册表（meta.db）：createLibrary（已有激活库时不激活）/list/getActive/setActive/updateAuth/touchSync/delete</span>
 │  │  ├─ metadata/index.ts   <span class="c"># exifr（EXIF/GPS/Orientation）+ ffprobe（视频时长）；isTrustedDateDir（目录日期白名单）</span>
+│  │  ├─ metadata/mp4Probe.ts  <span class="c"># 纯 JS 读 MP4/MOV 容器（UUID/时长/宽高/拍摄时间），批量首扫快路径；validateProbe 自洽校验（#5）</span>
 │  │  ├─ metadata/exifWrite.ts  <span class="c"># 导入后补写拍摄时间：exiftool-vendored 只写 DateTimeOriginal(0x9003)/CreateDate(0x9004)，-P 保 mtime，写后复读校验</span>
-│  │  ├─ scanner/index.ts, watcher.ts  <span class="c"># 目录扫描、实况配对（目录+基名）、UPSERT 幂等入库；chokidar 热监听（按激活库启停）；日期三环链（EXIF/ffprobe→目录 YYYY/MM/DD→mtime）</span>
+│  │  ├─ scanner/index.ts, watcher.ts  <span class="c"># 目录扫描、实况配对（UUID 优先 + 目录/基名兜底）、UPSERT 幂等入库 + 视频快路径（#5 四层防御）；chokidar 热监听（按激活库启停）；日期三环链（EXIF/ffprobe→目录 YYYY/MM/DD→mtime）</span>
 │  │  ├─ pipeline/           <span class="c"># thumbnails + queue + thumbnailScheduler（F-01 单队列 priority + 事件让位，F-02 取消检测）+ in-flight 去重 + 扫描缓存对账 + 单元测试</span>
 │  │  ├─ icloudpd/auth.ts    <span class="c"># P0 认证：spawn webui auth-only + 轮询 8080/status + sendAuthInput（inputLock 防重）+ checkAuthValid + stopAuth</span>
 │  │  ├─ icloudpd/sync.ts, state.ts  <span class="c"># P0 同步：全量/增量（--until-found 20 / --recent N）+ waiting_retry（60s×5）+ done/error/cancelled + 全局单任务内存态</span>
@@ -566,11 +585,11 @@ F:\iPhone\icloud-app\
 <h2>7. 性能预算（估算口径）</h2>
 <table>
 <tr><th>项</th><th>估算</th><th>说明</th></tr>
-<tr><td>grid 缩略图全量缓存</td><td><b>~0.3GB 级</b></td><td>320px WebP ≈ 25KB × 资产总数（万级，具体从略）；若用 45KB 上限则体积相应放大</td></tr>
-<tr><td>detail 缩略图全量</td><td><b>~3GB</b></td><td>1600px WebP ≈ 250KB；建议只按需生成近期浏览，磁盘充足可全量</td></tr>
+<tr><td>grid 缩略图全量缓存</td><td><b>~0.5GB 级</b></td><td>480px WebP q90，实测 26~107KB/张（普通图约 40KB），× 资产总数（万级，具体从略）</td></tr>
+<tr><td>detail 缩略图全量</td><td><b>~9GB</b></td><td>2560px WebP q92 实测 580~1971KB/张；只按需生成，全库都浏览一遍才会达到这个量级</td></tr>
 <tr><td>视频封面帧</td><td><b>~0.2GB 级</b></td><td>≈ 60KB × 视频数（具体从略）</td></tr>
-<tr><td>首次全量入库</td><td><b>5~15 分钟</b></td><td>数万文件扫描 + EXIF（并发 8）</td></tr>
-<tr><td>缩略图全量预热</td><td><b>耗时视资源量而定</b></td><td>空闲时后台可使用最多 8 个并发槽位；后台任务始终入队（priority=0），交互 priority=10 插队，交互不足时后台填满剩余槽位（事件让位，2026-10-07 替换原「浏览租约挂起 + 空闲 30 秒后恢复」）。</td></tr>
+<tr><td>首次全量入库</td><td><b>5~15 分钟</b></td><td><b>不含缩略图生成</b>。数万文件扫描 + EXIF（并发 8）；视频探测批量首扫走纯 JS（实测 2.42ms/个，全量 10628 个约 25.7 秒）替代 ffprobe（实测 346ms/个，全量约 61 分钟），瓶颈回到图片 EXIF</td></tr>
+<tr><td>缩略图全量预热</td><td><b>实测 32 分钟 / 12617 张</b></td><td>2026-11-05 实测（22:37:07→23:09:20），吞吐 6.5 张/秒。单张约 1.2s，其中 ffmpeg 进程启动占 264ms（22%）是地板价；8 并发跑在 6 核上已饱和，加并发只会更慢。<b>此前文档写「2.5~5 分钟」是按单张 0.5~1s 乘 8 并发推算的，低估 6~12 倍，已撤回</b>。改 480/q90 后约 33 分钟（成本在解码不在编码，只多 1 分钟）。</td></tr>
 <tr><td>前端内存占用</td><td><b>&lt; 500MB 可控</b></td><td>虚拟滚动 DOM 节点 ~200 个；blob LRU 未实现（2026-10-07 已决定不做）</td></tr>
 <tr><td>视频拖动响应</td><td><b>即时</b></td><td>Range 请求 + 本地磁盘，seek 延迟毫秒级</td></tr>
 </table>
@@ -609,6 +628,7 @@ F:\iPhone\icloud-app\
 <tr><td><b>认证重复发验证码</b></td><td>输入密码后手机连续收到两次双重验证「允许」弹窗</td><td>前端重复提交被桥接成多次 POST <code>/code</code>。修复：后端 <code>inputLock</code>（同一时刻只处理一次提交）+ 前端 submitting 锁（提交后锁定，轮询到阶段变化才解锁）。复现时优先查后端「忽略重复提交」日志</td></tr>
 <tr><td><b>exiftool 补写时间把排序弄乱</b></td><td>补写后本该最早的照片跑到最前面</td><td><code>0x0132 (ModifyDate)</code> 存在反例，写它会覆盖掉本该保留的值并影响下游取数。修复：<b>只写</b> <code>0x9003 DateTimeOriginal</code> + <code>0x9004 CreateDate</code>，<b>绝不写 0x0132</b>；加 <code>-P</code> 保 mtime，写完复读校验，必要时 <code>utimesSync</code> 回设</td></tr>
 <tr><td><b>导入判重把同一文件判成两份</b></td><td>同一目录导两次，第二次多出 <code>xxx(1).jpg</code> 副本</td><td>源 mtime <code>1793504594331.9983</code> 经 <code>fs.cp({preserveTimestamps})</code> 按 100ns 进位成 <code>...332</code>，<code>Math.trunc</code> 取整后恰好差 1ms，严格相等判定失败。修复：判重加 <b>1ms 容差</b>。<b>教训</b>：单测当时只覆盖了「有 EXIF 会补写（mtime 被 utimesSync 重置）」的路径，恰恰漏掉「无补写、直接读回落盘 mtime」这条——而后者才是真实导入的主路径</td></tr>
+<tr><td><b>纯 JS 解析漏报 iCloud 导出视频的 UUID</b></td><td>全量对照时发现 88 个视频（0.83%）纯 JS 读不到 UUID，但 ffprobe 能读到</td><td>iCloud 导出的 <code>*_HEVC.MOV</code> 把 <code>com.apple.quicktime.content.identifier</code> 藏进了 <code>mdat</code>（非标准位置），标准做法在 <code>moov/meta/keys+ilst</code>；纯 JS 按标准只读 moov 所以漏掉。修复：不强行改解析器去扫 mdat（有命中巧合字节的风险），改由 L2 兜底——疑似实况伴生视频（有同名静止帧）读不到 UUID 就单独退 ffprobe。教训：批量快路径必须配「标准答案不齐时的定向兜底」，不能假设纯 JS 和 ffprobe 覆盖完全一致</td></tr>
 </table>
 
 <h3>9.1 广色域 HEIC 与 Web 显示颜色差异（2026-09-21 实测）</h3>
@@ -661,7 +681,7 @@ F:\iPhone\icloud-app\
   <li><b>多账号</b>：<code>--username</code> 可重复出现实现多账号，cookie 按用户名分文件存。本项目仍每库独立 cookie 目录，隔离更彻底。</li>
 </ul>
 
-<p class="muted" style="margin-top:32px;">文档生成：2026-09-21；审查同步：2026-10-06（资产口径从略、F-01~F-07 全部修复、Schema/API 实测核对、rev 动态化、失败清单 API）｜ 2026-11-02 结构与导入链路同步（§3.9 导入本地目录、§5 双子树结构、§9 补 icloudpd 与导入实测坑、前端轮询收敛为单一 store）｜ 实测数据来源：icloud.com.cn/photos 浏览器实测与 photos3 前端源码分析；本机照片库全量扫描与浏览器端到端验证 ｜ 行业参考：Immich（缩略图三档 + 后台任务架构）、@tanstack/vue-virtual（虚拟滚动）、sharp / BtbN ffmpeg（HEIC 解码）。</p>
+<p class="muted" style="margin-top:32px;">文档生成：2026-09-21；审查同步：2026-10-06（资产口径从略、F-01~F-07 全部修复、Schema/API 实测核对、rev 动态化、失败清单 API）｜ 2026-11-02 结构与导入链路同步（§3.9 导入本地目录、§5 双子树结构、§9 补 icloudpd 与导入实测坑、前端轮询收敛为单一 store）｜ 2026-11-05 视频元数据快路径 + 尺寸写回 + 缩略图提档（§3.3.1 纯 JS box 解析与四层防御、§3.4 #7-A 与 480/2560 参数调整、§3.7 meta_source 列、§7 缩略图预热实测 32 分钟）｜ 实测数据来源：icloud.com.cn/photos 浏览器实测与 photos3 前端源码分析；本机照片库全量扫描与浏览器端到端验证 ｜ 行业参考：Immich（缩略图三档 + 后台任务架构）、@tanstack/vue-virtual（虚拟滚动）、sharp / BtbN ffmpeg（HEIC 解码）。</p>
 
 </div>
 </body>

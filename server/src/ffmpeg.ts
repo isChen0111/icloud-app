@@ -98,6 +98,15 @@ export interface RunProcessOptions {
    * 任务永久占住队列槽位。错误信息带 "timed out ... and was killed" + stderr 尾部。
    */
   timeoutMs: number
+  /**
+   * stdout 累积上限（字节）。超出即 kill 子进程并 reject，错误信息带「输出超过上限」。
+   *
+   * 用途：无损帧管道（PAM/rawvideo）的 buffer 大小只由图像像素数决定，无法在解码前预知。
+   * 普通 12MP 手机照片约 36MB 尚可接受，但全景图（14312×3628）一张 155MB，8 路并发就是 1.2GB，
+   * 有 OOM 风险。设上限让这类超大同图主动失败、由调用方回落「落盘 PNG」的慢路径。
+   * 不设则保持原行为（不限）。
+   */
+  maxStdoutBytes?: number
 }
 
 /**
@@ -115,13 +124,25 @@ export function runProcessBuffer(
   return new Promise((resolve, reject) => {
     const child = spawn(binaryPath, args, { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] })
     const stdout: Buffer[] = []
+    let stdoutBytes = 0
+    /** stdout 超上限：已 kill，close 时按「输出过大」reject，调用方据此回落 */
+    let oversize = false
     let stderrTail: Buffer<ArrayBufferLike> = Buffer.alloc(0)
     // settled 防双 settle：error/close 只允许一次生效；timedOut 区分「超时被杀」与「正常非零退出」
     let settled = false
     let timedOut = false
 
     child.stdout.on('data', (chunk: Buffer) => {
-      if (options.collectStdout) stdout.push(chunk)
+      if (!options.collectStdout) return
+      if (oversize) return // 已决定放弃，不再累积（kill 生效前可能还有残留块）
+      const limit = options.maxStdoutBytes
+      if (limit != null && stdoutBytes + chunk.length > limit) {
+        oversize = true
+        child.kill() // 防止继续产生无用的几百 MB 数据
+        return
+      }
+      stdoutBytes += chunk.length
+      stdout.push(chunk)
     })
     child.stderr.on('data', (chunk: Buffer) => {
       const maxStderrBytes = 8 * 1024
@@ -161,6 +182,14 @@ export function runProcessBuffer(
         )
         return
       }
+      if (oversize) {
+        reject(
+          new Error(
+            `${path.basename(binaryPath)} 输出超过上限 ${options.maxStdoutBytes} 字节，已 kill（防止大图撑爆内存）`,
+          ),
+        )
+        return
+      }
       if (code === 0) {
         resolve(Buffer.concat(stdout))
         return
@@ -189,10 +218,14 @@ export async function runFfmpeg(args: string[]): Promise<void> {
  * 执行 FFmpeg 并把 stdout 收成 Buffer（`-f image2pipe` 场景）。
  * 超时同样由 config.ffmpegTimeoutMs 控制。
  */
-export async function runFfmpegToBuffer(args: string[]): Promise<Buffer> {
+export async function runFfmpegToBuffer(
+  args: string[],
+  options: { maxBytes?: number } = {},
+): Promise<Buffer> {
   return runProcessBuffer(getTools().ffmpegPath, args, {
     collectStdout: true,
     timeoutMs: config.ffmpegTimeoutMs,
+    maxStdoutBytes: options.maxBytes,
   })
 }
 
